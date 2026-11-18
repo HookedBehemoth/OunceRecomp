@@ -132,69 +132,69 @@ static void flush_early(void) {
 
 /* The direct back end, ounce_renderer.so: the version-14 table for the object layer, sync and present, and the list calls the
    host finds by name (runtime/renderer.h). Read once, at the first call. */
-static hsd_fns direct_fns;
-static volatile int32_t direct_state;   /* 0 not loaded yet, 2 loaded */
-static os_mutex direct_lock = OS_MUTEX_INIT;
-static os_lib *direct_module;
+static gpu_fns renderer_fns;
+static volatile int32_t renderer_state;   /* 0 not loaded yet, 2 loaded */
+static os_mutex renderer_lock = OS_MUTEX_INIT;
+static os_lib *renderer_module;
 static const char kDirectLib[] = "ounce_renderer.so";
-const hsd_fns *rx_direct(void) {
-    if (direct_state) return &direct_fns;
-    os_mutex_lock(&direct_lock);
-    if (!direct_state) {
+const gpu_fns *rx_direct(void) {
+    if (renderer_state) return &renderer_fns;
+    os_mutex_lock(&renderer_lock);
+    if (!renderer_state) {
         char path[OS_PATH_MAX];
         const int n = os_exe_path(path, sizeof path);
         char *slash = n ? strrchr(path, '/') : NULL;
         if (!slash || (size_t)(slash + 1 - path) + sizeof kDirectLib > sizeof path) hos_fatal(NULL, "rx: no path for %s", kDirectLib);
         memcpy(slash + 1, kDirectLib, sizeof kDirectLib);
-        direct_module = os_lib_open(path);
-        if (!direct_module) hos_fatal(NULL, "rx: %s did not load", path);
+        renderer_module = os_lib_open(path);
+        if (!renderer_module) hos_fatal(NULL, "rx: %s did not load", path);
         #define DIRECT_FN(field, name)                                                                     \
-    if (!(*(void **)&direct_fns.field = os_lib_sym(direct_module, name)))                            \
+    if (!(*(void **)&renderer_fns.field = os_lib_sym(renderer_module, name)))                            \
         hos_fatal(NULL, "rx: %s has no %s", kDirectLib, name);
-        DIRECT_FN(list_begin, "hsd_list_begin")
-        DIRECT_FN(emit, "hsd_emit")
-        DIRECT_FN(list_call, "hsd_list_call")
-        DIRECT_FN(list_end, "hsd_list_end")
-        DIRECT_FN(list_released, "hsd_list_released")
-        DIRECT_FN(submit, "hsd_submit")
-        DIRECT_FN(queue_wait_fence, "hsd_queue_wait_fence")
-        DIRECT_FN(present_queue, "hsd_present_queue")
-        DIRECT_FN(assets_open, "hsd_assets_open")
-        DIRECT_FN(asset_load, "hsd_asset_load")
-        DIRECT_FN(asset_rebind, "hsd_asset_rebind")
-        DIRECT_FN(asset_pool, "hsd_asset_pool")
-        DIRECT_FN(texture_data_pool, "hsd_texture_data_pool")
-        DIRECT_FN(texels, "hsd_texels")
-        DIRECT_FN(pass_known, "hsd_pass_known")
-        DIRECT_FN(pass_inline, "hsd_pass_inline")
-        DIRECT_FN(shots, "hsd_shots")
-        DIRECT_FN(transient_pool, "hsd_transient_pool")
-        DIRECT_FN(image_need, "hsd_image_need")
-        DIRECT_FN(transient_slot, "hsd_transient_slot")
-        DIRECT_FN(target_given, "hsd_target_given")
-        DIRECT_FN(host_event, "hsd_host_event")
-        DIRECT_FN(texture_cached, "hsd_texture_cached")
-        DIRECT_FN(vram_free, "hsd_vram_free")
+        DIRECT_FN(list_begin, "gpu_list_begin")
+        DIRECT_FN(emit, "gpu_emit")
+        DIRECT_FN(list_call, "gpu_list_call")
+        DIRECT_FN(list_end, "gpu_list_end")
+        DIRECT_FN(list_released, "gpu_list_released")
+        DIRECT_FN(submit, "gpu_submit")
+        DIRECT_FN(queue_wait_fence, "gpu_queue_wait_fence")
+        DIRECT_FN(present_queue, "gpu_present_queue")
+        DIRECT_FN(assets_open, "gpu_assets_open")
+        DIRECT_FN(asset_load, "gpu_asset_load")
+        DIRECT_FN(asset_rebind, "gpu_asset_rebind")
+        DIRECT_FN(asset_pool, "gpu_asset_pool")
+        DIRECT_FN(texture_data_pool, "gpu_texture_data_pool")
+        DIRECT_FN(texels, "gpu_texels")
+        DIRECT_FN(pass_known, "gpu_pass_known")
+        DIRECT_FN(pass_inline, "gpu_pass_inline")
+        DIRECT_FN(shots, "gpu_shots")
+        DIRECT_FN(transient_pool, "gpu_transient_pool")
+        DIRECT_FN(image_need, "gpu_image_need")
+        DIRECT_FN(transient_slot, "gpu_transient_slot")
+        DIRECT_FN(target_given, "gpu_target_given")
+        DIRECT_FN(host_event, "gpu_host_event")
+        DIRECT_FN(texture_cached, "gpu_texture_cached")
+        DIRECT_FN(vram_free, "gpu_vram_free")
 #undef DIRECT_FN
         hos_log("rx: the direct back end: %s", path);
         {   /* (HOS_DBG=crit: the calls timed, crit.c) */
-            void crit_wrap(hsd_fns *f);
-            if (crit_wanted()) crit_wrap(&direct_fns);
+            void crit_wrap(gpu_fns *f);
+            if (crit_wanted()) crit_wrap(&renderer_fns);
         }
-        os_atomic_store(&direct_state, 2);
+        os_atomic_store(&renderer_state, 2);
     }
-    os_mutex_unlock(&direct_lock);
-    return &direct_fns;
+    os_mutex_unlock(&renderer_lock);
+    return &renderer_fns;
 }
 
 int rx_start(void *hwnd) {
     /* (loaded here too: the window's thread can reach this before the game's first call loads the library) */
-    const hsd_fns *d = rx_direct();
+    const gpu_fns *d = rx_direct();
     {   /* RX_VK_SHOTS=<dir>, RX_VK_SHOT_EVERY=<n> (default 300): the presented frames as PNGs */
         const char *shots = getenv("RX_VK_SHOTS"), *every = getenv("RX_VK_SHOT_EVERY");
         if (shots && *shots) d->shots(shots, every && atoi(every) > 0 ? atoi(every) : 300);
     }
-    mkwvk_init_fn init = (mkwvk_init_fn)os_lib_sym(direct_module, "mkwvk_init");
+    mkwvk_init_fn init = (mkwvk_init_fn)os_lib_sym(renderer_module, "mkwvk_init");
     const MkwVkRenderer *r = init ? init(&vk_host) : NULL;
     int w = 0, h = 0;   /* (no window: the offscreen image takes HOS_WINDOW_SIZE, as the window would) */
     if (r && !hwnd && getenv("HOS_WINDOW_SIZE") && sscanf(getenv("HOS_WINDOW_SIZE"), "%dx%d", &w, &h) == 2 && w >= 64 && h >= 64)
@@ -207,8 +207,8 @@ int rx_start(void *hwnd) {
 /* (runtime) the window is being closed: a back end still preparing its shaders stops and keeps what it made first (a few
    seconds at most). One without the export (an older one) has nothing to keep */
 void rx_close_asked(void) {
-    if (!direct_module) return;
-    void (*close_asked)(void) = (void (*)(void))os_lib_sym(direct_module, "mkwvk_close_asked");
+    if (!renderer_module) return;
+    void (*close_asked)(void) = (void (*)(void))os_lib_sym(renderer_module, "mkwvk_close_asked");
     if (close_asked) close_asked();
 }
 void rx_resize(int width, int height) { if (vk) vk->resize(width, height); }

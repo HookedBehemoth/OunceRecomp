@@ -1,4 +1,4 @@
-/* The kinds of the game's command lists for the direct back end (runtime/render_lists.c hsd_name_next_list): the function that
+/* The kinds of the game's command lists for the direct back end (runtime/render_lists.c gpu_name_next_list): the function that
    begins a recording names it, by an At row just before its BeginRecording call.
    1-6: the game's load-time lists (the list's load kind): 1 vertex list (f_80457e60, at its call of agl_cmdbuf_begin
    f_804581b0), 2 draw list (f_80293890 <- f_804566e0), 3 per-instance shape list (f_806002e0 <- f_8009bb80), 4 material
@@ -12,33 +12,33 @@
    f_804581b0 is shared, so its callers name the kind at their call, not a row inside it. */
 #include "patches.h"
 
-PATCH_AT(0x80458044, word(0x9400005b), before, none, direct_list_kind, as(k(1), kind)) {
+PATCH_AT(0x80458044, word(0x9400005b), before, none, list_kind, as(k(1), kind)) {
     if (kind >= 1 && kind <= 6) {
-        hsd_name_next_list(HSD_LIST_LOAD, kind);
+        gpu_name_next_list(GPU_LIST_LOAD, kind);
         return;
     }
     switch (kind) {
-    case 16: hsd_name_next_list(HSD_LIST_JOB, 0); break;
-    case 17: hsd_name_next_list(HSD_LIST_LAYER, 0); break;
-    case 18: hsd_name_next_list(HSD_LIST_GATE, 0); break;
-    case 19: hsd_name_next_list(HSD_LIST_COMPUTE, 0); break;
-    case 20: hsd_name_next_list(HSD_LIST_HEAD, 0); break;
-    case 21: hsd_name_next_list(HSD_LIST_IMMEDIATE, 0); break;
+    case 16: gpu_name_next_list(GPU_LIST_JOB, 0); break;
+    case 17: gpu_name_next_list(GPU_LIST_LAYER, 0); break;
+    case 18: gpu_name_next_list(GPU_LIST_GATE, 0); break;
+    case 19: gpu_name_next_list(GPU_LIST_COMPUTE, 0); break;
+    case 20: gpu_name_next_list(GPU_LIST_HEAD, 0); break;
+    case 21: gpu_name_next_list(GPU_LIST_IMMEDIATE, 0); break;
     }
 }
-PATCH_AT_SITE(0x80293b0c, word(0xf9400108), after, none, direct_list_kind, k(2));
-PATCH_AT_SITE(0x806006d0, word(0xf9400108), after, none, direct_list_kind, k(3));
-PATCH_AT_SITE(0x8044530c, word(0xf9400108), after, none, direct_list_kind, k(4));
-PATCH_AT_SITE(0x8044ea18, word(0xf9400108), after, none, direct_list_kind, k(5));
-PATCH_AT_SITE(0x80293458, word(0xf9400108), after, none, direct_list_kind, k(6));
-PATCH_AT_SITE(0x80085334, word(0xf9400108), after, none, direct_list_kind, k(16));
-PATCH_AT_SITE(0x8006d250, word(0xf9400108), after, none, direct_list_kind, k(17));
-PATCH_AT_SITE(0x8007b0c0, word(0xf9400108), after, none, direct_list_kind, k(17));
-PATCH_AT_SITE(0x8007b9f8, word(0xf9400108), after, none, direct_list_kind, k(17));
-PATCH_AT_SITE(0x802eb3f4, word(0xf94002e8), after, none, direct_list_kind, k(18));
-PATCH_AT_SITE(0x80665578, word(0xf9400108), after, none, direct_list_kind, k(19));
-PATCH_AT_SITE(0x80665ff4, word(0xf9400108), after, none, direct_list_kind, k(20));
-PATCH_AT_SITE(0x80bd2490, word(0x97e21748), before, none, direct_list_kind, k(21));
-PATCH_AT_SITE(0x834bb874, word(0x973e724f), before, none, direct_list_kind, k(21));
-PATCH_AT_SITE(0x83a6d3f4, word(0x9727ab6f), before, none, direct_list_kind, k(21));
-PATCH_AT_SITE(0x812bd764, word(0xf9400108), after, none, direct_list_kind, k(21));
+PATCH_AT_SITE(0x80293b0c, word(0xf9400108), after, none, list_kind, k(2));
+PATCH_AT_SITE(0x806006d0, word(0xf9400108), after, none, list_kind, k(3));
+PATCH_AT_SITE(0x8044530c, word(0xf9400108), after, none, list_kind, k(4));
+PATCH_AT_SITE(0x8044ea18, word(0xf9400108), after, none, list_kind, k(5));
+PATCH_AT_SITE(0x80293458, word(0xf9400108), after, none, list_kind, k(6));
+PATCH_AT_SITE(0x80085334, word(0xf9400108), after, none, list_kind, k(16));
+PATCH_AT_SITE(0x8006d250, word(0xf9400108), after, none, list_kind, k(17));
+PATCH_AT_SITE(0x8007b0c0, word(0xf9400108), after, none, list_kind, k(17));
+PATCH_AT_SITE(0x8007b9f8, word(0xf9400108), after, none, list_kind, k(17));
+PATCH_AT_SITE(0x802eb3f4, word(0xf94002e8), after, none, list_kind, k(18));
+PATCH_AT_SITE(0x80665578, word(0xf9400108), after, none, list_kind, k(19));
+PATCH_AT_SITE(0x80665ff4, word(0xf9400108), after, none, list_kind, k(20));
+PATCH_AT_SITE(0x80bd2490, word(0x97e21748), before, none, list_kind, k(21));
+PATCH_AT_SITE(0x834bb874, word(0x973e724f), before, none, list_kind, k(21));
+PATCH_AT_SITE(0x83a6d3f4, word(0x9727ab6f), before, none, list_kind, k(21));
+PATCH_AT_SITE(0x812bd764, word(0xf9400108), after, none, list_kind, k(21));

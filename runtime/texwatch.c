@@ -1,7 +1,7 @@
 /* HOS_DBG=texwatch (direct mode, diagnosis only): which code writes texels into a texture's storage with
    the CPU. The direct back end never reads texture storage (docs/direct/architecture.md, "Textures"), so a texture whose
    texels the CPU stores there, with no NVN call, never gets them: each such writer needs a game patch that hands the
-   bytes to the back end (hsd_texels), as the glyph writer has (docs/direct/terrain-texels.md).
+   bytes to the back end (gpu_texels), as the glyph writer has (docs/direct/terrain-texels.md).
 
    Every texture initialized (in the guest window) has its storage's pages made read-only; the first write to a page
    faults here, is noted by (texture, writer: the host place in the lifted code, the guest lr and two frames), and the
@@ -63,7 +63,7 @@ static void parse_list(const char *v, uint64_t *out, int *n) {
 }
 
 static int on_ = -1;
-int direct_texwatch_on(void) {
+int texwatch_on(void) {
     if (on_ < 0) {
         char v[512];
         if (rx_direct() && dbg_val("memwatch", v, sizeof v)) parse_list(v, mw_addr, &n_mw);
@@ -76,7 +76,7 @@ int direct_texwatch_on(void) {
     }
     return on_;
 }
-static int textures_on(void) { return direct_texwatch_on() && dbg_has("texwatch"); }
+static int textures_on(void) { return texwatch_on() && dbg_has("texwatch"); }
 
 #define NTEX 65536
 typedef struct {
@@ -213,8 +213,8 @@ static void start(void) {
             "tools/re/samap.py)");
 }
 
-void direct_texwatch_created(const void *texture, uint64_t init_lr) {
-    if (!direct_texwatch_on()) return;
+void texwatch_created(const void *texture, uint64_t init_lr) {
+    if (!texwatch_on()) return;
     start();
     if (!textures_on()) return;
     const nvn_tex *o = (const nvn_tex *)texture;
@@ -245,8 +245,8 @@ void direct_texwatch_created(const void *texture, uint64_t init_lr) {
 
 /* (a released slot is reused by a later texture, which overwrites its description: pairs are logged within 0.5 s of
    their fault, normally before that) */
-void direct_texwatch_released(const void *texture) {
-    if (!direct_texwatch_on()) return;
+void texwatch_released(const void *texture) {
+    if (!texwatch_on()) return;
     const nvn_tex *o = (const nvn_tex *)texture;
     os_rwlock_lock(&tex_lock);
     for (int32_t i = 0; i < ntex; i++)
@@ -259,8 +259,8 @@ void direct_texwatch_released(const void *texture) {
 }
 
 /* nn_fs.c: a file read into [guest, guest + n): its pages made writable first (the kernel cannot fault), the texture noted */
-void direct_texwatch_kernel_write(uint64_t guest, uint64_t n, const char *what) {
-    if (!direct_texwatch_on() || !n) return;
+void texwatch_kernel_write(uint64_t guest, uint64_t n, const char *what) {
+    if (!texwatch_on() || !n) return;
     for (int i = 0; i < n_mw; i++)
         if (mw_addr[i] >= guest && mw_addr[i] < guest + n) hos_log("memwatch: %#llx in a file read: %s", (unsigned long long)mw_addr[i], what);
     os_rwlock_lock_shared(&tex_lock);
@@ -297,8 +297,8 @@ static void mem_find(void) {
     hos_log("memfind: done at present %lld (%d places, %.0f ms)", (long long)hos_present_count, found, (hos_now_ns() - t0) / 1e6);
 }
 
-void direct_texwatch_frame(void) {
-    if (!direct_texwatch_on()) return;
+void texwatch_frame(void) {
+    if (!texwatch_on()) return;
     if (n_mf && hos_present_count == mf_present) mem_find();
     if (!textures_on() || hos_present_count % 600) return;
     int32_t pairs_n = 0;

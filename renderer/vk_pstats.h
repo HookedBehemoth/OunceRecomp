@@ -4,7 +4,7 @@
 // Every draw, mesh draw, task step and dispatch recorded while the present count is <present> is bracketed by a pipeline
 // statistics query (input vertices and primitives, vertex shader invocations, clipping invocations and primitives, fragment
 // shader invocations, compute shader invocations, and mesh shader invocations: meshShaderQueries is enabled for it). Ten
-// presents later the results the GPU made available are written to direct_pstats.csv in the working directory (the run's
+// presents later the results the GPU made available are written to pstats.csv in the working directory (the run's
 // folder), a line a command: what it was (program key, its stages' code keys, the list's kind and return address, the pass's
 // size and first target format), its counts on the CPU side, the GPU's statistics, and two timestamps: when all the work before
 // it had finished (written before it) and when it and all before it had (after it); the difference is the time the command

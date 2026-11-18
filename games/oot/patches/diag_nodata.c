@@ -53,7 +53,7 @@ static void report(void) {
 }
 
 /* from assets.c's hook of f_80798690 (x0 td, x2 src), before anything else */
-void direct_diag_nodata_load(uint64_t td, uint64_t src, uint64_t lr) {
+void diag_nodata_load(uint64_t td, uint64_t src, uint64_t lr) {
     if (!nodata_on()) return;
     const int64_t p = hos_present_count;
     if (p / 300 != last_report / 300) {

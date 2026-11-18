@@ -769,7 +769,7 @@ NV(nvnTextureInitialize) {
     game_texture_initializing(c->x[0], b->pool ? POOL(b->pool)->gpu + (uint64_t)b->off : 0, &b->d, c->x[30]);
     nvn_tex *o = TX(P(0));
     if (o->magic == NVN_MAGIC('T', 'E', 'X', 0) && o->serial) {   /* initialised again without Finalize */
-        if (rx_direct()) direct_texwatch_released(o);
+        if (rx_direct()) texwatch_released(o);
         live_del(o);
         rx_nvn_texture_released(o);
     }
@@ -792,7 +792,7 @@ NV(nvnTextureInitialize) {
     live_put(o);
     if (!moved) rx_nvn_texture_created(o);
     game_texture_initialized(o);
-    if (rx_direct()) direct_texwatch_created(o, c->x[30]);   /* (M4d: HOS_DBG=texwatch, diagnosis) */
+    if (rx_direct()) texwatch_created(o, c->x[30]);   /* (M4d: HOS_DBG=texwatch, diagnosis) */
     {   /* RX_NVN_WATCH_TEX=<w>x<h> (debugging): who writes the storage of textures that size (a page watch, with call
            stacks: hos_watch_guest_writes), for writes the dirty tracking misses */
         static int on = -1;
@@ -828,7 +828,7 @@ NV(nvnTextureFinalize) {
         hos_log("nvn: texture %#llx finalized: %ux%u at %#llx, serial %llu, lr %#llx, present %lld", (unsigned long long)c->x[0],
                 o->d.width, o->d.height, (unsigned long long)o->gpu, (unsigned long long)o->serial, (unsigned long long)c->x[30],
                 (long long)hos_present_count);
-    if (rx_direct()) direct_texwatch_released(o);
+    if (rx_direct()) texwatch_released(o);
     live_del(o);
     rx_nvn_texture_released(o);
     o->magic = 0;
@@ -1286,14 +1286,14 @@ static void *rec(nvn_cmd *o, uint32_t op, size_t payload);
    recording is written once into an allocation of its own and its handle names it; CallCommands and CopyCommands hand the
    callee's list to the back end instead of copying records; no copy_lock, no rec_node, no copy at EndRecording. The back
    end's list of each one is in its user. The renderers that replay records take the copies below. */
-static void direct_released_hook(nvn_lrec *r) { rx_direct()->list_released(r->user); r->user = NULL; }
+static void released_hook(nvn_lrec *r) { rx_direct()->list_released(r->user); r->user = NULL; }
 static int list_ref(void) {
     static int on = -1;
     if (on < 0) {
         on = rx_direct() != NULL;
         if (on) {
             nvn_list_init(0, hos_log, die);
-            nvn_list_set_user_hooks(direct_released_hook, NULL);
+            nvn_list_set_user_hooks(released_hook, NULL);
             hos_log("nvn: direct mode: command lists by reference, their records handed to the back end as they are made");
         }
     }
@@ -1490,26 +1490,26 @@ static void put_hdr(uint8_t *p, uint32_t op, uint32_t size);
 /* (direct mode, M3a game patches: games/oot/patches/passes.c, job_sync.c) the back end's open list of the guest command
    buffer at cmd (this thread's waiting record handed over first, so the list has every record before this point); NULL:
    none, or not direct mode */
-void *direct_cmd_list(uint64_t cmd) {
+void *cmd_list(uint64_t cmd) {
     if (!rx_direct() || !cmd) return NULL;
     nvn_cmd *o = (nvn_cmd *)g2h(cmd);
     if (!o || o->magic != NVN_MAGIC('C', 'M', 'D', 'B')) return NULL;
-    hsd_flush();
+    gpu_flush();
     cmd_rec *r = cmd_slot(o->slot);
     return r && r->owner == cmd ? r->dl : NULL;
 }
 /* (direct mode) a command buffer finalized or initialized again: its list begun and not ended dropped (before cmd_release) */
-static void direct_drop(nvn_cmd *o) {
+static void list_drop(nvn_cmd *o) {
     cmd_rec *r = cmd_slot(o->slot);
     if (!rx_direct() || !r || r->owner != h2g(o) || !r->dl) return;
-    hsd_flush();
+    gpu_flush();
     void *dl = r->dl;
     r->dl = NULL;
     rx_direct()->list_released(dl);
 }
 NV(nvnCommandBufferInitialize) {
     nvn_cmd *o = CB(P(0));
-    direct_drop(o);
+    list_drop(o);
     cmd_release(o);   /* (initialized again without Finalize: its recording buffer back) */
     memset(o, 0, sizeof *o);
     o->magic = NVN_MAGIC('C', 'M', 'D', 'B');
@@ -1520,7 +1520,7 @@ NV(nvnCommandBufferInitialize) {
 }
 NV(nvnCommandBufferFinalize) {
     nvn_cmd *o = CB(P(0));
-    direct_drop(o);
+    list_drop(o);
     cmd_release(o);
     o->magic = 0;
 }
@@ -1557,7 +1557,7 @@ static uint8_t *cmd_alloc(nvn_cmd *o, uint32_t size) {
     size = (size + 7) & ~7u;
     cmd_rec *r = cmd_host(o);
     if (rx_direct()) {   /* (the accounting as below; the record in this thread's scratch, to the back end at the next one) */
-        uint8_t *p = hsd_scratch(&r->dl, &r->dl_pending, size);
+        uint8_t *p = gpu_scratch(&r->dl, &r->dl_pending, size);
         o->cmd_used += size;
         o->hw_used += size;
         o->last_rec = size;
@@ -1765,7 +1765,7 @@ NV(nvnCommandBufferGetCommandMemoryUsed) { const nvn_cmd *o = CB(P(0)); RET(o->h
 NV(nvnCommandBufferGetCommandMemoryFree) { const nvn_cmd *o = CB(P(0)); RET(o->game_size - (o->hw_used < o->game_size ? o->hw_used : o->game_size)); }
 
 NV(nvnCommandBufferBeginRecording,
-   reads(x29, "the frame pointer kept with the list's info as a log label (runtime/render_lists.c hsd_classify)")) {
+   reads(x29, "the frame pointer kept with the list's info as a log label (runtime/render_lists.c gpu_classify)")) {
     nvn_cmd *o = CB(P(0));
     if (o->recording) hos_log("nvn: BeginRecording while recording");
     o->recording = 1;
@@ -1773,16 +1773,16 @@ NV(nvnCommandBufferBeginRecording,
     if (list_ref()) nvn_list_open(&r->lw, h2g(o));   /* (its own allocation: no copy at its end) */
     else r->cur = r->seg;
     if (rx_direct()) {   /* (direct mode: the back end's list, its kind from the caller; then BEGIN as below) */
-        hsd_flush();
+        gpu_flush();
         if (r->dl) {   /* (begun again unended: dropped, as the records) */
             void *dl = r->dl;
             r->dl = NULL;
             rx_direct()->list_released(dl);
         }
-        hsd_list_info info = {0};
-        hsd_classify(c, &info);
+        gpu_list_info info = {0};
+        gpu_classify(c, &info);
         info.cmd = h2g(o);
-        if (info.kind == HSD_LIST_JOB && !game_job_list(c->x[0], &info.pass_key, &info.view)) info.pass_key = info.view = 0;
+        if (info.kind == GPU_LIST_JOB && !game_job_list(c->x[0], &info.pass_key, &info.view)) info.pass_key = info.view = 0;
         r->dl = rx_direct()->list_begin(&info);
         o->rec_start = o->cmd_used;
         uint8_t *p = cmd_alloc(o, 8);
@@ -1862,7 +1862,7 @@ static uint64_t end_recording_direct(nvn_cmd *o) {
     put_hdr(p, NOP_END, 8);
     o->hw_used -= 8;
     o->recording = 0;
-    hsd_flush();
+    gpu_flush();
     if (__atomic_load_n(&r->dl_pending, __ATOMIC_ACQUIRE)) {   /* (a record of it waits on another thread: it arrives late) */
         static volatile int32_t n;
         if (os_atomic_inc(&n) <= 8) hos_log("nvn: direct mode: a recording ended with a record of it pending on another thread");
@@ -1950,7 +1950,7 @@ static void inline_recording(nvn_cmd *o, uint64_t h) {
 /* (direct mode) CallCommands / CopyCommands: the callees' lists to the back end, in order; the accounting as with lists by
    reference (the callee's flat size, what the game sizes its heaps from) */
 static void call_direct(nvn_cmd *o, const uint64_t *h, int n) {
-    hsd_flush();
+    gpu_flush();
     void *users[64];
     cmd_rec *r = cmd_host(o);
     for (int i = 0; i < n; i += 64) {
@@ -2713,7 +2713,7 @@ NV(nvnQueueSubmitCommands) {
                     (unsigned long long)q->submits, n, (unsigned long long)c->x[30]);
     }
     if (rx_direct()) {   /* (direct mode: the handles' lists to the back end, which reads their deferred arrays itself) */
-        hsd_flush();
+        gpu_flush();
         void *lists[64];
         for (int i = 0; i < n; i++) {
             const nvn_lrec *l = nvn_list_lookup(h[i]);
@@ -2863,7 +2863,7 @@ NV(nvnQueuePresentTexture) {
     }
     o->presents++;
     game_frame();
-    if (rx_direct()) direct_texwatch_frame();   /* (HOS_DBG=texwatch: its line) */
+    if (rx_direct()) texwatch_frame();   /* (HOS_DBG=texwatch: its line) */
     extern volatile int64_t hos_present_count;   /* display.c */
     os_atomic_inc(&hos_present_count);
     hos_vi_native_presented();

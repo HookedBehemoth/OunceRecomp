@@ -22,7 +22,7 @@ enum {
     CRIT_BLOCK_OTHER = 3,   /* a = the host caller of hos_block_begin, b = guest lr */
     CRIT_VCWAIT = 4,        /* (none any more: the waits for a virtual core, which are gone) */
     CRIT_WAKE = 5,          /* instant: a = the object woken (cv, thread or vc_cv) */
-    CRIT_BE_EMIT = 10,      /* a burst of hsd_emit: a = tsc inside the calls, b = calls */
+    CRIT_BE_EMIT = 10,      /* a burst of gpu_emit: a = tsc inside the calls, b = calls */
     CRIT_BE_BEGIN = 11, CRIT_BE_END = 12, CRIT_BE_CALL = 13, CRIT_BE_SUBMIT = 14, CRIT_BE_PRESENT = 15,
     CRIT_BE_EVSIG = 16, CRIT_BE_WAIT = 17, CRIT_BE_OTHER = 18, CRIT_BE_RELEASED = 19,
     CRIT_PRESENT = 20,      /* instant at rx_nvn_present's entry: a = present number */

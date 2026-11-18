@@ -168,7 +168,7 @@ std::atomic<int64_t> st_loads{0}, st_inplace{0}, st_prepared{0}, st_miss_name{0}
     st_unseen{0}, st_fills{0}, st_fill_bytes{0}, st_fill_zbytes{0}, st_fill_ns{0}, st_zstd_ns{0}, st_fill_uploads{0},
     st_read_fail{0}, st_no_tex[S_N]{}, st_skipped[S_N]{}, st_tiles_unconverted{0}, st_jobs{0};
 std::atomic<int64_t> st_staging_max{0};
-std::atomic<int64_t> st_kept_taken{0}, st_kept_had{0};   // (M6f: HSD_TEXELS_TERRAIN_KEPT)
+std::atomic<int64_t> st_kept_taken{0}, st_kept_had{0};   // (M6f: GPU_TEXELS_TERRAIN_KEPT)
 
 ThreadStat& thread_stat() {
     if (!me_stat) {
@@ -227,7 +227,7 @@ void dbg_read() {
 }  // namespace
 
 // ---- the store, opened by the host ----
-extern "C" __attribute__((visibility("default"))) int hsd_assets_open(const char* dir) {
+extern "C" __attribute__((visibility("default"))) int gpu_assets_open(const char* dir) {
     std::lock_guard lk(open_mu);
     if (S.ok) return (int)S.ntex;
     if (!dir) return 0;
@@ -302,7 +302,7 @@ std::atomic<int64_t> st_ambiguous{0}, st_by_name{0};
 namespace {
 std::atomic<int64_t> st_rebind_rec{0}, st_rebind_same{0}, st_rebind_changed{0}, st_rebind_kept{0};
 /// A rebind whose resource is a file's BRTI with its data there: that record (the texture's data now), else the link as it was
-int rebind_load(const hsd_asset_key* k) {
+int rebind_load(const gpu_asset_key* k) {
     uint32_t found = 0;
     if (S.ok && k->name && k->data)
         for (uint32_t e = S.bucket[name_hash(k->name, k->name_len) & (S.nbucket - 1)]; e && !found; e = S.next[e]) {
@@ -337,7 +337,7 @@ std::atomic<int64_t> st_same{0}, st_same_rec{0}, st_same_plain{0}, st_same_nolin
 /// A load with no data whose texels are another texture's (M6f: a UnifyTex alias; the host names its target, the head
 /// of its alias chain): that texture's link, when the descriptors agree; else a plain image, counted, named and a strict
 /// event (its content is undefined)
-int same_load(const hsd_asset_key* k) {
+int same_load(const gpu_asset_key* k) {
     st_same.fetch_add(1, std::memory_order_relaxed);
     Link l;
     l.armed = true;
@@ -381,11 +381,11 @@ int same_load(const hsd_asset_key* k) {
 }
 }  // namespace
 
-extern "C" __attribute__((visibility("default"))) int hsd_asset_load(const hsd_asset_key* k) {
+extern "C" __attribute__((visibility("default"))) int gpu_asset_load(const gpu_asset_key* k) {
     if (!k || !k->tex) return 0;
-    if (k->path == HSD_ASSET_REBIND) return rebind_load(k);
-    if (k->path == HSD_ASSET_SAME) return same_load(k);
-    (k->path == HSD_ASSET_INPLACE ? st_inplace : st_loads).fetch_add(1, std::memory_order_relaxed);
+    if (k->path == GPU_ASSET_REBIND) return rebind_load(k);
+    if (k->path == GPU_ASSET_SAME) return same_load(k);
+    (k->path == GPU_ASSET_INPLACE ? st_inplace : st_loads).fetch_add(1, std::memory_order_relaxed);
     Link l;
     l.armed = true;
     if (!S.ok) {
@@ -440,7 +440,7 @@ extern "C" __attribute__((visibility("default"))) int hsd_asset_load(const hsd_a
             (why == 1 ? st_miss_name : why == 2 ? st_miss_desc : st_miss_place).fetch_add(1, std::memory_order_relaxed);
             name_once("'%.*s' (BNTX format %#x %ux%u x%u, %u mips, #%d at %#x in its BNTX, %s): %s: the placeholder", (int)k->name_len,
                       k->name, k->format, k->width, k->height, k->layers, k->mips, k->data_offset ? (int)k->index : -1, k->data_offset,
-                      k->path == HSD_ASSET_INPLACE ? "in place" : "loaded", l.why);
+                      k->path == GPU_ASSET_INPLACE ? "in place" : "loaded", l.why);
         }
     }
     std::lock_guard lk(links_mu);
@@ -448,7 +448,7 @@ extern "C" __attribute__((visibility("default"))) int hsd_asset_load(const hsd_a
     return l.rec ? 1 : 0;
 }
 
-extern "C" __attribute__((visibility("default"))) void hsd_asset_rebind(const void* tex) {
+extern "C" __attribute__((visibility("default"))) void gpu_asset_rebind(const void* tex) {
     st_rebinds.fetch_add(1, std::memory_order_relaxed);
     std::lock_guard lk(links_mu);
     auto it = links.find(tex);
@@ -456,7 +456,7 @@ extern "C" __attribute__((visibility("default"))) void hsd_asset_rebind(const vo
     it->second.armed = true;
 }
 
-extern "C" __attribute__((visibility("default"))) void hsd_asset_pool(uint64_t lo, uint64_t hi) {
+extern "C" __attribute__((visibility("default"))) void gpu_asset_pool(uint64_t lo, uint64_t hi) {
     pool_lo.store(lo, std::memory_order_relaxed);
     pool_hi.store(hi, std::memory_order_release);
     logf("direct: assets: the asset heap's pool %#llx + %llu MB: a texture there with no load seen is the placeholder",
@@ -471,19 +471,19 @@ bool assets_pool_is(uint64_t gpu, uint64_t size) {
         if (lo == gpu && hi == gpu + size) return true;
     return false;
 }
-extern "C" __attribute__((visibility("default"))) void hsd_texture_data_pool(uint64_t lo, uint64_t hi) {
+extern "C" __attribute__((visibility("default"))) void gpu_texture_data_pool(uint64_t lo, uint64_t hi) {
     std::lock_guard lk(tdp_mu);
     for (auto& p : tdp)
         if (p.first == lo) return void(p.second = hi);
     tdp.push_back({lo, hi});
 }
 
-extern "C" __attribute__((visibility("default"))) void hsd_texels(uint32_t source, const void* tex, unsigned level, unsigned layer0,
+extern "C" __attribute__((visibility("default"))) void gpu_texels(uint32_t source, const void* tex, unsigned level, unsigned layer0,
                                                                   const void* region, const void* src, uint64_t row, uint64_t img) {
     const nvn_tex* t = (const nvn_tex*)tex;
     const NVNcopyRegion* r = (const NVNcopyRegion*)region;
-    const bool kept = source == HSD_TEXELS_TERRAIN_KEPT;
-    const int si = source == HSD_TEXELS_TERRAIN || kept ? S_TERRAIN : source == HSD_TEXELS_GLYPH ? S_GLYPH : S_TEXELS;
+    const bool kept = source == GPU_TEXELS_TERRAIN_KEPT;
+    const int si = source == GPU_TEXELS_TERRAIN || kept ? S_TERRAIN : source == GPU_TEXELS_GLYPH ? S_GLYPH : S_TEXELS;
     if (!t || !r) return;
     if (kept) {   // (M6f: the storage's bytes for a texture made there again: only into an image that holds nothing else)
         Image* im = image_find(t);

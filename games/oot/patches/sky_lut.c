@@ -19,13 +19,13 @@
 
 int nvn_tex_live_at(uint64_t gpu, nvn_tex *out);
 
-static direct_bl_stats st;
+static bl_stats st;
 static struct { volatile int64_t badsite, notex; } n;
 
 /* f_80846070: after each `x0 = the storage's CPU address` (the line before each of its three memcpys): x0 the storage,
    x1 the part, x2 its size. Returns the size the memcpy copies: 0 when the part went to the texture */
-PATCH_AT(0x808460e4, word(0x9a8803e0), after, x2, direct_sky_lut_part, as(x0, dst), as(x1, src), as(x2, size)) {
-    if (!direct_assets_on()) return size;
+PATCH_AT(0x808460e4, word(0x9a8803e0), after, x2, sky_lut_part, as(x0, dst), as(x1, src), as(x2, size)) {
+    if (!assets_on()) return size;
     nvn_tex t;
     if (!dst || !nvn_tex_live_at(dst, &t)) {
         if (os_atomic_inc(&n.notex) <= 5)
@@ -33,7 +33,7 @@ PATCH_AT(0x808460e4, word(0x9a8803e0), after, x2, direct_sky_lut_part, as(x0, ds
                     (unsigned long long)size, (unsigned long long)src);
         return size;
     }
-    if (!hos_guest_range(src, size) || !direct_assets_texels_bl(HSD_TEXELS_FILE, &t, GP(src), size, &st)) {
+    if (!hos_guest_range(src, size) || !assets_texels_bl(GPU_TEXELS_FILE, &t, GP(src), size, &st)) {
         if (os_atomic_inc(&n.badsite) <= 5)
             hos_log("direct patch sky lut: texture %#llx (%ux%ux%u, format %#x, target %d, storage %llu bytes) and a part of %llu "
                     "bytes: left alone", (unsigned long long)t.gpu, t.d.width, t.d.height, t.d.depth, t.d.format, t.d.target,
@@ -42,10 +42,10 @@ PATCH_AT(0x808460e4, word(0x9a8803e0), after, x2, direct_sky_lut_part, as(x0, ds
     }
     return 0;   /* (the memcpy copies nothing: the storage stays unwritten) */
 }
-PATCH_AT_SITE(0x80846114, word(0x9a8803e0), after, x2, direct_sky_lut_part, x0, x1, x2);
-PATCH_AT_SITE(0x80846144, word(0x9a8803e0), after, x2, direct_sky_lut_part, x0, x1, x2);
+PATCH_AT_SITE(0x80846114, word(0x9a8803e0), after, x2, sky_lut_part, x0, x1, x2);
+PATCH_AT_SITE(0x80846144, word(0x9a8803e0), after, x2, sky_lut_part, x0, x1, x2);
 
-void direct_sky_lut_log(double frames) {
+void sky_lut_log(double frames) {
     (void)frames;
     hos_log("direct patch sky lut (f_80846070's memcpys of res/Master_Field.skybin -> uploads): %lld deswizzled (%.1f MB, "
             "%.3f ms, %.3f ms the longest), %lld sites left alone (%lld with no texture) since the start", (long long)st.uploads,

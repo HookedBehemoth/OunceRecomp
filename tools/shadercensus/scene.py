@@ -3,7 +3,7 @@
     work/venv/bin/python -I tools/shadercensus/scene.py <run dir> --census <stages.jsonl> [--clock 2.3]
                                                        [--simds 160] [--out <dir>]
 
-<run dir> is a run of the game with HOS_DBG=pstats:<present>,drawlog:<present> (direct_pstats.csv and the
+<run dir> is a run of the game with HOS_DBG=pstats:<present>,drawlog:<present> (pstats.csv and the
 drawlog lines in log.txt). For each command: the vertex stage's cost a vertex x its vertex invocations, the fragment stage's
 cost a pixel x its fragment invocations, the task stage's cost a workgroup x its workgroups (compute invocations / threads),
 a dispatch's cost an invocation x its compute invocations (mesh stages are not costed: RADV gives no mesh invocation
@@ -73,7 +73,7 @@ def main():
     a = ap.parse_args()
     cost = census_costs(a.census)
     names, passes = drawlog_names(os.path.join(a.run, "log.txt"))
-    rows = list(csv.DictReader(open(os.path.join(a.run, "direct_pstats.csv"))))
+    rows = list(csv.DictReader(open(os.path.join(a.run, "pstats.csv"))))
     cyc_ms = 1.0 / (a.simds * a.clock * 1e6)   # (SIMD cycles -> ms of the whole GPU)
     P = collections.defaultdict(lambda: collections.Counter())
     info = {}

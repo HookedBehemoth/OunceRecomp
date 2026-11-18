@@ -76,7 +76,7 @@ struct Queue {
     std::vector<uint64_t> wait_fences;   // (for the next submission)
     std::deque<std::pair<uint64_t, uint64_t>> values;   // (seq -> timeline value of the recent ones, oldest first)
 };
-thread_local uint64_t present_queue = 0;   // (hsd_present_queue's, for the present that follows on this thread)
+thread_local uint64_t present_queue = 0;   // (gpu_present_queue's, for the present that follows on this thread)
 std::mutex mu;   // (the queues, their submissions, the event and report writes; queue_mu is taken inside it)
 std::atomic<int64_t> st_finish_held{0};   // (finishes that waited for a held submission, since the start)
 std::condition_variable sent_cv;   // (a submission sent: CPU waits for a fence not sent yet)
@@ -91,7 +91,7 @@ bool in_cpu_signal = false;   // (progress() runs for nvnEventSignal; mu held)
 int64_t st_sig_flush_ns = 0, st_sig_flush_n = 0;   // (the batch sends made for nvnEventSignal, on the game's thread; mu held)
 std::atomic<int64_t> st_submit_ns{0}, st_submit_max_ns{0}, st_cpu_waits{0}, st_cpu_wait_ns{0}, st_cpu_signals{0};
 // (the transient pool's rule, games/oot/patches/rt_slots.c REUSE_AFTER: how late a list reaches the queue. Presents between a list's
-// first command buffer and its hsd_submit, and between the hsd_submit and its chunks' vkQueueSubmit2: 0, 1, 2, more)
+// first command buffer and its gpu_submit, and between the gpu_submit and its chunks' vkQueueSubmit2: 0, 1, 2, more)
 std::atomic<int64_t> st_age_submit[4], st_age_sent[4];
 
 Queue* queue_of(uint64_t id) {   // (mu held)
@@ -225,7 +225,7 @@ void sender_drain_at_exit() {
 // buffer is bracketed by two timestamps (top of pipe before its first command, all commands after its last). In the
 // queue's order these give the time the queue had work (the union of the brackets) and its idle gaps: the GPU waiting
 // for the CPU. Read once available, at the presents; every 600 presents a line, and with HOS_DBG=frames each present's
-// row in direct_frames.csv (vk_present.cpp)
+// row in frames.csv (vk_present.cpp)
 struct GpuTime {
     bool on = false;
     VkQueryPool pool = VK_NULL_HANDLE;
@@ -489,7 +489,7 @@ void nvn_submit(const uint64_t*, int) {   // (the host's held submits: never in 
 }
 void nvn_submit_q(const uint64_t*, int, uint64_t) {
     static int told;
-    if (!told++) logf("direct: nvn_submit_q called: the host should call hsd_submit in direct mode");
+    if (!told++) logf("direct: nvn_submit_q called: the host should call gpu_submit in direct mode");
 }
 uint64_t nvn_fence() { return sent.load(std::memory_order_acquire); }
 uint64_t nvn_fence_q(uint64_t queue) {
@@ -634,7 +634,7 @@ void sync_stats(char* out, size_t cap, double frames) {
     size_t held_now = 0;
     for (const Queue* q : queues) held_now += q->subs.size();
     const int64_t ns = st_submit_ns.exchange(0), mx = st_submit_max_ns.exchange(0);
-    std::snprintf(out, cap, "submits %.1f a frame (%.1f chunks, %.1f of them after an event wait; %.1f command buffers; %.3f ms a frame in hsd_submit on the submitting threads, longest %.3f ms); "
+    std::snprintf(out, cap, "submits %.1f a frame (%.1f chunks, %.1f of them after an event wait; %.1f command buffers; %.3f ms a frame in gpu_submit on the submitting threads, longest %.3f ms); "
                   "event signals %.1f, waits met %.1f, held at a wait %.1f (longest %.2f ms, %.2f ms a frame in all; ended by the CPU's signal %.1f, by another queue's %.1f; %zu held now), fence waits held %lld, "
                   "reports written by the CPU %.1f, resets on the CPU %.1f, CPU signals %.1f; CPU fence waits %.1f (%.3f ms a frame); submissions waiting for uploads %lld; "
                   "timeline %llu sent, %llu done; vkQueueSubmit2 %.1f a frame, %.3f ms a frame (all threads); waits for the submit lock %.1f a frame (%.3f ms a frame); "
@@ -665,7 +665,7 @@ void sync_fill_table(MkwVkRenderer& t) {
 
 using namespace hsd;
 
-extern "C" __attribute__((visibility("default"))) void hsd_submit(uint64_t queue, void* const* lists, uint32_t n) {
+extern "C" __attribute__((visibility("default"))) void gpu_submit(uint64_t queue, void* const* lists, uint32_t n) {
     const auto t0 = clk::now();
     Sub s;
     s.lists.reserve(n);
@@ -694,7 +694,7 @@ extern "C" __attribute__((visibility("default"))) void hsd_submit(uint64_t queue
             for (const Seg& g : l->segs) if (g.callee && any(g.callee, d + 1)) return true;
             return false;
         } };
-        if (cap) for (const List* l : s.lists) imm |= l->info.kind == HSD_LIST_IMMEDIATE, drawn |= R::any(l, 0);
+        if (cap) for (const List* l : s.lists) imm |= l->info.kind == GPU_LIST_IMMEDIATE, drawn |= R::any(l, 0);
         if (cap && drawn) logf("capture: a list that renders the 543x306 target submitted on queue %u at present %llu", q->index,
                                (unsigned long long)present_count());
         if (cap && imm) {
@@ -716,7 +716,7 @@ extern "C" __attribute__((visibility("default"))) void hsd_submit(uint64_t queue
 }
 
 namespace hsd {
-/// A present in its queue's order (the queue hsd_present_queue named on this thread; none: at once)
+/// A present in its queue's order (the queue gpu_present_queue named on this thread; none: at once)
 void sync_present(const nvn_tex* t, const int crop[4]) {
     Sub s;
     s.present = true;
@@ -732,9 +732,9 @@ void sync_present(const nvn_tex* t, const int crop[4]) {
 }
 }  // namespace hsd
 
-extern "C" __attribute__((visibility("default"))) void hsd_present_queue(uint64_t queue) { present_queue = queue; }
+extern "C" __attribute__((visibility("default"))) void gpu_present_queue(uint64_t queue) { present_queue = queue; }
 
-extern "C" __attribute__((visibility("default"))) void hsd_queue_wait_fence(uint64_t queue, uint64_t fence) {
+extern "C" __attribute__((visibility("default"))) void gpu_queue_wait_fence(uint64_t queue, uint64_t fence) {
     std::lock_guard lk(mu);
     Queue* q = queue_of(queue);
     q->wait_fences.push_back(fence);

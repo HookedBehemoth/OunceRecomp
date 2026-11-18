@@ -26,7 +26,7 @@ void draw_invalidate(List* l);
 void draw_push_invalidate(List* l);
 /// The list's draw state goes with it
 void draw_list_free(List* l);
-/// (hsd_submit, the guest's submit) the deferred binds' bank words of l and its callees copied from the game's arrays now
+/// (gpu_submit, the guest's submit) the deferred binds' bank words of l and its callees copied from the game's arrays now
 void draw_list_submitted(const List* l);
 /// (vk_pools.cpp) layer 0's window k made at device address a: the BDA window table's entry
 void draw_window_made(uint32_t k, uint64_t a);

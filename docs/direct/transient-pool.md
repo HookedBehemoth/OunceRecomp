@@ -17,15 +17,15 @@ of VRAM, made once, and nothing is allocated or freed for them in play.
 
 1. **The host names the range once.** In direct mode the allocator's slots lie past the end of the game's pool, at
    GPU addresses `runtime/nvn_native.c` leaves unused. The slot range is twice the game's pool, and at least 512 MB
-   (`RX_RT_SLOTS_MB` overrides it). The host hands the range to the back end (`hsd_transient_pool`), which allocates it
+   (`RX_RT_SLOTS_MB` overrides it). The host hands the range to the back end (`gpu_transient_pool`), which allocates it
    with one `vkAllocateMemory`.
 2. **Slots are sized by the device's need.** Before placing a target, the host asks the back end how much memory an
-   image of that format and shape needs (`hsd_image_need`), and tells it each slot's bytes before a texture is
+   image of that format and shape needs (`gpu_image_need`), and tells it each slot's bytes before a texture is
    initialized there.
 3. **An image is bound at its slot's offset.** A texture initialized inside the range gets a `VkImage` with no memory of
    its own, bound in the pool's allocation. Images whose ranges overlap share memory.
 4. **The allocator tells the back end who owns a range.** Every entry the game's allocator gives out is told to the back
-   end by its own texture object (`hsd_target_given`). The image of that object claims the range.
+   end by its own texture object (`gpu_target_given`). The image of that object claims the range.
 
 ### Claims and the discard
 

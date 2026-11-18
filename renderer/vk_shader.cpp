@@ -8,7 +8,7 @@
 // The caches beside the executable (docs/direct/shader-contract.md, "The caches"):
 // - ounce_renderer_programs.bin: translated variants by code pair. Stamped by the translation's code only
 //   (OUNCE_RENDERER_SHADER_STAMP, renderer/meson/shader_stamp.py: the translator, the compiler and flags that build it,
-//   and the regions marked "stamp graphics" and "stamp shared" here, direct_spv_late.*, vk_state.h), the record format
+//   and the regions marked "stamp graphics" and "stamp shared" here, vk_spv_late.*, vk_state.h), the record format
 //   (kDiskFormat), the device's answers and the switches that change the translation; a file of another stamp is made
 //   again. Edits outside the marked regions keep it.
 // - ounce_renderer_shader_objects.bin: driver binaries by create info, under the driver's binary UUID and version (sobin).
@@ -1029,7 +1029,7 @@ bool finish(Variant& v) {
             if (ubopush && d.ubos.size() < 8) {
                 x = map_of(cb, VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT, VK_DESCRIPTOR_MAPPING_SOURCE_PUSH_ADDRESS_EXT);
                 x.sourceData.pushAddressOffset = 192 + 8 * (uint32_t)d.ubos.size();
-                d.direct_ubos = (uint8_t)(d.ubos.size() + 1);
+                d.vk_ubos = (uint8_t)(d.ubos.size() + 1);
             } else {
                 x = map_of(cb, VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT, VK_DESCRIPTOR_MAPPING_SOURCE_INDIRECT_ADDRESS_EXT);
                 x.sourceData.indirectAddress.pushOffset = kTablePush;
@@ -1135,7 +1135,7 @@ bool finish(Variant& v) {
         st_ubos_sum.fetch_add(n, std::memory_order_relaxed), st_ubos_variants.fetch_add(1, std::memory_order_relaxed);
         if (kTablePush + 8 * (uint32_t)n > caps.max_push) st_ubos_over.fetch_add(1, std::memory_order_relaxed);
     }
-    if (d.direct_ubos) d.push_bytes = std::max<uint32_t>(d.push_bytes, 192 + 8 * d.direct_ubos);
+    if (d.vk_ubos) d.push_bytes = std::max<uint32_t>(d.push_bytes, 192 + 8 * d.vk_ubos);
     if (d.push_bytes > caps.max_push) d.skip = d.skip ? d.skip : "push data over the device's limit";
     // (the answers a draw checks: those whose handle is a driver bank word; one in a game buffer stands as translated)
     for (const RawAnswer& a : v.answers) {

@@ -113,20 +113,20 @@ static int keep_wait(uint64_t cmd, uint64_t event, uint32_t mode, uint32_t value
 /* f_82c02f20, f_82c03170: the WaitEvent call (cmd, event, mode, value), blr x8; f_831fa4a0 (the same wait code as
    f_82c02f20's) tail-jumps to it, br x4 (f_80279400, water, calls f_831fa4a0 at 0x80279448: WaitEvent's return is
    0x8027944c): the row in place of the tail call, then f_831fa4a0 returns */
-PATCH_AT(0x82c03018, word(0xd63f0100), instead, none, direct_job_sync_wait, guest(computed), sp, as(k(0x82c03018), site),
+PATCH_AT(0x82c03018, word(0xd63f0100), instead, none, job_sync_wait, guest(computed), sp, as(k(0x82c03018), site),
          as(x8, proc), as(x0, cmd), as(x1, event), as(w2, mode), as(w3, value)) {
     expect(proc, P_WAIT, site, "nvnCommandBufferWaitEvent");
     if (keep_wait(cmd, event, mode, value)) return;
     os_atomic_inc(&n.through);
     guest_call(g, sp, proc, cmd, event, mode, value, 0);
 }
-PATCH_AT_SITE(0x82c03268, word(0xd63f0100), instead, none, direct_job_sync_wait, guest(computed), sp, k(0x82c03268), x8,
+PATCH_AT_SITE(0x82c03268, word(0xd63f0100), instead, none, job_sync_wait, guest(computed), sp, k(0x82c03268), x8,
               x0, x1, w2, w3);
-PATCH_AT_SITE(0x831fa588, word(0xd61f0080), instead, none, direct_job_sync_wait, guest(computed), sp, k(0x831fa588), x4,
+PATCH_AT_SITE(0x831fa588, word(0xd61f0080), instead, none, job_sync_wait, guest(computed), sp, k(0x831fa588), x4,
               x0, x1, w2, w3);
 
 /* f_82c02f20, f_82c03170: the Barrier call (cmd, bits) */
-PATCH_AT(0x82c030c0, word(0xd63f0100), instead, none, direct_job_sync_barrier, guest(computed), sp,
+PATCH_AT(0x82c030c0, word(0xd63f0100), instead, none, job_sync_barrier, guest(computed), sp,
          as(k(0x82c030c0), site), as(x8, proc), as(x0, cmd), as(w1, bits)) {
     expect(proc, P_BARRIER, site, "nvnCommandBufferBarrier");
     const uint64_t view = job_view(cmd);
@@ -144,12 +144,12 @@ PATCH_AT(0x82c030c0, word(0xd63f0100), instead, none, direct_job_sync_barrier, g
     os_atomic_inc(&n.through);
     guest_call(g, sp, proc, cmd, bits, 0, 0, 0);
 }
-PATCH_AT_SITE(0x82c03310, word(0xd63f0100), instead, none, direct_job_sync_barrier, guest(computed), sp, k(0x82c03310),
+PATCH_AT_SITE(0x82c03310, word(0xd63f0100), instead, none, job_sync_barrier, guest(computed), sp, k(0x82c03310),
               x8, x0, w1);
 
 /* the job-call site, f_806688c0's CallCommands (cmd, count, handles) with the view record (x21) and the list's draw
    context ([sp + 0x10]): the view record's kept ops around it */
-PATCH_AT(0x80668c80, word(0xd63f0100), instead, none, direct_job_sync_call, guest(computed), sp, as(x8, proc),
+PATCH_AT(0x80668c80, word(0xd63f0100), instead, none, job_sync_call, guest(computed), sp, as(x8, proc),
          as(x0, cmd), as(w1, count), as(x2, handles), as(x21, view), as(ld(sp, 0x10), drawctx)) {
     expect(proc, P_CALL, 0x80668c80, "nvnCommandBufferCallCommands");
     Kept k;
@@ -187,7 +187,7 @@ PATCH_AT(0x80668c80, word(0xd63f0100), instead, none, direct_job_sync_call, gues
 
 /* the occlusion grid's dispatch (grid entry, drawctx, flag, flag): kept for the view's job (its x0 left as it came), or
    the game's (orig) */
-PATCH_FUNC(0x8067c310, word(0xb9400808), body(0xf7211f1c433e65c6), aapcs, x0, direct_job_sync_grid_dispatch,
+PATCH_FUNC(0x8067c310, word(0xb9400808), body(0xf7211f1c433e65c6), aapcs, x0, job_sync_grid_dispatch,
            orig, as(x0, entry), as(x1, drawctx), x2, x3) {
     const uint64_t view = hos_guest_range(drawctx + 216, 8) ? job_view(G64(drawctx + 216)) : 0;
     if (!view) return guest_orig(orig);
@@ -203,7 +203,7 @@ PATCH_FUNC(0x8067c310, word(0xb9400808), body(0xf7211f1c433e65c6), aapcs, x0, di
     return guest_orig(orig);
 }
 
-void direct_job_sync_log(double frames) {
+void job_sync_log(double frames) {
     static int64_t last[10];
     const int64_t now[10] = {n.waits, n.barriers, n.dispatches, n.placed_waits, n.placed_barriers, n.placed_dispatches, n.dropped,
                             n.through, n.calls, n.calls_kept};

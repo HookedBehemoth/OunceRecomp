@@ -310,7 +310,7 @@ void dump_pass(List* l, VkCommandBuffer cb) {
     for (int i = 0; i < l->pass.n; i++)
         if (l->pass.color[i].view) {
             std::snprintf(what, sizeof what, "pass c%d prog %016llx list %s rt %llu", i, (unsigned long long)l->pass.last_prog,
-                          l->info.kind == HSD_LIST_GATE ? "gate" : l->info.kind == HSD_LIST_LAYER ? "layer" : "other",
+                          l->info.kind == GPU_LIST_GATE ? "gate" : l->info.kind == GPU_LIST_LAYER ? "layer" : "other",
                           (unsigned long long)l->pass.set_rt_at);
             if (DumpItem* it = copy(cb, l->pass.color[i], what)) l->dumps.push_back(it), st_recorded++;
         }

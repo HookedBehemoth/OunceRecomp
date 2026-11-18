@@ -72,7 +72,7 @@ struct Frame {
     int64_t shot_present = 0;   // (0: none waiting)
 };
 
-// Shots of the presented frame (hsd_shots: the host's RX_VK_SHOTS / RX_VK_SHOT_EVERY, as the frozen back end reads
+// Shots of the presented frame (gpu_shots: the host's RX_VK_SHOTS / RX_VK_SHOT_EVERY, as the frozen back end reads
 // them): every Nth present the image presented (the swapchain's or the offscreen one, after the blit with the crop) is
 // scaled into a 1280x720 RGBA8 image and copied into the frame slot's buffer; once that slot's fence has passed (three
 // presents later, where the present waits for it anyway) the pixels go to <dir>/vk_<present>.png on a thread of its own.
@@ -414,9 +414,9 @@ uint64_t present_count() { return asked.load(std::memory_order_acquire); }
 void present(const nvn_tex* t, const int* crop) {   // (the guest's Presentation Thread)
     const auto now = clk::now();
     if (presents) intervals_ms.push_back(std::chrono::duration<float, std::milli>(now - last_present).count());
-    {   // (HOS_DBG=frames: each present's interval in direct_frames.csv; with gputime also the GPU's frame time, busy and idle as the
+    {   // (HOS_DBG=frames: each present's interval in frames.csv; with gputime also the GPU's frame time, busy and idle as the
         // timestamps of an earlier frame came in, a row late; measurement)
-        static FILE* frames_file = dbg("frames") ? std::fopen("direct_frames.csv", "w") : nullptr;
+        static FILE* frames_file = dbg("frames") ? std::fopen("frames.csv", "w") : nullptr;
         if (frames_file && presents) {
             double g[3] = {0, 0, 0};
             const bool have = gputime_row(g);
@@ -550,7 +550,7 @@ void present_run(const nvn_tex& t, const int crop[4]) {   // (vk_sync.cpp's mu h
 
 }  // namespace hsd
 
-extern "C" __attribute__((visibility("default"))) void hsd_shots(const char* dir, int every) {   // (before the renderer starts)
+extern "C" __attribute__((visibility("default"))) void gpu_shots(const char* dir, int every) {   // (before the renderer starts)
     if (!dir || !*dir || every <= 0) return;
     hsd::shot_dir = dir, hsd::shot_every = every;
 }

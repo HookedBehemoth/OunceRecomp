@@ -19,12 +19,12 @@
 #include "vk_image.h"
 #include "vk_assets.h"
 
-#define HSD_VK_DEFINE(f) PFN_##f f;
+#define GPU_VK_DEFINE(f) PFN_##f f;
 namespace hsd::vkfn {
-HSD_VK_M2B(HSD_VK_DEFINE)
-HSD_VK_M4B(HSD_VK_DEFINE)
+GPU_VK_M2B(GPU_VK_DEFINE)
+GPU_VK_M4B(GPU_VK_DEFINE)
 }
-#undef HSD_VK_DEFINE
+#undef GPU_VK_DEFINE
 
 namespace hsd {
 
@@ -434,14 +434,14 @@ void draw_device_created() {
     };
     if (!caps.ok) return void(logf("direct: no draws on this device: %s", caps.why));
     caps.alpha_to_one = dev.features.alphaToOne, caps.logic_op = dev.features.logicOp;   // (enabled: their state must be set)
-#define HSD_VK_LOAD(f) f = (PFN_##f)vkGetDeviceProcAddr(dev.device, #f);
-    HSD_VK_M2B(HSD_VK_LOAD)
-    HSD_VK_M4B(HSD_VK_LOAD)
-#undef HSD_VK_LOAD
+#define GPU_VK_LOAD(f) f = (PFN_##f)vkGetDeviceProcAddr(dev.device, #f);
+    GPU_VK_M2B(GPU_VK_LOAD)
+    GPU_VK_M4B(GPU_VK_LOAD)
+#undef GPU_VK_LOAD
     bool all = true;
-#define HSD_VK_CHECK(f) all = all && f != nullptr;
-    HSD_VK_M2B(HSD_VK_CHECK)
-#undef HSD_VK_CHECK
+#define GPU_VK_CHECK(f) all = all && f != nullptr;
+    GPU_VK_M2B(GPU_VK_CHECK)
+#undef GPU_VK_CHECK
     if (!all) return fail("a device function is missing");
     {   // (NVN's programs are written for 32 lanes: the stages the GPU can run at 32 are pinned there, gpu/legacy/vk/vk_main.cpp)
         VkPhysicalDeviceDriverProperties drv{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};

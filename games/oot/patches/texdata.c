@@ -1,13 +1,13 @@
 /* agl::TextureDataMgr's own texture events, hooked (direct mode only; docs/direct/texture-streaming.md).
    One table keyed by the TextureData (td), written only by these hooks:
-     - created with data, or as a UnifyTex alias: f_80798690 loadImage_ (assets.c calls direct_texdata_created; an
+     - created with data, or as a UnifyTex alias: f_80798690 loadImage_ (assets.c calls texdata_created; an
        alias's target is the head of its chain, tex_dedup.c);
      - moved by compaction (the frame update f_80797da0 -> f_807981f0(td, ctx) for each moved texture and each alias):
        the rebind's nvnTextureFinalize + nvnTextureInitialize of the td's own NVN object reach the back end as nothing at
        all: the object keeps its serial, so its image (keyed by its record or plain image, never by storage) and its
        registration follow it (nvn_native.c asks game_texture_moving);
      - released to the LRU cache / taken back from it: f_8079aa20(&td->slot, 1 / 0), called from the release f_80517d80 and
-       the acquire paths; the back end is told (hsd_texture_cached), which counts the cached textures' images;
+       the acquire paths; the back end is told (gpu_texture_cached), which counts the cached textures' images;
      - destroyed: f_8079bbe0(mgr, td) (eviction, or a lost load race): its nvnTextureFinalize follows and releases as before.
    What frees VRAM is the game's own destroy: f_8079bbe0 -> f_8079c220 finalizes the texture's NVN object (an alias at its
    release, f_80517d80, likewise), and that finalize releases the texture's hold on its image; an image (shared by every
@@ -49,7 +49,7 @@ static const nvn_tex *tex_of(uint64_t td) {
     return gfx && hos_guest_range(gfx + 0x10, sizeof(nvn_tex)) ? (const nvn_tex *)GP(gfx + 0x10) : NULL;
 }
 
-void direct_texdata_created(uint64_t td, int alias) {
+void texdata_created(uint64_t td, int alias) {
     os_mutex_lock(&lock);
     const int i = td_slot(td, 1);
     if (i >= 0) {
@@ -61,8 +61,8 @@ void direct_texdata_created(uint64_t td, int alias) {
 }
 
 /* f_8079aa20(&td->slot, evictable): released to the LRU cache (1), taken back from it (0) */
-PATCH_AT(0x8079aa20, word(0xd503237f), before, none, direct_texdata_evictable, as(x0, slot), as(x1, evictable)) {
-    if (!direct_assets_on()) return;
+PATCH_AT(0x8079aa20, word(0xd503237f), before, none, texdata_evictable, as(x0, slot), as(x1, evictable)) {
+    if (!assets_on()) return;
     const uint64_t td = slot - 0x18;
     const int to_cache = (evictable & 1) != 0;
     if (!hos_guest_range(td, 0x1d0)) return;
@@ -90,8 +90,8 @@ PATCH_AT(0x8079aa20, word(0xd503237f), before, none, direct_texdata_evictable, a
 }
 
 /* f_8079bbe0(mgr, td): destroyed (its NVN texture is finalized inside, and released as any finalize) */
-PATCH_AT(0x8079bbe0, word(0xd503237f), before, none, direct_texdata_destroyed, as(x1, td)) {
-    if (!direct_assets_on()) return;
+PATCH_AT(0x8079bbe0, word(0xd503237f), before, none, texdata_destroyed, as(x1, td)) {
+    if (!assets_on()) return;
     int was_cached = 0;
     os_mutex_lock(&lock);
     const int i = td_slot(td, 0);
@@ -111,8 +111,8 @@ PATCH_AT(0x8079bbe0, word(0xd503237f), before, none, direct_texdata_destroyed, a
    and tells the back end nothing (its image and registration follow the object). */
 static _Thread_local const void *tl_moving;
 const void *game_texture_moving(void) { return tl_moving; }
-PATCH_FUNC(0x807981f0, word(0xd503237f), body(0xd8e8d96c2812b6c3), aapcs, x0, direct_texdata_move, orig, as(x0, td)) {
-    if (!direct_assets_on()) return guest_orig(orig);
+PATCH_FUNC(0x807981f0, word(0xd503237f), body(0xd8e8d96c2812b6c3), aapcs, x0, texdata_move, orig, as(x0, td)) {
+    if (!assets_on()) return guest_orig(orig);
     const nvn_tex *t = hos_guest_range(td, 0x1d0) ? tex_of(td) : NULL;
     tl_moving = t && t->magic == NVN_MAGIC('T', 'E', 'X', 0) && t->serial ? (const void *)t : NULL;
     const uint64_t r = guest_orig(orig);
@@ -121,7 +121,7 @@ PATCH_FUNC(0x807981f0, word(0xd503237f), body(0xd8e8d96c2812b6c3), aapcs, x0, di
     return r;
 }
 
-void direct_texdata_line(char *out, size_t cap) {
+void texdata_line(char *out, size_t cap) {
     snprintf(out, cap, "texture events: created %lld, aliases %lld, moved %lld, released to the cache %lld, taken back %lld, "
              "destroyed %lld; in the cache now %lld (unknown tds %lld, table full %lld)", (long long)n_created, (long long)n_aliases,
              (long long)n_moves, (long long)n_to_cache, (long long)n_from_cache, (long long)n_destroyed, (long long)n_cached_now,
@@ -136,7 +136,7 @@ void direct_texdata_line(char *out, size_t cap) {
    VRAM lacks of kVramMargin: the game then evicts LRU textures until its heap has that many more bytes free (or nothing
    is cached), in its own order and through its own destroy; the value is put back after the call, so the game's own
    heap-pressure path (and its allocation-failure eviction, f_83537760) is unchanged. Free VRAM is the back end's
-   figure (hsd_vram_free: the driver's budget minus usage, so other processes count, plus images already waiting to be
+   figure (gpu_vram_free: the driver's budget minus usage, so other processes count, plus images already waiting to be
    destroyed, which are freed within a few presents). The back end has no policy: it reports the number and frees what
    the game destroys.
    kVramMargin, 1.5 GB: what a scene change allocates before the game releases the old scene's textures (the scene route,
@@ -144,8 +144,8 @@ void direct_texdata_line(char *out, size_t cap) {
    so that a load that starts at the margin does not exhaust VRAM. */
 #define kVramMargin (1536ll << 20)
 static volatile int64_t n_vram_evicted, n_vram_frames, last_free_vram = -1, last_line;
-PATCH_FUNC(0x80797240, word(0xd503237f), body(0x99d8ac1665d1c349), aapcs, x0, direct_texdata_update, orig, as(x0, mgr)) {
-    if (!direct_assets_on() || !rx_direct()->vram_free) return guest_orig(orig);
+PATCH_FUNC(0x80797240, word(0xd503237f), body(0x99d8ac1665d1c349), aapcs, x0, texdata_update, orig, as(x0, mgr)) {
+    if (!assets_on() || !rx_direct()->vram_free) return guest_orig(orig);
     if (!hos_guest_range(mgr + 0x340, 8) || !hos_guest_range(G64(mgr + 0x40) + 0x1ee8, 8)) return guest_orig(orig);
     const int64_t vf = rx_direct()->vram_free();
     last_free_vram = vf;

@@ -143,9 +143,9 @@ const char* const kReasons[D_COUNT] = {
     "variant being translated", "variant does not translate", "variant cannot be dispatched", "a uniform buffer not in layer 0",
     "the frame arena full", "indirect arguments not in layer 0", "empty grid"};
 struct TStats {   // (the recording thread's own, summed by compute_log: as vk_draw.cpp's)
-    std::atomic<int64_t> by_kind[HSD_LIST_KINDS][D_COUNT];
+    std::atomic<int64_t> by_kind[GPU_LIST_KINDS][D_COUNT];
     std::atomic<int64_t> ticks, past_range, updated_ubo, buf_ops[4];
-    int64_t seen_by_kind[HSD_LIST_KINDS][D_COUNT];
+    int64_t seen_by_kind[GPU_LIST_KINDS][D_COUNT];
     int64_t seen[8];
     TStats* next = nullptr;
 };
@@ -908,7 +908,7 @@ void tell_first(Variant& v, const List* l, const uint8_t* bank, uint32_t n, cons
     char b[2000];
     int k = std::snprintf(b, sizeof b, "direct: compute %016llx first dispatched in a %s list (lr %#llx): %s %ux%ux%u, workgroup %ux%ux%u, "
                           "shared %u B, %zu ubos, %zu ssbos, %zu textures, %zu images%s%s:",
-                          (unsigned long long)v.key, l->info.kind == HSD_LIST_COMPUTE ? "compute" : l->info.kind == HSD_LIST_LAYER ? "layer" : "other",
+                          (unsigned long long)v.key, l->info.kind == GPU_LIST_COMPUTE ? "compute" : l->info.kind == GPU_LIST_LAYER ? "layer" : "other",
                           (unsigned long long)l->info.lr, indirect ? "indirect" : "grid", grid[0], grid[1], grid[2], v.wg[0], v.wg[1], v.wg[2], v.shared,
                           v.info.constant_buffer_descriptors.size(), v.info.storage_buffers_descriptors.size(), v.info.texture_descriptors.size(),
                           v.info.image_descriptors.size(), v.info.uses_cooperative_matrix ? ", matrix multiplies" : "",
@@ -1333,13 +1333,13 @@ void compute_log(double frames) {
     }
     static char out[4096];
     const size_t cap = sizeof out;
-    static const char* const kinds[HSD_LIST_KINDS] = {"unclassified", "load", "job", "layer", "gate", "compute", "head", "immediate"};
+    static const char* const kinds[GPU_LIST_KINDS] = {"unclassified", "load", "job", "layer", "gate", "compute", "head", "immediate"};
     int k = std::snprintf(out, cap, "dispatches a frame (%.3f ms recording them, all threads; uniform buffers a program may read past their "
                           "bound range %.1f, compute uniform buffers the list updates inline %.1f; buffer copies %.1f (%.1f skipped), clears %.1f "
                           "(%.1f skipped))",
                           take(&TStats::ticks, 0) / ticks_per_ns() / 1e6 / frames, take(&TStats::past_range, 1) / frames,
                           take(&TStats::updated_ubo, 2) / frames, take_buf(0) / frames, take_buf(1) / frames, take_buf(2) / frames, take_buf(3) / frames);
-    for (int kind = 0; kind < HSD_LIST_KINDS; kind++) {
+    for (int kind = 0; kind < GPU_LIST_KINDS; kind++) {
         bool any = false;
         for (int r = 0; r < D_COUNT; r++) {
             const int64_t n = take_kind(kind, r);

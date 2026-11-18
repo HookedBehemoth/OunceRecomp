@@ -175,7 +175,7 @@ void heap_budgets(VkPhysicalDeviceMemoryProperties2& p, VkPhysicalDeviceMemoryBu
 }  // namespace
 
 /// Free VRAM: the largest device-local heap's budget minus its usage (heap_budgets), plus the bytes of images already
-/// waiting to be destroyed; sampled once a present (present path), read by the host (hsd_vram_free) for the game's cache
+/// waiting to be destroyed; sampled once a present (present path), read by the host (gpu_vram_free) for the game's cache
 /// eviction patch
 std::atomic<int64_t> vram_free_now{-1};
 void mem_budget_sample(int64_t pending) {

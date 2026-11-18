@@ -44,7 +44,7 @@ static int snap(uint64_t entry, uint64_t view, Snap *s) {
 #define REREGISTER CODE_PTR(f_800634b0)  /* f_800634b0 desc_reregister (entry, view, flag) */
 
 /* f_80667d20 at 0x806680d8 in place of its bl f_800634b0: sp the caller's, x0-x2 the call's arguments */
-PATCH_AT(0x806680d8, word(0x97e7ecf6), instead, none, direct_rt_ids_reregister, guest(0x800634b0), sp, as(x0, entry), as(x1, view), as(x2, flag)) {
+PATCH_AT(0x806680d8, word(0x97e7ecf6), instead, none, rt_ids_reregister, guest(0x800634b0), sp, as(x0, entry), as(x1, view), as(x2, flag)) {
     if (!view) { guest_call(g, sp, REREGISTER, entry, view, flag, 0, 0); return; }
     os_atomic_inc(&n.calls);
     Snap now;
@@ -87,7 +87,7 @@ PATCH_AT(0x806680d8, word(0x97e7ecf6), instead, none, direct_rt_ids_reregister, 
     }
 }
 
-void direct_rt_ids_log(double frames) {
+void rt_ids_log(double frames) {
     static int64_t last[7];
     const int64_t now[7] = {n.calls, n.kept, n.run_first, n.run_no_id, n.run_entry, n.run_view, n.run_tex};
     int64_t d[7];

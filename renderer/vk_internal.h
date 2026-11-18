@@ -12,15 +12,15 @@
 
 #include "vk_api.h"   // (the table the host calls)
 
-#define HSD_VK_GLOBAL(X) X(vkCreateInstance) X(vkEnumerateInstanceExtensionProperties) X(vkEnumerateInstanceVersion)
-#define HSD_VK_INSTANCE(X)                                                                                             \
+#define GPU_VK_GLOBAL(X) X(vkCreateInstance) X(vkEnumerateInstanceExtensionProperties) X(vkEnumerateInstanceVersion)
+#define GPU_VK_INSTANCE(X)                                                                                             \
     X(vkEnumeratePhysicalDevices) X(vkGetPhysicalDeviceProperties) X(vkGetPhysicalDeviceProperties2)                    \
     X(vkGetPhysicalDeviceFeatures2) X(vkGetPhysicalDeviceQueueFamilyProperties) X(vkGetPhysicalDeviceMemoryProperties) \
     X(vkEnumerateDeviceExtensionProperties) X(vkCreateDevice) X(vkGetDeviceProcAddr)                                    \
     X(vkGetPhysicalDeviceSurfaceSupportKHR) X(vkGetPhysicalDeviceSurfaceCapabilitiesKHR)                                \
     X(vkGetPhysicalDeviceSurfaceFormatsKHR) X(vkGetPhysicalDeviceSurfacePresentModesKHR)                                \
     X(vkGetPhysicalDeviceFormatProperties) X(vkGetPhysicalDeviceImageFormatProperties)
-#define HSD_VK_DEVICE(X)                                                                                               \
+#define GPU_VK_DEVICE(X)                                                                                               \
     X(vkGetDeviceQueue) X(vkDeviceWaitIdle) X(vkQueueSubmit2) X(vkQueueBindSparse) X(vkCreateSwapchainKHR)             \
     X(vkDestroySwapchainKHR) X(vkGetSwapchainImagesKHR) X(vkAcquireNextImageKHR) X(vkQueuePresentKHR)                  \
     X(vkCreateCommandPool) X(vkResetCommandPool) X(vkAllocateCommandBuffers) X(vkBeginCommandBuffer)                   \
@@ -33,13 +33,13 @@
     X(vkCmdBlitImage) X(vkCmdResolveImage) X(vkCmdClearDepthStencilImage) X(vkDestroyCommandPool) X(vkResetCommandBuffer)      \
     X(vkCmdExecuteCommands)
 
-#define HSD_VK_DECLARE(f) extern PFN_##f f;
+#define GPU_VK_DECLARE(f) extern PFN_##f f;
 namespace hsd::vkfn {
-HSD_VK_GLOBAL(HSD_VK_DECLARE)
-HSD_VK_INSTANCE(HSD_VK_DECLARE)
-HSD_VK_DEVICE(HSD_VK_DECLARE)
+GPU_VK_GLOBAL(GPU_VK_DECLARE)
+GPU_VK_INSTANCE(GPU_VK_DECLARE)
+GPU_VK_DEVICE(GPU_VK_DECLARE)
 }  // namespace hsd::vkfn
-#undef HSD_VK_DECLARE
+#undef GPU_VK_DECLARE
 
 namespace hsd {
 using namespace vkfn;

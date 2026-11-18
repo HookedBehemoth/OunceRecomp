@@ -72,7 +72,7 @@ struct Seg {
 };
 struct List {
     std::atomic<int32_t> refs{1};   // (its handle, each caller that calls it, each submission not run yet)
-    hsd_list_info info{};
+    gpu_list_info info{};
     int32_t site = -1;   // (its return address's entry in the table of the 600-present line)
     bool ended = false;
     uint32_t counts[NOP_COUNT_]{};   // (records by op; the recording thread's alone until it is ended)
@@ -127,7 +127,7 @@ struct SubItem {
 };
 /// The command buffers and frame-level ops a submission of l runs, in their order, its callees' in place (l ended)
 void list_items(const List* l, std::vector<SubItem>& out, std::vector<CmdSlot*>& slots, std::vector<DumpItem*>* dumps);
-/// l handed to hsd_submit (counted by its return address)
+/// l handed to gpu_submit (counted by its return address)
 void list_submitted(const List* l);
 
 }  // namespace hsd

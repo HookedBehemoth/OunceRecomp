@@ -24,13 +24,13 @@
 #include "vk_draw.h"
 #include "vk_work.h"
 
-#define HSD_VK_DEFINE(f) PFN_##f f;
+#define GPU_VK_DEFINE(f) PFN_##f f;
 namespace hsd::vkfn {
-HSD_VK_GLOBAL(HSD_VK_DEFINE)
-HSD_VK_INSTANCE(HSD_VK_DEFINE)
-HSD_VK_DEVICE(HSD_VK_DEFINE)
+GPU_VK_GLOBAL(GPU_VK_DEFINE)
+GPU_VK_INSTANCE(GPU_VK_DEFINE)
+GPU_VK_DEVICE(GPU_VK_DEFINE)
 }  // namespace hsd::vkfn
-#undef HSD_VK_DEFINE
+#undef GPU_VK_DEFINE
 
 namespace hsd {
 
@@ -108,9 +108,9 @@ bool load_global() {
     if (!m) return false;
     get_instance_proc = (PFN_vkGetInstanceProcAddr)os_lib_sym(m, "vkGetInstanceProcAddr");
     if (!get_instance_proc) return false;
-#define HSD_VK_LOAD(f) f = (PFN_##f)get_instance_proc(nullptr, #f);
-    HSD_VK_GLOBAL(HSD_VK_LOAD)
-#undef HSD_VK_LOAD
+#define GPU_VK_LOAD(f) f = (PFN_##f)get_instance_proc(nullptr, #f);
+    GPU_VK_GLOBAL(GPU_VK_LOAD)
+#undef GPU_VK_LOAD
     return vkCreateInstance != nullptr;
 }
 
@@ -147,9 +147,9 @@ bool create_instance() {
         logf("direct: vkCreateInstance failed");
         return false;
     }
-#define HSD_VK_LOAD(f) f = (PFN_##f)get_instance_proc(dev.instance, #f);
-    HSD_VK_INSTANCE(HSD_VK_LOAD)
-#undef HSD_VK_LOAD
+#define GPU_VK_LOAD(f) f = (PFN_##f)get_instance_proc(dev.instance, #f);
+    GPU_VK_INSTANCE(GPU_VK_LOAD)
+#undef GPU_VK_LOAD
     validation_instance_made(dev.instance);
     return true;
 }
@@ -264,9 +264,9 @@ bool create_device() {
         logf("direct: vkCreateDevice failed");
         return false;
     }
-#define HSD_VK_LOAD(f) f = (PFN_##f)vkGetDeviceProcAddr(dev.device, #f);
-    HSD_VK_DEVICE(HSD_VK_LOAD)
-#undef HSD_VK_LOAD
+#define GPU_VK_LOAD(f) f = (PFN_##f)vkGetDeviceProcAddr(dev.device, #f);
+    GPU_VK_DEVICE(GPU_VK_LOAD)
+#undef GPU_VK_LOAD
     vkGetDeviceQueue(dev.device, dev.queue_family, 0, &dev.queue);
     vkGetDeviceQueue(dev.device, sparse_family, 0, &dev.sparse_queue);
     return true;
@@ -314,22 +314,22 @@ void texture_created(const nvn_tex* t) {
 }
 }  // namespace
 }  // namespace hsd
-extern "C" __attribute__((visibility("default"))) int64_t hsd_vram_free(void) {   // (M6f: -1 not known yet)
+extern "C" __attribute__((visibility("default"))) int64_t gpu_vram_free(void) {   // (M6f: -1 not known yet)
     return hsd::vram_free_now.load(std::memory_order_relaxed);
 }
-extern "C" __attribute__((visibility("default"))) void hsd_texture_cached(const void* t, int cached) {   // 
+extern "C" __attribute__((visibility("default"))) void gpu_texture_cached(const void* t, int cached) {   // 
     hsd::image_texture_cached((const nvn_tex*)t, cached != 0);
 }
 // (the transient pool, docs/direct/transient-pool.md: games/oot/patches/rt_slots.c's calls)
-extern "C" __attribute__((visibility("default"))) int hsd_transient_pool(uint64_t lo, uint64_t hi) {
+extern "C" __attribute__((visibility("default"))) int gpu_transient_pool(uint64_t lo, uint64_t hi) {
     return hsd::image_pool_range(lo, hi) ? 1 : 0;
 }
-extern "C" __attribute__((visibility("default"))) void hsd_transient_slot(uint64_t gpu, uint64_t cap) { hsd::image_pool_slot(gpu, cap); }
-extern "C" __attribute__((visibility("default"))) uint64_t hsd_image_need(const void* desc, uint64_t* align) {
+extern "C" __attribute__((visibility("default"))) void gpu_transient_slot(uint64_t gpu, uint64_t cap) { hsd::image_pool_slot(gpu, cap); }
+extern "C" __attribute__((visibility("default"))) uint64_t gpu_image_need(const void* desc, uint64_t* align) {
     return hsd::image_need((const nvn_texdesc*)desc, align);
 }
-extern "C" __attribute__((visibility("default"))) void hsd_target_given(const void* t) { hsd::image_target_given((const nvn_tex*)t); }
-extern "C" __attribute__((visibility("default"))) void hsd_host_event(const char* reason, const char* what) {
+extern "C" __attribute__((visibility("default"))) void gpu_target_given(const void* t) { hsd::image_target_given((const nvn_tex*)t); }
+extern "C" __attribute__((visibility("default"))) void gpu_host_event(const char* reason, const char* what) {
     hsd::strict_event(reason, "%s", what ? what : "");
 }
 namespace hsd {

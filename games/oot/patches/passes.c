@@ -5,7 +5,7 @@
    pass key (x3) is the pass's identity. If the back end's format table does not know the key, the recorder returns at entry,
    as its own early return at 0x8008693c does (no view record, no slot): the layer list then finds no record and draws the
    pass through the game's inline path f_80681320, after its own SetRenderTargets. At rows before its two calls name
-   that pass's key to the back end, which takes the formats from the targets the list set (hsd_pass_inline). A key's first
+   that pass's key to the back end, which takes the formats from the targets the list set (gpu_pass_inline). A key's first
    frame therefore draws inline, the frames after it as jobs.
 
    The two inline callers name the key differently: f_806688c0 (return 0x80668d84) holds key + 0xc0 at [sp + 0x18] (the
@@ -75,8 +75,8 @@ static int key_known(uint64_t key) {
     return k;
 }
 
-int direct_passes_recorder(uint64_t key) {
-    const hsd_fns *d = rx_direct();
+int passes_recorder(uint64_t key) {
+    const gpu_fns *d = rx_direct();
     if (!d) return 0;
     key_note(key);
     os_atomic_inc(&n.asked);
@@ -94,7 +94,7 @@ int direct_passes_recorder(uint64_t key) {
 /* The game's inline path of a pass, f_80681320(queue, drawctx, &key, owner, ...), from its two callers: At rows just
    before each call (a PATCH_AT declaration, runtime/patch.h) hand over the key and the list's draw context */
 static void inline_pass(int site, int nk, const uint64_t *ks, uint64_t drawctx) {
-    const hsd_fns *d = rx_direct();
+    const gpu_fns *d = rx_direct();
     if (!d) return;
     {
         static int on0 = -1;
@@ -111,24 +111,24 @@ static void inline_pass(int site, int nk, const uint64_t *ks, uint64_t drawctx) 
         for (int i = 0; on && i < nk; i++)
             hos_log("capture: inline pass (site %d): key %#llx at present %lld", site, (unsigned long long)ks[i], (long long)hos_present_count);
     }
-    void *list = direct_cmd_list(hos_guest_range(drawctx + 216, 8) ? G64(drawctx + 216) : 0);
+    void *list = cmd_list(hos_guest_range(drawctx + 216, 8) ? G64(drawctx + 216) : 0);
     if (!list) os_atomic_inc(&n.inl_no_list);
     for (int i = 0; i < nk; i++) d->pass_inline(list, ks[i]);
     os_atomic_inc(&n.inl[site]);   /* (the game's body draws the pass) */
 }
 /* f_806688c0 before its call (0x80668d80): x6 = [sp + 0x18] the key + 0xc0, x1 = [sp + 0x10] the list's draw context */
-PATCH_AT(0x80668d7c, word(0xf90483e8), after, none, direct_passes_inline_job, as(x6, key_c0), as(x1, drawctx)) {   /* str x8, [sp, #0x900] */
+PATCH_AT(0x80668d7c, word(0xf90483e8), after, none, passes_inline_job, as(x6, key_c0), as(x1, drawctx)) {   /* str x8, [sp, #0x900] */
     const uint64_t key = key_c0 - 0xc0;
     inline_pass(0, key_known(key), &key, drawctx);
 }
 /* f_8028a2a0 before its call (0x8028a588): x2 a copy of the key, x1 the draw context; keys with the same bytes (cube
    faces of two sets share them) all name this pass */
-PATCH_AT(0x8028a584, word(0xaa1303e1), after, none, direct_passes_inline_key, as(x2, key_copy), as(x1, drawctx)) {   /* mov x1, x19 */
+PATCH_AT(0x8028a584, word(0xaa1303e1), after, none, passes_inline_key, as(x2, key_copy), as(x1, drawctx)) {   /* mov x1, x19 */
     uint64_t ks[8];
     inline_pass(1, keys_by_bytes(key_copy, ks, 8), ks, drawctx);
 }
 
-void direct_passes_log(double frames) {
+void passes_log(double frames) {
     static int64_t last[8];
     const int64_t now[8] = {n.asked, n.early, n.inl[0], n.inl[1], n.inl_no_jobs[0], n.inl_no_jobs[1], n.inl_no_list, nkeys};
     hos_log("direct patch passes (f_80084de0 entry, f_80681320's calls in f_806688c0 and f_8028a2a0): a frame: recorder asked "

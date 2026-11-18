@@ -45,7 +45,7 @@ struct Image {
     bool storage = false;   // (M3b: made with STORAGE usage: the heap's storage regions hold views of it)
     bool block_views = false;   // (M4g: a compressed image the GPU writes: uncompressed views of its blocks are attachments)
     std::atomic<uint8_t> written{0};   // (W_* bits: what has written it)
-    // an image of a prepared texture (direct_assets): made in the store's format, shared by every texture of the
+    // an image of a prepared texture (vk_assets): made in the store's format, shared by every texture of the
     // same content, filled once by the thread that made it (fill: 0 not an asset, 1 being filled, 2 filled, 3 failed)
     uint32_t asset = 0;                // (its texture record + 1)
     std::atomic<uint8_t> fill{0};
@@ -73,14 +73,14 @@ enum : uint8_t { W_ATTACHMENT = 1, W_COPY = 2, W_TEXELS = 4, W_CLEAR = 8, W_STOR
 
 void image_texture_created(const nvn_tex* t);
 void image_texture_released(const nvn_tex* t);
-/// (the transient pool) The host names the pool's range of storage addresses, once (hsd_transient_pool): the device memory
+/// (the transient pool) The host names the pool's range of storage addresses, once (gpu_transient_pool): the device memory
 /// is allocated here. false: not made (logged)
 bool image_pool_range(uint64_t lo, uint64_t hi);
-/// The bytes of the slot at storage address gpu, for the texture initialized there next (hsd_transient_slot)
+/// The bytes of the slot at storage address gpu, for the texture initialized there next (gpu_transient_slot)
 void image_pool_slot(uint64_t gpu, uint64_t cap);
 /// What an image of a texture of this description needs in the pool: bytes and alignment (0: no image of it)
 uint64_t image_need(const nvn_texdesc* d, uint64_t* align);
-/// The game's allocator gave the target t out (hsd_target_given): its image claims its range if it is not the owner
+/// The game's allocator gave the target t out (gpu_target_given): its image claims its range if it is not the owner
 void image_target_given(const nvn_tex* t);
 /// (diagnosis: 1 an image in the pool that is not its range's owner: its content is another target's)
 bool image_stale(const Image* im);
@@ -100,7 +100,7 @@ int image_view_format(const nvn_tex* t, const nvn_view* v);
 /// WriteTexels: the linear texels copied into the image at the call (the calling thread's upload, sent at once)
 void image_write_texels(const nvn_tex* t, unsigned level, unsigned layer0, const NVNcopyRegion* r, const uint8_t* src,
                         uint64_t row, uint64_t img);
-/// The same for texels a game patch gives (W_TERRAIN, W_GLYPH: hsd_texels); false: skipped (no image, outside it)
+/// The same for texels a game patch gives (W_TERRAIN, W_GLYPH: gpu_texels); false: skipped (no image, outside it)
 bool image_upload_region(const nvn_tex* t, unsigned level, unsigned layer0, const NVNcopyRegion* r, const uint8_t* src,
                          uint64_t row, uint64_t img, uint8_t source);
 /// A view's swizzle on an image: the guest's (R..A, ZERO, ONE as VkComponentSwizzle) composed with an asset

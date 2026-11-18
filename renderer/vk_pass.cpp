@@ -542,7 +542,7 @@ void pass_emit(List* l, uint32_t op, const void* data, uint32_t size) {
     } last{l, op};
     draw_state(l, op, data, size);   // (M2b: the NVN state the draws read)
     compute_state(l, op, data, size);   // (M4a: and the dispatches)
-    if (l->info.kind == HSD_LIST_GATE && draw_log_frame())
+    if (l->info.kind == GPU_LIST_GATE && draw_log_frame())
         logf("direct: drawlog gate op %u (noted %d begun %d cur %p segs %zu)", op, (int)p.noted, (int)p.begun, (void*)l->cur, l->segs.size());
     switch (op) {   // (state that clears and copies read: kept in every list)
     case NOP_SCISSOR: {
@@ -694,17 +694,17 @@ void pass_where(const List* l, char* out, size_t cap) {
 
 void pass_call(List* l, const List* callee) {
     const Handling handling(l, 0xffff);   // (a call)
-    if (l->info.kind == HSD_LIST_GATE && draw_log_frame())
+    if (l->info.kind == GPU_LIST_GATE && draw_log_frame())
         logf("direct: drawlog gate call kind %u draws %d cmds %d (noted %d begun %d)", callee->info.kind, (int)callee->draws, (int)callee->has_cmds,
              (int)l->pass.noted, (int)l->pass.begun);
-    if (callee->info.kind == HSD_LIST_JOB) task_job_step(l, callee);
+    if (callee->info.kind == GPU_LIST_JOB) task_job_step(l, callee);
     if (callee->draws) l->draws = true;
-    if ((callee->info.kind == HSD_LIST_JOB || callee->draws) && records(l) && l->pass.noted && !l->pass.begun) begin(l);
+    if ((callee->info.kind == GPU_LIST_JOB || callee->draws) && records(l) && l->pass.noted && !l->pass.begun) begin(l);
     if (cap_target(l->pass))
         logf("capture: a call into the pass on image %u: callee kind %u lr %#llx, has_cmds %d draws %d secondary %d ended %d sec %d, n_drawn %u",
              l->pass.color[0].im->id, callee->info.kind, (unsigned long long)callee->info.lr, (int)callee->has_cmds, (int)callee->draws,
              (int)callee->secondary, (int)callee->ended, callee->sec != VK_NULL_HANDLE, (unsigned)callee->n_drawn);
-    if (callee->info.kind == HSD_LIST_JOB) {   // (M3a: executed inside the caller's rendering; the key's formats noted)
+    if (callee->info.kind == GPU_LIST_JOB) {   // (M3a: executed inside the caller's rendering; the key's formats noted)
         if (!records(l) || !l->pass.noted || l->secondary) return jcount(J_NO_PASS);
         const PassFormats now = formats_of(l->pass);
         if (!callee->secondary) return jcount(J_NOT_SECONDARY), key_put(callee->info.pass_key, now);
@@ -860,7 +860,7 @@ using namespace hsd;
 
 /// The job recorder's entry (games/oot/patches/passes.c): 1 the pass key's formats are known (the job records a secondary),
 /// 0 not (the recorder takes the game's own early return; the layer list draws the pass inline)
-extern "C" __attribute__((visibility("default"))) int hsd_pass_known(uint64_t key) {
+extern "C" __attribute__((visibility("default"))) int gpu_pass_known(uint64_t key) {
     const KeySlot* ks = key_slot(key, false);
     const bool known = ks && ks->set.load(std::memory_order_acquire);
     jcount(known ? J_KNOWN : J_MISSED);
@@ -869,7 +869,7 @@ extern "C" __attribute__((visibility("default"))) int hsd_pass_known(uint64_t ke
 }
 /// The game's inline path (f_80681320) draws the pass of that key into the list now, after its SetRenderTargets: the
 /// key's formats noted from them
-extern "C" __attribute__((visibility("default"))) void hsd_pass_inline(void* list, uint64_t key) {
+extern "C" __attribute__((visibility("default"))) void gpu_pass_inline(void* list, uint64_t key) {
     List* l = (List*)list;
     jcount(J_INLINE);
     if (KeySlot* ks = key_slot(key, true)) ks->inl.fetch_add(1, std::memory_order_relaxed), ks->inl_all.fetch_add(1, std::memory_order_relaxed);

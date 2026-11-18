@@ -6,7 +6,7 @@
 #include "patches.h"
 #include <stdlib.h>
 
-PATCH_FUNC(0x83b7c020, word(0x3940a008), body(0xa1ed7c22e2e7ada9), aapcs, x0, direct_movie_play,
+PATCH_FUNC(0x83b7c020, word(0x3940a008), body(0xa1ed7c22e2e7ada9), aapcs, x0, movie_play,
            orig, x0, x1, as(x2, ndve)) {
     static int keep = -1;
     if (keep < 0) keep = getenv("HOS_NDVE") != NULL;

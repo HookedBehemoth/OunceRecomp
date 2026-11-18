@@ -18,7 +18,7 @@
 
 namespace hsd {
 
-#define HSD_VK_M2B(X)                                                                                                  \
+#define GPU_VK_M2B(X)                                                                                                  \
     X(vkCreateShadersEXT) X(vkDestroyShaderEXT) X(vkCmdBindShadersEXT) X(vkCmdSetVertexInputEXT)                       \
     X(vkCmdSetViewportWithCount) X(vkCmdSetScissorWithCount) X(vkCmdSetBlendConstants) X(vkCmdSetStencilReference)    \
     X(vkCmdSetStencilCompareMask) X(vkCmdSetStencilWriteMask) X(vkCmdSetDepthBias) X(vkCmdSetDepthBiasEnable)          \
@@ -33,15 +33,15 @@ namespace hsd {
     X(vkWriteResourceDescriptorsEXT) X(vkWriteSamplerDescriptorsEXT) X(vkCmdBindResourceHeapEXT)                       \
     X(vkCmdBindSamplerHeapEXT) X(vkCmdPushDataEXT) X(vkBindBufferMemory) X(vkMapMemory)
 /// indirect and mesh draws; the mesh ones are null without the mesh stage (caps.mesh)
-#define HSD_VK_M4B(X)                                                                                                  \
+#define GPU_VK_M4B(X)                                                                                                  \
     X(vkCmdDrawIndirect) X(vkCmdDrawIndexedIndirect) X(vkCmdDrawIndirectCount) X(vkCmdDrawIndexedIndirectCount)        \
     X(vkCmdDrawMeshTasksEXT) X(vkCmdDrawMeshTasksIndirectEXT) X(vkCmdDrawMeshTasksIndirectCountEXT)
-#define HSD_VK_DECLARE(f) extern PFN_##f f;
+#define GPU_VK_DECLARE(f) extern PFN_##f f;
 namespace vkfn {
-HSD_VK_M2B(HSD_VK_DECLARE)
-HSD_VK_M4B(HSD_VK_DECLARE)
+GPU_VK_M2B(GPU_VK_DECLARE)
+GPU_VK_M4B(GPU_VK_DECLARE)
 }
-#undef HSD_VK_DECLARE
+#undef GPU_VK_DECLARE
 
 /// What the device gives M2b's draws (set at device creation)
 struct DrawCaps {

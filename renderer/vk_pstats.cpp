@@ -81,7 +81,7 @@ void pstats_init(bool mesh_queries) {
     present_of.resize(kQueries);
     pstats_enabled = true;
     logf("direct: pstats (HOS_DBG=pstats:%lld): every draw and dispatch recorded at present %lld bracketed by a pipeline statistics "
-         "query (%u statistics, mesh %d); direct_pstats.csv written %u presents later", (long long)at, (long long)at, values, (int)mesh, kAfter);
+         "query (%u statistics, mesh %d); pstats.csv written %u presents later", (long long)at, (long long)at, values, (int)mesh, kAfter);
 }
 
 uint32_t pstat_before(VkCommandBuffer cb, const PstatWhat& w) {
@@ -110,8 +110,8 @@ void pstats_present(uint64_t present) {
                      : VK_SUCCESS;
     std::vector<uint64_t> ts((size_t)n * 4);   // (begin, its availability, end, its availability)
     if (times && n) pResults(dev.device, times, 0, 2 * n, ts.size() * 8, ts.data(), 16, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
-    FILE* f = std::fopen("direct_pstats.csv", "w");
-    if (!f) return logf("direct: pstats: direct_pstats.csv not written");
+    FILE* f = std::fopen("pstats.csv", "w");
+    if (!f) return logf("direct: pstats: pstats.csv not written");
     std::fprintf(f, "index,what,key,code0,code1,code2,kind,lr,w,h,format,targets,count,instances,extra,available,ia_vertices,ia_primitives,"
                     "vs_invocations,clip_invocations,clip_primitives,fs_invocations,cs_invocations,ms_invocations,t_begin_ns,t_end_ns\n");
     uint32_t avail = 0;
@@ -134,7 +134,7 @@ void pstats_present(uint64_t present) {
     }
     std::fclose(f);
     logf("direct: pstats: present %lld: %u commands measured, %u results available (%d); vertex invocations %llu, fragment %llu, "
-         "compute %llu, mesh %llu; direct_pstats.csv written", (long long)at, n, avail, (int)res, (unsigned long long)vs,
+         "compute %llu, mesh %llu; pstats.csv written", (long long)at, n, avail, (int)res, (unsigned long long)vs,
          (unsigned long long)fs, (unsigned long long)cs, (unsigned long long)ms);
 }
 

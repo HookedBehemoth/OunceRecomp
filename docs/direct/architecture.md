@@ -27,7 +27,7 @@ When a command needs something NVN does not carry, hook the engine function that
 
 ## What a command list becomes
 
-The kind of a list is decided at `BeginRecording` from its caller (`HSD_LIST_*` in `vk_list_api.h`).
+The kind of a list is decided at `BeginRecording` from its caller (`GPU_LIST_*` in `vk_list_api.h`).
 
 | NVN list | About this many a frame | Becomes |
 |---|---|---|

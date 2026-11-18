@@ -56,7 +56,7 @@ static uint64_t job_lists(uint32_t *nl) {
 }
 
 /* (games/oot/patches/eng_jobs.c) the recorder took the entry whose range is at x5 (entry + 0x18), recorded or not */
-void direct_layer_ahead_job_done(uint64_t range, uint64_t lr) {
+void layer_ahead_job_done(uint64_t range, uint64_t lr) {
     if (!enabled()) return;
     if (lr != 0x8008154cull) os_atomic_inc(&n.other_caller);   /* (not f_8007fe60's job loop: f_80083960's twin) */
     uint32_t nl;
@@ -188,13 +188,13 @@ static void wait_for(uint64_t key) {
 }
 
 /* (owner, drawctx, i): the pass's key at owner + 0x3830 + i * 0xd0 */
-PATCH_AT(0x806688c0, word(0xd503237f), before, none, direct_layer_ahead_pass, as(x0, owner), as(w2, i)) {
+PATCH_AT(0x806688c0, word(0xd503237f), before, none, layer_ahead_pass, as(x0, owner), as(w2, i)) {
     if (ahead_thread) wait_for(owner + 0x3830 + (uint64_t)i * 0xd0);
 }
-PATCH_AT(0x8028a2a0, word(0xd503237f), before, none, direct_layer_ahead_key, as(x2, key)) {   /* (owner, drawctx, key) */
+PATCH_AT(0x8028a2a0, word(0xd503237f), before, none, layer_ahead_key, as(x2, key)) {   /* (owner, drawctx, key) */
     if (ahead_thread) wait_for(key);
 }
-PATCH_AT(0x80706be0, word(0xd503237f), before, none, direct_layer_ahead_calc) {   /* moduleCalc_ */
+PATCH_AT(0x80706be0, word(0xd503237f), before, none, layer_ahead_calc) {   /* moduleCalc_ */
     os_atomic_inc(&gen);
 }
 
@@ -206,7 +206,7 @@ static uint32_t worker_index(void) {
 
 /* (an At row in f_8007fe60, the job loop, on the TBZ's fall-through: sp the loop's, s its scheduler record from
    [sp + 0x48]) */
-PATCH_AT(0x800809d0, word(0xb5004ee8), before, none, direct_layer_ahead_run, guest(computed), sp, as(ld(sp, 0x48), s)) {
+PATCH_AT(0x800809d0, word(0xb5004ee8), before, none, layer_ahead_run, guest(computed), sp, as(ld(sp, 0x48), s)) {
     if (!enabled()) return;
     order_jobs();
     if (!s || !hos_guest_range(s + 0xd0, 8)) return;
@@ -227,7 +227,7 @@ PATCH_AT(0x800809d0, word(0xb5004ee8), before, none, direct_layer_ahead_run, gue
     os_atomic_inc(&n.runs);
 }
 
-void direct_layer_ahead_log(double frames) {
+void layer_ahead_log(double frames) {
     static int64_t last[11];
     const int64_t now[11] = {n.runs, n.not_layer, n.skip_thread, w.checks, w.waits, w.wait_ns, w.timeouts, o.ordered, o.moved, o.claimed_before,
                             n.other_caller};

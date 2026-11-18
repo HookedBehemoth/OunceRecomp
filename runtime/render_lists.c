@@ -6,15 +6,15 @@
 #include <string.h>
 #include "os.h"
 
-/* ---- the list kinds: the game's patches name the kind of the next recording a thread begins (hsd_name_next_list,
+/* ---- the list kinds: the game's patches name the kind of the next recording a thread begins (gpu_name_next_list,
    from an At row before the BeginRecording call of the function that begins it); a recording nobody named is a PACKET
    list (counted, named in the log). The return address and frame pointer are kept in the info as labels for the logs. ---- */
-static _Thread_local uint32_t tl_kind, tl_load_kind;   /* (tl_kind: HSD_LIST_* + 1, 0 none) */
-void hsd_name_next_list(uint32_t kind, uint32_t load_kind) { tl_kind = kind + 1, tl_load_kind = load_kind; }
-void hsd_classify(Ctx *c, hsd_list_info *info) {
+static _Thread_local uint32_t tl_kind, tl_load_kind;   /* (tl_kind: GPU_LIST_* + 1, 0 none) */
+void gpu_name_next_list(uint32_t kind, uint32_t load_kind) { tl_kind = kind + 1, tl_load_kind = load_kind; }
+void gpu_classify(Ctx *c, gpu_list_info *info) {
     info->lr = c->x[30], info->fp = c->x[29];
-    info->kind = tl_kind ? tl_kind - 1 : HSD_LIST_PACKET;
-    if (info->kind == HSD_LIST_LOAD) info->load_kind = tl_load_kind;
+    info->kind = tl_kind ? tl_kind - 1 : GPU_LIST_PACKET;
+    if (info->kind == GPU_LIST_LOAD) info->load_kind = tl_load_kind;
     tl_kind = 0;
 }
 
@@ -30,7 +30,7 @@ typedef struct {
 static _Thread_local pending_rec tl;
 static volatile int64_t dropped;
 
-void hsd_flush(void) {
+void gpu_flush(void) {
     if (!tl.size) return;
     const uint32_t size = tl.size;
     tl.size = 0;
@@ -44,8 +44,8 @@ void hsd_flush(void) {
     rx_direct()->emit(tl.list, op, tl.buf + 8, size - 8);
 }
 
-uint8_t *hsd_scratch(void *volatile *list, volatile int32_t *pending, uint32_t size) {
-    hsd_flush();
+uint8_t *gpu_scratch(void *volatile *list, volatile int32_t *pending, uint32_t size) {
+    gpu_flush();
     if (!tl.buf) {
         tl.buf = (uint8_t *)malloc(SCRATCH);
         if (!tl.buf) hos_fatal(NULL, "direct: a record's scratch");

@@ -1,4 +1,4 @@
-"""Strict mode and the validation messenger of the direct back end (renderer/direct_check.{h,cpp}), read from the source.
+"""Strict mode and the validation messenger of the direct back end (renderer/vk_check.{h,cpp}), read from the source.
 
 The known list is one table, each entry an event reason the back end really raises (or a validation message id) with a reason
 why it is known; strict ends the run with a nonzero code on any other event once armed, and on any validation warning or error;
@@ -115,7 +115,7 @@ class StrictTests(unittest.TestCase):
         jc = block(passes, "void jcount(int k) {")
         for k in ("J_NO_FORMATS", "J_MISMATCH", "J_UNENDED", "J_NOT_SECONDARY", "J_NO_PASS"):
             self.assertIn(k, jc)
-        self.assertIn("strict_event(kJobNames[J_MISSED]", block(passes, 'extern "C" __attribute__((visibility("default"))) int hsd_pass_known('))
+        self.assertIn("strict_event(kJobNames[J_MISSED]", block(passes, 'extern "C" __attribute__((visibility("default"))) int gpu_pass_known('))
         q = self.sources["vk_query.cpp"]
         qc = block(q, "void count(int k, int64_t n = 1) {")
         for k in ("Q_NO_ROOM", "Q_NOT_MEMORY", "Q_UNRECORDED", "Q_TOO_MANY"):

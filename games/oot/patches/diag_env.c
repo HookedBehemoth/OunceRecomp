@@ -31,7 +31,7 @@ static float gf(uint64_t a) {
 static uint64_t g64(uint64_t a) { return a && hos_guest_range(a, 8) ? G64(a) : 0; }
 static uint32_t g32(uint64_t a) { return a && hos_guest_range(a, 4) ? G32(a) : 0; }
 
-PATCH_AT(0x80357060, word(0xd503237f), before, none, direct_diag_env, as(x0, o), as(x1, flags)) {
+PATCH_AT(0x80357060, word(0xd503237f), before, none, diag_env, as(x0, o), as(x1, flags)) {
     if (!envlog_on() || !(flags & 1)) return;
     static int64_t last = -1;
     const int64_t p = hos_present_count;
@@ -65,7 +65,7 @@ PATCH_AT(0x80357060, word(0xd503237f), before, none, direct_diag_env, as(x0, o),
 }
 
 /* (HOS_DBG=capture, diagnosis) texdata_serialize_jpg right after its texdata_copy_to_buffer: the read-back's mean byte */
-PATCH_AT(0x80bd1eb0, word(0x71000b7f), after, none, direct_diag_capture, as(x23, buf), as(w27, h)) {
+PATCH_AT(0x80bd1eb0, word(0x71000b7f), after, none, diag_capture, as(x23, buf), as(w27, h)) {
     static int on = -1;
     if (on < 0) on = hos_dbg_item("capture");
     if (!on || !buf || !hos_guest_range(buf, (uint64_t)h * 543 * 4)) return;

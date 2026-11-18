@@ -5,7 +5,7 @@ font glyph cache and the textures the game fills through NVN's texel calls. Read
 garbage or a placeholder, or before you add a patch that hands texels to the back end.
 
 The rule behind all of them: the back end never reads texture storage in guest memory. Texels reach an image only
-through an NVN call the host forwards or through a game patch that hands the bytes over (`hsd_texels`).
+through an NVN call the host forwards or through a game patch that hands the bytes over (`gpu_texels`).
 
 ## Terrain tiles
 

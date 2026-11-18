@@ -3,9 +3,9 @@
    (HOS_DBG=noassets turns every patch here off, for a before/after).
 
    The store: HOS_PREPARED=<folder> (default the game folder's prepared/, else <the executable's folder>/../../prepared,
-   i.e. work/prepared beside a build in work/sa/<build>, else <romfs>/../../prepared): <folder>/tex is the texture store the back end maps (hsd_assets_open).
+   i.e. work/prepared beside a build in work/sa/<build>, else <romfs>/../../prepared): <folder>/tex is the texture store the back end maps (gpu_assets_open).
 
-   Texture loads (agl::TextureData), each tied to its BNTX record and handed to the back end (hsd_asset_load) before the
+   Texture loads (agl::TextureData), each tied to its BNTX record and handed to the back end (gpu_asset_load) before the
    texture's nvnTextureInitialize, which then makes the image from the store:
      - f_80798690 loadImage_(td, ctx, src): the BNTX is found back from src (its data in the decompressed file), the
        texture by its name, descriptor and place there; the NVN texture is [td+0xd8]+0x10. The copy into the asset heap
@@ -18,7 +18,7 @@
      - f_807da480, the compaction step: the movers copy a moved texture's bytes only when byte [worker+0x1f21] is 1 (and
        no copier object is set); it is cleared at every step, so compaction moves no texels (nothing reads them).
      - f_83537d90 replaceLoad_: counted (its copy is not skipped; none was seen in A0's trace).
-   Game patches (texels no NVN call carries), as region uploads into the texture's image (hsd_texels):
+   Game patches (texels no NVN call carries), as region uploads into the texture's image (gpu_texels):
      - terrain: f_80c17040+0x544, the memcpy of a tile record's GPU blob B (x1, x2 bytes) into the tile texture's storage
        (x0): B is the storage's block-linear bytes; its level 0 is deswizzled (nvn_tex_level0_linear) and uploaded instead.
        A B that is not its texture's storage size is the placeholder, counted; the memcpy copies nothing either way.
@@ -52,7 +52,7 @@ static volatile int64_t n_loads, n_load_skipped, n_load_bytes, n_inplace, n_rebi
     n_glyph_notex, n_rebind_logged, n_tile_inside, n_tile_held, n_tile_held_max, n_tile_dropped,
     n_tile_kept_given, n_tile_kept_other;
 
-static direct_bl_stats tiles_bl;
+static bl_stats tiles_bl;
 static int dbg_has(const char *name) {
     const char *d = getenv("HOS_DBG");
     if (!d) return 0;
@@ -63,7 +63,7 @@ static int dbg_has(const char *name) {
 }
 
 static int on_ = -1;
-int direct_assets_on(void) {
+int assets_on(void) {
     if (on_ < 0) on_ = rx_direct() && !dbg_has("noassets");
     return on_;
 }
@@ -127,10 +127,10 @@ static void mem_line(void *arg) {
                 tiles_bl.max_ns / 1e6, (long long)n_tiles_unconv,
                 (long long)n_tile_notex, (long long)n_tile_badsite, (long long)n_tile_held, (long long)n_tile_held_max,
                 (long long)n_tile_dropped, (long long)n_tile_kept_given, (long long)n_tile_kept_other, (long long)n_glyphs, (long long)n_glyph_notex,
-                direct_assets_on() ? "" : " (HOS_DBG=noassets: the patches are off)");
-        if (direct_assets_on()) {
+                assets_on() ? "" : " (HOS_DBG=noassets: the patches are off)");
+        if (assets_on()) {
             char b[512];
-            direct_texdata_line(b, sizeof b);
+            texdata_line(b, sizeof b);
             hos_log("assets: %s", b);
         }
     }
@@ -141,8 +141,8 @@ static os_mutex start_lock = OS_MUTEX_INIT;
 static int store_ok;
 static void start(void) {
     os_thread_release(os_thread_start(mem_line, NULL, 0, "assets mem"));
-    if (!direct_assets_on()) return;
-    direct_assets_tilelog = dbg_has("tilelog");
+    if (!assets_on()) return;
+    assets_tilelog = dbg_has("tilelog");
     const char *d = prepared_dir();
     char tex[1100];
     snprintf(tex, sizeof tex, "%s/tex", d ? d : ".");
@@ -154,7 +154,7 @@ static int ready(void) {   /* (the memory line runs, and with the patches on (no
         if (!started) start(), os_atomic_store(&started, 1);
         os_mutex_unlock(&start_lock);
     }
-    return direct_assets_on();
+    return assets_on();
 }
 
 static void find_heap(uint64_t slot) {
@@ -167,7 +167,7 @@ static void find_heap(uint64_t slot) {
             heap_lo = nvn_gpu_guest(pools[i][0]), heap_hi = heap_lo + pools[i][1];
             hos_log("assets: the asset heap: pool %#llx + %llu MB (%s)", (unsigned long long)pools[i][0],
                     (unsigned long long)(pools[i][1] >> 20), pools[i][1] == 0x98000000ull ? "pool 127's size" : "not pool 127's size");
-            if (direct_assets_on()) rx_direct()->asset_pool(pools[i][0], pools[i][0] + pools[i][1]);
+            if (assets_on()) rx_direct()->asset_pool(pools[i][0], pools[i][0] + pools[i][1]);
             return;
         }
     hos_log("assets: the asset heap's pool not found (slot %#llx)", (unsigned long long)slot);
@@ -182,7 +182,7 @@ static const char *bstr(uint64_t p, uint32_t *len) {
     return (const char *)GP(p + 2);
 }
 #define REL(bntx, p) ((p) < (bntx) ? (p) + (bntx) : (p))
-static void key_of_brti(hsd_asset_key *k, uint64_t brti) {
+static void key_of_brti(gpu_asset_key *k, uint64_t brti) {
     k->format = G32(brti + 0x1c), k->width = G32(brti + 0x24), k->height = G32(brti + 0x28), k->layers = G32(brti + 0x30);
     k->mips = *(const uint16_t *)GP(brti + 0x16), k->image_size = G32(brti + 0x50);
 }
@@ -202,11 +202,11 @@ static int index_in(uint64_t bntx, uint64_t brti, const char *nm, uint32_t nl, u
 
 /* TextureData::loadImage_(td, ctx, src): the game's load (orig), without src when the back end takes the texels from
    the store */
-void direct_diag_nodata_load(uint64_t td, uint64_t src, uint64_t lr);   /* (M4g: HOS_DBG=nodata, either back end) */
+void diag_nodata_load(uint64_t td, uint64_t src, uint64_t lr);   /* (M4g: HOS_DBG=nodata, either back end) */
 static int load_image(uint64_t td, uint64_t src);
-PATCH_FUNC(0x80798690, word(0xd503237f), body(0xd3402c5c84ac23f3), aapcs, x0, direct_assets_load_image,
+PATCH_FUNC(0x80798690, word(0xd503237f), body(0xd3402c5c84ac23f3), aapcs, x0, assets_load_image,
            orig, as(x0, td), as(x1, ctx), as(x2, src), as(x30, lr)) {
-    direct_diag_nodata_load(td, src, lr);
+    diag_nodata_load(td, src, lr);
     return guest_orig(orig, td, ctx, load_image(td, src) ? 0 : src);   /* (x2 changed: x0-x2 passed) */
 }
 /* 1: the back end has the texture's texels; its src is not copied into the heap */
@@ -218,21 +218,21 @@ static int load_image(uint64_t td, uint64_t src) {
     if (slot) find_heap(slot);   /* (with the patches off too: the before/after line) */
     if (!on) return 0;
     if (!gfx || G32(brti) != 0x49545242u) return 0;   /* ('BRTI') */
-    hsd_asset_key k;
+    gpu_asset_key k;
     memset(&k, 0, sizeof k);
     k.tex = GP(gfx + 0x10);
-    k.path = HSD_ASSET_LOAD;
+    k.path = GPU_ASSET_LOAD;
     key_of_brti(&k, brti);
     /* (its BNTX: the store's records of its name and descriptor say where mip 0 is in their file; the one whose file
-       header is that far back from src is the one: hsd_asset_load) */
+       header is that far back from src is the one: gpu_asset_load) */
     uint32_t nl = 0;
     const char *nm = bstr(G64(brti + 0x60), &nl);
     if (nm) k.name = nm, k.name_len = nl;
     k.data = src && hos_guest_range(src, 1) ? GP(src) : NULL;
     /* (M6f: a load with no data is an alias of another texture: its target's texels, tex_dedup.c) */
-    const int alias = !src && direct_tex_alias(td, &k);
+    const int alias = !src && tex_alias(td, &k);
     rx_direct()->asset_load(&k);
-    direct_texdata_created(td, alias);   /* (M6f: the event table) */
+    texdata_created(td, alias);   /* (M6f: the event table) */
     os_atomic_inc(&n_loads);
     if (src) {   /* (no copy into the heap: the back end makes the image from the store, or the placeholder) */
         os_atomic_inc(&n_load_skipped);
@@ -243,17 +243,17 @@ static int load_image(uint64_t td, uint64_t src) {
 }
 
 /* TextureData::rebind_(td, newBase, res, ctx) */
-PATCH_AT(0x807982f0, word(0xd503237f), before, none, direct_assets_rebind, as(x0, td), as(x1, base), as(x2, res)) {
+PATCH_AT(0x807982f0, word(0xd503237f), before, none, assets_rebind, as(x0, td), as(x1, base), as(x2, res)) {
     if (!ready()) return;
     if (!hos_guest_range(td, 0x100)) return;
     const uint64_t gfx = G64(td + 0xd8);
     os_atomic_inc(&n_rebind);
     if (!gfx) return;
     /* (res: the BRTI the texture is made from now; in a file (a streamed texture's data), its mip 0 is in that file) */
-    hsd_asset_key k;
+    gpu_asset_key k;
     memset(&k, 0, sizeof k);
     k.tex = GP(gfx + 0x10);
-    k.path = HSD_ASSET_REBIND;
+    k.path = GPU_ASSET_REBIND;
     if (res && hos_guest_range(res, 0xa0) && G32(res) == 0x49545242u) {
         key_of_brti(&k, res);
         uint32_t nl = 0;
@@ -284,27 +284,27 @@ static uint64_t run_inplace(GuestFn *orig, uint64_t file) {
     return r;
 }
 /* ResTextureFile in place (ui2d) */
-PATCH_FUNC(0x80798b60, word(0xd503237f), body(0xbc01f749f0fff475), aapcs, x0, direct_assets_inplace_res,
+PATCH_FUNC(0x80798b60, word(0xd503237f), body(0xbc01f749f0fff475), aapcs, x0, assets_inplace_res,
            orig, x0) {
     return run_inplace(orig, x0);
 }
-PATCH_FUNC(0x80792bd0, word(0xd503237f), body(0x388a5e46c19d2d62), aapcs, x0, direct_assets_inplace_bntx,
+PATCH_FUNC(0x80792bd0, word(0xd503237f), body(0x388a5e46c19d2d62), aapcs, x0, assets_inplace_bntx,
            orig, x1) {
     return run_inplace(orig, x1);   /* in-place BNTX */
 }
 
 /* nn::gfx TextureImpl<NVN>::Initialize(obj, device, info, pool, offset, size): an in-place file's texture */
-PATCH_AT(0x80798920, word(0xd503237f), before, none, direct_assets_inplace_init, as(x0, obj), as(x2, info)) {
+PATCH_AT(0x80798920, word(0xd503237f), before, none, assets_inplace_init, as(x0, obj), as(x2, info)) {
     const uint64_t bntx = tl_inplace;
-    if (!bntx || !direct_assets_on()) return;
+    if (!bntx || !assets_on()) return;
     const uint64_t brti = info - 0x10;
     if (!obj || !hos_guest_range(brti, 0xa0) || G32(brti) != 0x49545242u || !hos_guest_range(bntx, 0x40) ||
         G32(bntx) != 0x58544e42u)
         return;
-    hsd_asset_key k;
+    gpu_asset_key k;
     memset(&k, 0, sizeof k);
     k.tex = GP(obj + 0x10);
-    k.path = HSD_ASSET_INPLACE;
+    k.path = GPU_ASSET_INPLACE;
     key_of_brti(&k, brti);
     uint32_t nl = 0;
     const char *nm = bstr(REL(bntx, G64(brti + 0x60)), &nl);
@@ -318,7 +318,7 @@ PATCH_AT(0x80798920, word(0xd503237f), before, none, direct_assets_inplace_init,
 }
 
 /* the compaction step (worker): its movers copy only with [worker+0x1f21] == 1 */
-PATCH_AT(0x807da480, word(0xd503237f), before, none, direct_assets_compaction, as(x0, w)) {
+PATCH_AT(0x807da480, word(0xd503237f), before, none, assets_compaction, as(x0, w)) {
     if (!ready()) return;
     os_atomic_inc(&n_compaction);
     if (hos_guest_range(w + 0x1f21, 1) && *(uint8_t *)GP(w + 0x1f21) == 1) {
@@ -329,7 +329,7 @@ PATCH_AT(0x807da480, word(0xd503237f), before, none, direct_assets_compaction, a
 }
 
 /* TextureDataMgr replaceLoad_(replacer, td, src, size, align): counted */
-PATCH_AT(0x83537d90, word(0xd503237f), before, none, direct_assets_replace_load, as(x1, td), as(x3, size)) {
+PATCH_AT(0x83537d90, word(0xd503237f), before, none, assets_replace_load, as(x1, td), as(x3, size)) {
     if (!ready()) return;
     if (os_atomic_inc(&n_replace) <= 10)
         hos_log("assets: a Replace load (td %#llx, %llu bytes): its copy into the heap is not skipped", (unsigned long long)td,
@@ -337,7 +337,7 @@ PATCH_AT(0x83537d90, word(0xd503237f), before, none, direct_assets_replace_load,
 }
 
 int game_skips_packaged_texels(uint64_t bytes) {
-    if (!direct_assets_on()) return 0;
+    if (!assets_on()) return 0;
     os_atomic_inc(&n_pkg);
     os_atomic_add(&n_pkg_bytes, (int64_t)bytes);
     return 1;
@@ -352,9 +352,9 @@ int game_skips_packaged_texels(uint64_t bytes) {
    docs/direct/texture-streaming.md): the texture heap is the pool it makes inside agl::TextureDataMgr::InitializeHeap
    (f_80f6c580), whose body runs from here with this thread noted */
 static _Thread_local int tl_heap_init;
-PATCH_FUNC(0x80f6c580, word(0xd503237f), body(0xd879562121f32735), aapcs, x0, direct_assets_heap_init,
+PATCH_FUNC(0x80f6c580, word(0xd503237f), body(0xd879562121f32735), aapcs, x0, assets_heap_init,
            orig) {
-    if (!direct_assets_on()) return guest_orig(orig);
+    if (!assets_on()) return guest_orig(orig);
     tl_heap_init = 1;
     const uint64_t r = guest_orig(orig);
     tl_heap_init = 0;
@@ -363,18 +363,18 @@ PATCH_FUNC(0x80f6c580, word(0xd503237f), body(0xd879562121f32735), aapcs, x0, di
 /* (an At row in f_80f6c9d0 agl_memory_pool_create, after ldr x8, [x8] before its blr to nvnMemoryPoolInitialize at
    0x80f6cb1c) the next pool this thread makes is agl's wrapper's */
 static _Thread_local int tl_agl_pool;
-PATCH_AT(0x80f6cb18, word(0xf9400108), after, none, direct_assets_agl_pool) { tl_agl_pool = 1; }
+PATCH_AT(0x80f6cb18, word(0xf9400108), after, none, assets_agl_pool) { tl_agl_pool = 1; }
 void game_pool_made(uint64_t gpu, uint64_t size) {
     const int agl = tl_agl_pool;
     tl_agl_pool = 0;
-    if (!agl || !tl_heap_init || !direct_assets_on()) return;
+    if (!agl || !tl_heap_init || !assets_on()) return;
     hos_log("assets: the texture data pool made: %#llx + %llu MB (agl::TextureDataMgr)", (unsigned long long)gpu,
             (unsigned long long)(size >> 20));
     rx_direct()->texture_data_pool(gpu, gpu + size);
 }
 
 /* ---- block-linear storage bytes to an image ---- */
-int direct_assets_texels_bl(uint32_t source, const void *tex, const uint8_t *src, uint64_t n, direct_bl_stats *st) {
+int assets_texels_bl(uint32_t source, const void *tex, const uint8_t *src, uint64_t n, bl_stats *st) {
     const nvn_tex *t = (const nvn_tex *)tex;
     int bw = 1, bh = 1;
     const int bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
@@ -406,15 +406,15 @@ int direct_assets_texels_bl(uint32_t source, const void *tex, const uint8_t *src
    The memcpy below writes nothing (the direct back end never reads texture storage), so the bytes it would have left in
    the storage are kept here, by the storage's address, as the storage would keep them: given to the texture live there
    (if any), and to every texture initialized there later whose linear size they are, until another tile is copied
-   there; the back end takes them only into an image nothing has written yet (HSD_TEXELS_TERRAIN_KEPT: an image of
+   there; the back end takes them only into an image nothing has written yet (GPU_TEXELS_TERRAIN_KEPT: an image of
    that storage and shape that still holds what was written into it holds the storage's content already). The game does
    initialize tile textures again over storage it does not copy into again (walking in Hyrule Field: the height and
    material tiles at present ~990, whose first textures it had finalized; their new images were empty, the floor at
    height 0 and the foliage over it lit from garbage). The bytes are held only
    until the first texture there takes them. */
 #define TILES_HELD 4096   /* (distinct tile storage addresses; Hyrule Field uses ~150) */
-volatile long direct_assets_tiles_pending;
-volatile long direct_assets_tilelog;
+volatile long assets_tiles_pending;
+volatile long assets_tilelog;
 static struct { uint64_t dst; uint8_t *bytes; uint32_t n; } held[TILES_HELD];   /* (open addressing; dst stays once seen) */
 static os_rwlock held_lock = OS_RWLOCK_INIT;
 static uint32_t held_at(uint64_t dst) { return (uint32_t)((dst >> 12) * 0x9e3779b1u) & (TILES_HELD - 1); }
@@ -443,7 +443,7 @@ static int tile_keep(uint64_t dst, const uint8_t *src, uint32_t n) {
     }
     if (held[i].bytes) hos_ledger_frees(HL_TILES, held[i].bytes), free(held[i].bytes);
     else {
-        const long live = os_atomic_inc(&direct_assets_tiles_pending);
+        const long live = os_atomic_inc(&assets_tiles_pending);
         if (live > n_tile_held_max) n_tile_held_max = live;
     }
     held[i].bytes = b, held[i].n = n;
@@ -451,15 +451,15 @@ static int tile_keep(uint64_t dst, const uint8_t *src, uint32_t n) {
     return 1;
 }
 static void tile_upload_as(uint32_t source, const nvn_tex *t, const uint8_t *src, uint32_t n);
-void direct_assets_texture_init(const void *tex) {
+void assets_texture_init(const void *tex) {
     const nvn_tex *t = (const nvn_tex *)tex;
     if (!t->gpu) return;
-    if (direct_assets_tilelog && t->d.width == 260) {   /* HOS_DBG=tilelog: tile-sized textures initialized */
+    if (assets_tilelog && t->d.width == 260) {   /* HOS_DBG=tilelog: tile-sized textures initialized */
         extern volatile int64_t hos_present_count;
         hos_log("tilelog: present %lld init %#llx %ux%ux%u format %#x serial %llu", (long long)hos_present_count,
                 (unsigned long long)t->gpu, t->d.width, t->d.height, t->d.depth, t->d.format, (unsigned long long)t->serial);
     }
-    if (!direct_assets_tiles_pending) return;
+    if (!assets_tiles_pending) return;
     const uint64_t want = t->L.size;
     int given = 0, other = 0;
     os_rwlock_lock_shared(&held_lock);   /* (the upload under it: a copy to that storage replaces the bytes only exclusively) */
@@ -467,7 +467,7 @@ void direct_assets_texture_init(const void *tex) {
         if (held[i].dst == t->gpu) {
             /* (a texture of another storage size there: its initialization writes no memory, so the bytes stay for a later
                one) */
-            if (held[i].bytes && held[i].n == want) tile_upload_as(HSD_TEXELS_TERRAIN_KEPT, t, held[i].bytes, held[i].n), given = 1;
+            if (held[i].bytes && held[i].n == want) tile_upload_as(GPU_TEXELS_TERRAIN_KEPT, t, held[i].bytes, held[i].n), given = 1;
             else other = held[i].bytes != NULL;
             break;
         }
@@ -478,8 +478,8 @@ void direct_assets_texture_init(const void *tex) {
 
 /* (an At row, a PATCH_AT declaration, runtime/patch.h) f_80c17040+0x544: memcpy(x0 the tile texture's storage, x1 the record's
    blob B, x2 its size), x11 the record. Returns the size the memcpy copies: 0 when the tile went to its texture */
-PATCH_AT(0x80c17580, word(0x9a8803e1), after, x2, direct_assets_tile, as(x0, dst), as(x1, src), as(x2, size), as(x11, rec)) {
-    if (!direct_assets_on()) return size;
+PATCH_AT(0x80c17580, word(0x9a8803e1), after, x2, assets_tile, as(x0, dst), as(x1, src), as(x2, size), as(x11, rec)) {
+    if (!assets_on()) return size;
     const uint32_t n = (uint32_t)size;
     if (!hos_guest_range(rec + 0x2c, 8) || src != rec + 0x2c + (uint64_t)(int64_t)(int32_t)G32(rec + 0x2c) || n != G32(rec + 0x30)) {
         if (os_atomic_inc(&n_tile_badsite) <= 5)
@@ -503,7 +503,7 @@ PATCH_AT(0x80c17580, word(0x9a8803e1), after, x2, direct_assets_tile, as(x0, dst
     }
     const int kept = tile_keep(dst, GP(src), n);   /* (M6f: what the storage holds now, for every texture made over it) */
     if (!nvn_tex_live_at(dst, &t) && !nvn_tex_live_containing(dst, &t)) {
-        /* (its texture is initialized after the copy: the kept bytes go to it then, direct_assets_texture_init) */
+        /* (its texture is initialized after the copy: the kept bytes go to it then, assets_texture_init) */
         if (!kept) {
             if (os_atomic_inc(&n_tile_notex) <= 5)
                 hos_log("assets: terrain: no texture at %#llx (a tile of %u bytes) and no room to keep it: left alone",
@@ -517,13 +517,13 @@ PATCH_AT(0x80c17580, word(0x9a8803e1), after, x2, direct_assets_tile, as(x0, dst
         hos_log("assets: terrain: a tile at %#llx inside texture %#llx (%ux%ux%u, format %#x, target %d, %llu bytes, layer %llu bytes)",
                 (unsigned long long)dst, (unsigned long long)t.gpu, t.d.width, t.d.height, t.d.depth, t.d.format, t.d.target,
                 (unsigned long long)t.L.size, (unsigned long long)t.L.layer_size);
-    tile_upload_as(HSD_TEXELS_TERRAIN, &t, GP(src), n);
+    tile_upload_as(GPU_TEXELS_TERRAIN, &t, GP(src), n);
     return 0;   /* (the memcpy copies nothing: the storage stays unwritten) */
 }
 
 static void tile_upload_as(uint32_t source, const nvn_tex *t, const uint8_t *src, uint32_t n) {
-    if (direct_assets_texels_bl(source, t, src, n, &tiles_bl)) return;
-    rx_direct()->texels(HSD_TEXELS_TERRAIN, t, 0, 0, &(NVNcopyRegion){0, 0, 0, (int)t->d.width, (int)t->d.height, 1}, NULL, 0, 0);
+    if (assets_texels_bl(source, t, src, n, &tiles_bl)) return;
+    rx_direct()->texels(GPU_TEXELS_TERRAIN, t, 0, 0, &(NVNcopyRegion){0, 0, 0, (int)t->d.width, (int)t->d.height, 1}, NULL, 0, 0);
     if (os_atomic_inc(&n_tiles_unconv) <= 5)
         hos_log("assets: terrain: a tile of %u bytes for texture %#llx (%ux%ux%u, format %#x, storage %llu bytes): the placeholder", n,
                 (unsigned long long)t->gpu, t->d.width, t->d.height, t->d.depth, t->d.format, (unsigned long long)t->L.size);
@@ -531,9 +531,9 @@ static void tile_upload_as(uint32_t source, const nvn_tex *t, const uint8_t *src
 
 /* ---- the font glyph cache ---- */
 static _Thread_local struct { int in_pack, in_plot, have; uint32_t x, y, w, h; } gl;
-PATCH_FUNC(0x8152f540, word(0xb941400c), body(0xab2b6fd8adce95a6), aapcs, x0, direct_assets_glyph_pack,
+PATCH_FUNC(0x8152f540, word(0xb941400c), body(0xab2b6fd8adce95a6), aapcs, x0, assets_glyph_pack,
            orig, as(x1, px), as(x2, py), as(w3, w), as(w4, h)) {   /* the shelf packer (cache, &x, &y, w, h) */
-    if (gl.in_pack || !gl.in_plot || !direct_assets_on()) return guest_orig(orig);
+    if (gl.in_pack || !gl.in_plot || !assets_on()) return guest_orig(orig);
     gl.in_pack = 1;
     const uint64_t r = guest_orig(orig);
     gl.in_pack = 0;
@@ -542,7 +542,7 @@ PATCH_FUNC(0x8152f540, word(0xb941400c), body(0xab2b6fd8adce95a6), aapcs, x0, di
     return r;
 }
 static void glyph_plotted(uint64_t cache);
-PATCH_FUNC(0x81539300, word(0xd503237f), body(0xee537395c207a3f6), aapcs, x0, direct_assets_glyph_plot,
+PATCH_FUNC(0x81539300, word(0xd503237f), body(0xee537395c207a3f6), aapcs, x0, assets_glyph_plot,
            orig, as(x0, cache)) {   /* nn::font's plot (cache, glyph, ...) */
     if (gl.in_plot || !ready()) return guest_orig(orig);
     gl.have = 0;
@@ -569,6 +569,6 @@ static void glyph_plotted(uint64_t cache) {
     if (x + cw > t.d.width) cw = t.d.width - x;
     if (y + ch > t.d.height) ch = t.d.height - y;
     NVNcopyRegion r = {(int)x, (int)y, 0, (int)cw, (int)ch, 1};
-    rx_direct()->texels(HSD_TEXELS_GLYPH, &t, 0, 0, &r, GP(storage + (uint64_t)y * stride + x), stride, 0);
+    rx_direct()->texels(GPU_TEXELS_GLYPH, &t, 0, 0, &r, GP(storage + (uint64_t)y * stride + x), stride, 0);
     os_atomic_inc(&n_glyphs);
 }

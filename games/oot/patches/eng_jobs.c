@@ -2,7 +2,7 @@
 
    The job runners (f_8007fe60 at 0x80081548, f_80083960 at 0x8008410c) call it as a function on ModuleSystemWorker1-5 and
    the thread that kicks the pool. The replacement lets the direct back end refuse a pass whose formats it does not know
-   yet (direct_passes_recorder), otherwise notes the arguments for this thread, runs the game's recorder (its lifted
+   yet (passes_recorder), otherwise notes the arguments for this thread, runs the game's recorder (its lifted
    body, orig) and clears them. Inside it the recorder's BeginRecording
    (lr 0x8008533c) names the job's view record in x25, which an At row before that call hands to eng_jobs_view for
    game_job_list, for the back end. Nothing here runs without
@@ -12,7 +12,7 @@
 #include <string.h>
 #include "os.h"
 void f_80084de0(Ctx *);   /* (lifted functions the host calls by name: a code pointer is a host function pointer) */
-void direct_layer_ahead_job_done(uint64_t range, uint64_t lr);   /* layer_ahead.c */
+void layer_ahead_job_done(uint64_t range, uint64_t lr);   /* layer_ahead.c */
 
 
 typedef struct {
@@ -27,13 +27,13 @@ static _Thread_local uint64_t jt_cmd;   /* the guest command buffer the job on t
 PATCH_FUNC(0x80084de0, word(0xd503237f), body(0x961fa51430550d71), aapcs, x0, eng_jobs_record,
            orig, as(x0, ctx), as(x1, drawctx), as(x3, key), as(x5, range), as(x30, lr)) {
     if (jt.active) return guest_orig(orig);   /* (a recorder run inside one: the game's) */
-    if (direct_passes_recorder(key)) { direct_layer_ahead_job_done(range, lr); return ctx; }
+    if (passes_recorder(key)) { layer_ahead_job_done(range, lr); return ctx; }
     memset(&jt, 0, sizeof jt);
     jt.active = 1;
     jt.ctx = ctx, jt.drawctx = drawctx, jt.key = key;
     const uint64_t r = guest_orig(orig);
     jt.active = 0;
-    direct_layer_ahead_job_done(range, lr);
+    layer_ahead_job_done(range, lr);
     return r;
 }
 

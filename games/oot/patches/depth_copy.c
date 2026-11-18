@@ -29,7 +29,7 @@ static uint64_t p_copy, p_barrier;
 
 /* the copy (cmd, src, src view, src region, dst, dst view, dst region, flags) with a barrier before and after it;
    site: 0 f_80289590's, 1 f_80666d20's */
-PATCH_AT(0x80289cc0, word(0xd63f0100), instead, none, direct_depth_copy, guest(computed), sp, as(x8, proc),
+PATCH_AT(0x80289cc0, word(0xd63f0100), instead, none, depth_copy, guest(computed), sp, as(x8, proc),
          as(k(0), site), as(x0, cmd), x1, x2, x3, x4, x5, x6, x7) {
     const uint64_t copy = proc_of(&p_copy, "nvnCommandBufferCopyTextureToTexture");
     if (proc != copy)
@@ -41,10 +41,10 @@ PATCH_AT(0x80289cc0, word(0xd63f0100), instead, none, direct_depth_copy, guest(c
     guest_call(g, sp, barrier, cmd, BITS, 0, 0, 0);
     os_atomic_inc(&n_site[site]);
 }
-PATCH_AT_SITE(0x806675d8, word(0xd63f0100), instead, none, direct_depth_copy, guest(computed), sp, x8, k(1), x0, x1, x2,
+PATCH_AT_SITE(0x806675d8, word(0xd63f0100), instead, none, depth_copy, guest(computed), sp, x8, k(1), x0, x1, x2,
               x3, x4, x5, x6, x7);
 
-void direct_depth_copy_log(double frames) {
+void depth_copy_log(double frames) {
     static int64_t last[2];
     const int64_t now[2] = {n_site[0], n_site[1]};
     hos_log("direct patch depth copy (f_80289590 0x80289cc0, f_80666d20 0x806675d8): a frame: copies with barriers around "

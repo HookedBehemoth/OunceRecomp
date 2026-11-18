@@ -10,7 +10,7 @@ extern volatile int64_t nvn_texture_inits_dta;   /* (rt_slots.c) */
 
 void game_frame(void) {
     rt_slots_frame();
-    if (rx_direct()) direct_patches_frame();   /* (the patches' lines) */
+    if (rx_direct()) patches_frame();   /* (the patches' lines) */
 }
 
 /* (agl's DynamicTextureAllocator::alloc, f_8005ed00 .. its end: the transient render targets' textures) */
@@ -24,7 +24,7 @@ void game_texture_initializing(uint64_t obj, uint64_t gpu, const void *desc, uin
 
 void game_texture_initialized(const void *nvn_texture) {
     /* (assets.c: a terrain tile given before its texture) */
-    if (direct_assets_tiles_pending || direct_assets_tilelog) direct_assets_texture_init(nvn_texture);
+    if (assets_tiles_pending || assets_tilelog) assets_texture_init(nvn_texture);
 }
 
 /* agl::utl::DepthBufferEx's coarse occlusion grid (f_800998a0 -> f_80365f00): two 0x3980-byte slots the GPU

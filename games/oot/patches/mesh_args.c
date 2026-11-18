@@ -26,7 +26,7 @@ static void put(uint64_t rec) {   /* {0, 1, 1, 0}: the counts' words stay as the
 }
 
 /* (x19 the list slot's object, x8 the address of records 1-3) */
-PATCH_AT(0x80363294, word(0xa9027d1f), after, none, direct_mesh_args_header, as(x19, obj), x8) {
+PATCH_AT(0x80363294, word(0xa9027d1f), after, none, mesh_args_header, as(x19, obj), x8) {
     if (!hos_guest_range(obj + 24, 16)) { os_atomic_inc(&n.outside); return; }
     const uint64_t base = G64(obj + 32), lay = G64(obj + 24);
     if (!hos_guest_range(lay, 8) || !hos_guest_range(G64(lay), 20)) { os_atomic_inc(&n.outside); return; }
@@ -37,7 +37,7 @@ PATCH_AT(0x80363294, word(0xa9027d1f), after, none, direct_mesh_args_header, as(
     os_atomic_inc(&n.headers);
 }
 
-void direct_mesh_args_log(double frames) {
+void mesh_args_log(double frames) {
     static int64_t last[3];
     const int64_t now[3] = {n.headers, n.mismatch, n.outside};
     hos_log("direct patch mesh args (f_80362ff0's header zeroing -> {0, 1, 1, 0} records): %.2f headers a frame (4 records each); "

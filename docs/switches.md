@@ -69,7 +69,7 @@ while off. These are the ones you reach for first:
 | `strict` | Any validation warning or error ends the run |
 | `logall`, `log<part>` | Brings back the renderer's detailed per-block log lines (`logmesh`, `logpass`, `logdraw`, `loglists`, `logcompute`, `logpatch`, `lognvn`, `logvi`) |
 | `dump:<present>[+<frames>]` | Saves every pass's targets of the frame after that present as PNGs |
-| `frames`, `gputime` | `direct_frames.csv`: a row per present, with the GPU's busy and idle time |
+| `frames`, `gputime` | `frames.csv`: a row per present, with the GPU's busy and idle time |
 | `marks` | GPU breadcrumbs for a lost device: the unfinished draws are logged |
 | `crit[:<first>[:<presents>]]` | A trace of every guest thread over a window of presents, for `scripts/crit_path.py` |
 | `resize:<w>x<h>@<present>[+...]` | Resizes the window (or the headless image) at that present, as a drag would |

@@ -100,7 +100,7 @@ void crit_present(void) {
 }
 
 /* ---- the back end's calls, timed ---- */
-static hsd_fns real;
+static gpu_fns real;
 static _Thread_local uint64_t burst_t0, burst_t1, burst_sum, burst_n;
 
 void crit_emit_flush(void) {
@@ -134,7 +134,7 @@ static void w_emit(void *list, uint32_t op, const void *payload, uint32_t size) 
         crit_span(kind, t0_, crit_tsc(), 0, 0);            \
         return r_;                                         \
     } while (0)
-static void *w_list_begin(const hsd_list_info *info) {
+static void *w_list_begin(const gpu_list_info *info) {
     if (!crit_rec) return real.list_begin(info);
     crit_emit_flush();
     const uint64_t t0 = crit_tsc();
@@ -146,12 +146,12 @@ static void w_list_call(void *list, void *const *callees, uint32_t n) { TIMED(CR
 static void w_list_end(void *list) { TIMED(CRIT_BE_END, real.list_end(list)); }
 static void w_list_released(void *list) { TIMED(CRIT_BE_RELEASED, real.list_released(list)); }
 static void w_submit(uint64_t q, void *const *lists, uint32_t n) { TIMED(CRIT_BE_SUBMIT, real.submit(q, lists, n)); }
-static int w_asset_load(const hsd_asset_key *k) { TIMED_R(CRIT_BE_OTHER, real.asset_load(k)); }
+static int w_asset_load(const gpu_asset_key *k) { TIMED_R(CRIT_BE_OTHER, real.asset_load(k)); }
 static void w_texels(uint32_t source, const void *tex, unsigned level, unsigned layer0, const void *region, const void *src,
                      uint64_t row, uint64_t img) {
     TIMED(CRIT_BE_OTHER, real.texels(source, tex, level, layer0, region, src, row, img));
 }
-void crit_wrap(hsd_fns *f) {
+void crit_wrap(gpu_fns *f) {
     real = *f;
     f->emit = w_emit, f->list_begin = w_list_begin, f->list_call = w_list_call, f->list_end = w_list_end;
     f->list_released = w_list_released, f->submit = w_submit, f->asset_load = w_asset_load, f->texels = w_texels;

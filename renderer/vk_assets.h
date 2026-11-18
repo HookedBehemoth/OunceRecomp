@@ -1,6 +1,6 @@
 // Prepared assets: the texture store of
 // ounce-builder textures (index.bin and pack_NNN.bin, mapped; ounce/tex/src/store.rs describes the format) and the links from
-// the host's loader hooks (hsd_asset_load: a texture object -> its record) to the images direct_image makes. An asset
+// the host's loader hooks (gpu_asset_load: a texture object -> its record) to the images vk_image makes. An asset
 // texture's image is made in the record's format when the texture is initialized, keyed by the record's content, and
 // filled from the packs on the initializing thread (its uploads, sent at once with their own timeline values): so before
 // the texture is registered, and so before any list can draw it. A texture whose load found no record gets the
@@ -42,17 +42,17 @@ bool assets_desc(uint32_t rec, AssetDesc& d);
 /// The record's texels into im (made by the caller in its format, layout undefined): moved to GENERAL and filled by this
 /// thread's uploads; false: the store could not be read (the image stays empty, counted)
 bool assets_fill(Image& im, uint32_t rec);
-/// [gpu, gpu + size) is a texture data pool (hsd_texture_data_pool: its texels come from the store, nothing reads it)
+/// [gpu, gpu + size) is a texture data pool (gpu_texture_data_pool: its texels come from the store, nothing reads it)
 bool assets_pool_is(uint64_t gpu, uint64_t size);
 /// The record's name (logs)
 const char* assets_name(uint32_t rec, uint32_t* len);
 
-/// An upload was sent (direct_image: the region uploads; source W_* bit), for the counters a frame and by thread
+/// An upload was sent (vk_image: the region uploads; source W_* bit), for the counters a frame and by thread
 void assets_note_upload(uint8_t source, uint64_t bytes, int64_t ns);
 /// (HOS_DBG=assetcheck / assetdump) a region upload's bytes, sampled for a read back after the load
 void assets_check_region(Image* im, uint8_t source, uint32_t level, uint32_t layer, uint32_t layers, int32_t x, int32_t y, uint32_t w,
                          uint32_t h, const uint8_t* bytes, uint64_t n, const uint8_t* src, uint64_t row);
-/// A placeholder named (direct_image: why)
+/// A placeholder named (vk_image: why)
 void assets_note_placeholder(const nvn_tex* t, const char* why);
 /// A present (the Presentation Thread): the load's end found, the debug checks run
 void assets_present(uint64_t present);

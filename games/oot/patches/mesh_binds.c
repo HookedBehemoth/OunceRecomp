@@ -37,17 +37,17 @@ static void drawer(GuestCall *g, uint64_t sp, uint64_t p1, uint64_t item, int wh
     os_atomic_inc(&n[which].bound);
 }
 /* (at each drawer's entry, on the call's stack: the binds, then its body) */
-PATCH_AT(0x801a43e0, word(0xd503237f), before, none, direct_mesh_binds_43e0, guest(0x801a2d70, 0x801a6a40), sp, x0, x1) {
+PATCH_AT(0x801a43e0, word(0xd503237f), before, none, mesh_binds_43e0, guest(0x801a2d70, 0x801a6a40), sp, x0, x1) {
     drawer(g, sp, x0, x1, D_43E0);
 }
-PATCH_AT(0x801a46a0, word(0xd503237f), before, none, direct_mesh_binds_46a0, guest(0x801a2d70, 0x801a6a40), sp, x0, x1) {
+PATCH_AT(0x801a46a0, word(0xd503237f), before, none, mesh_binds_46a0, guest(0x801a2d70, 0x801a6a40), sp, x0, x1) {
     drawer(g, sp, x0, x1, D_46A0);
 }
-PATCH_AT(0x801a6720, word(0xd503237f), before, none, direct_mesh_binds_6720, guest(0x801a2d70, 0x801a6a40), sp, x0, x1) {
+PATCH_AT(0x801a6720, word(0xd503237f), before, none, mesh_binds_6720, guest(0x801a2d70, 0x801a6a40), sp, x0, x1) {
     drawer(g, sp, x0, x1, D_6720);
 }
 
-void direct_mesh_binds_log(double frames) {
+void mesh_binds_log(double frames) {
     static int64_t last[D_N][3];
     char line[768];
     int k = snprintf(line, sizeof line, "direct patch mesh binds (names 4 and 5 bound before the drawer, as f_82c02bc0 binds them), a frame:");

@@ -309,8 +309,8 @@ static uint64_t read_at(Ctx *c, uint64_t id, int64_t off, uint64_t buf, uint64_t
     if (keep_core < 0) keep_core = getenv("HOS_FS_KEEP_CORE_KB") ? atoll(getenv("HOS_FS_KEEP_CORE_KB")) * 1024 : 0;
     const int away = (int64_t)size <= keep_core ? 0 : hos_block_begin(CRIT_BLOCK_OTHER, (const void *)10);
     {   /* (M4d: HOS_DBG=texwatch in direct mode: a read into watched texture storage, made writable first) */
-        void direct_texwatch_kernel_write(uint64_t guest, uint64_t n, const char *what);
-        direct_texwatch_kernel_write(buf, size, fh->path);
+        void texwatch_kernel_write(uint64_t guest, uint64_t n, const char *what);
+        texwatch_kernel_write(buf, size, fh->path);
     }
     const int64_t got = os_file_read_at(fh->f, GP(buf), (size_t)size, (uint64_t)off);
     if (got > 0) done = (uint64_t)got;

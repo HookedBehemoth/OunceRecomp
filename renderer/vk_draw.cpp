@@ -110,9 +110,9 @@ const char* const kReasons[R_COUNT] = {
 // (M3b: the counters a draw bumps are the recording thread's own: a global atomic added to by every draw on every recording
 // thread was a shared cache line. draw_log sums them, each block's last sum kept to report the change)
 struct TStats {
-    std::atomic<int64_t> by_kind[HSD_LIST_KINDS][R_COUNT];
+    std::atomic<int64_t> by_kind[GPU_LIST_KINDS][R_COUNT];
     std::atomic<int64_t> ns, banks, tables, ub_copies, ub_reads, ub_bytes, past_range, mesh_first, unbound_draws, unbound_mesh;
-    int64_t seen_by_kind[HSD_LIST_KINDS][R_COUNT];   // (draw_log's: the sums it reported last)
+    int64_t seen_by_kind[GPU_LIST_KINDS][R_COUNT];   // (draw_log's: the sums it reported last)
     int64_t seen[10];
     TStats* next = nullptr;
 };
@@ -149,11 +149,11 @@ int64_t take_kind(int k, int r) {
 struct UbUpdates;
 struct GatedDraws;
 ThreadCounters<UbUpdates, 1> st_ub_updates;
-ThreadCounters<GatedDraws, HSD_LIST_KINDS> st_gated;   // (gated draws drawn, by list kind)
+ThreadCounters<GatedDraws, GPU_LIST_KINDS> st_gated;   // (gated draws drawn, by list kind)
 std::atomic<int64_t> st_fixups{0}, st_fixup_lists{0}, st_ssbo_unbound{0};// (the variants' step A reasons: static strings, a few)
 struct StepA {
     std::atomic<const char*> why{nullptr};
-    std::atomic<int64_t> n[HSD_LIST_KINDS];
+    std::atomic<int64_t> n[GPU_LIST_KINDS];
 };
 StepA step_a[16];
 void count_step_a(const char* why, uint32_t kind) {
@@ -770,7 +770,7 @@ Reason bind_data(List* l, ListDraw& x, const DrawProg& p, uint8_t push[256]) {
         bump(me().tables);
     }
     std::memcpy(push + kTablePush, &x.table_addr, 8);
-    for (uint32_t i = 0; i < p.direct_ubos && i < x.table_entries.size(); i++) std::memcpy(push + 192 + 8 * i, &x.table_entries[i], 8);
+    for (uint32_t i = 0; i < p.vk_ubos && i < x.table_entries.size(); i++) std::memcpy(push + 192 + 8 * i, &x.table_entries[i], 8);
     for (const DrawProg::Pushed& q : p.pushed) {
         VkDeviceAddress a = 0;
         for (size_t i = 0; i < p.ubos.size(); i++)
@@ -940,7 +940,7 @@ void count(List* l, Reason r) {
     if (r == R_DRAWN) l->n_drawn++;
     else if (r == R_MESH || r == R_TASK_MESH) l->n_mesh++;
     else if (r == R_STEP_A) l->n_step_a++;
-    if (l->info.kind == HSD_LIST_JOB) {   // (M3b: the first job draw, the scene's first frame: the start time's end)
+    if (l->info.kind == GPU_LIST_JOB) {   // (M3b: the first job draw, the scene's first frame: the start time's end)
         if (!scene_seen.load(std::memory_order_relaxed) && !scene_seen.exchange(true))
             logf("direct: start: the first job draw at present %llu, %.2f s after the device", (unsigned long long)present_count(),
                  (host->now_ns() - t_device) / 1e9);
@@ -952,7 +952,7 @@ void count(List* l, Reason r) {
         drawlog(l, why, nullptr, nullptr, 0);
     }
     bump(me().by_kind[l->info.kind][r]);
-    if (l->info.kind == HSD_LIST_LAYER || l->info.kind == HSD_LIST_GATE) count_site(l->info.lr, r);
+    if (l->info.kind == GPU_LIST_LAYER || l->info.kind == GPU_LIST_GATE) count_site(l->info.lr, r);
 }
 /// A draw not drawn, for strict mode (vk_check.h): what (the reason, the program as the list's state names it) and where
 void strict_draw(List* l, Reason r) {
@@ -1191,7 +1191,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     }
     if (indexed && itype == NVN_INDEX_TYPE_UNSIGNED_BYTE && !caps.index_uint8) return count(l, R_INDEX_U8);
     if (!recording || !l->cur) {   // (resolved this far; no command buffer to record it in at this stage)
-        return count(l, l->info.kind == HSD_LIST_JOB ? R_RESOLVED_JOB : l->info.kind == HSD_LIST_LOAD ? R_RESOLVED_LOAD : R_RESOLVED_OTHER);
+        return count(l, l->info.kind == GPU_LIST_JOB ? R_RESOLVED_JOB : l->info.kind == GPU_LIST_LOAD ? R_RESOLVED_LOAD : R_RESOLVED_OTHER);
     }
     VkCommandBuffer cb = l->cur;
     cb_fresh(x, cb);
@@ -1489,7 +1489,7 @@ double ns_per_tick() {
 void draw_totals(int64_t* drawn, int64_t* waiting) {
     int64_t d = 0, w = 0;
     for (const TStats* t = tstats_all.load(std::memory_order_acquire); t; t = t->next)
-        for (int k = 0; k < HSD_LIST_KINDS; k++)
+        for (int k = 0; k < GPU_LIST_KINDS; k++)
             d += t->by_kind[k][R_DRAWN].load(std::memory_order_relaxed),
                 w += t->by_kind[k][R_NOT_PARSED].load(std::memory_order_relaxed) + t->by_kind[k][R_TRANSLATING].load(std::memory_order_relaxed);
     *drawn = d, *waiting = w;
@@ -1519,8 +1519,8 @@ void draw_log(double frames) {
              take(&TStats::unbound_mesh, T_UNBOUND_MESH) / frames, take(&TStats::unbound_draws, T_UNBOUND) / frames);
     }
     if (log_draw) {
-        static const char* const kinds[HSD_LIST_KINDS] = {"unclassified", "load", "job", "layer", "gate", "compute", "head", "immediate"};
-        for (int kind = 0; kind < HSD_LIST_KINDS; kind++) {
+        static const char* const kinds[GPU_LIST_KINDS] = {"unclassified", "load", "job", "layer", "gate", "compute", "head", "immediate"};
+        for (int kind = 0; kind < GPU_LIST_KINDS; kind++) {
             k = std::snprintf(out, cap, "draws a frame in %s lists:", kinds[kind]);
             bool any = false;
             for (int r = 0; r < R_COUNT; r++) {
@@ -1537,7 +1537,7 @@ void draw_log(double frames) {
         for (StepA& s : step_a) {
             const char* why = s.why.load();
             if (!why) break;
-            for (int kind = 0; kind < HSD_LIST_KINDS; kind++)
+            for (int kind = 0; kind < GPU_LIST_KINDS; kind++)
                 if (const int64_t n = s.n[kind].exchange(0)) k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " [%s] %s %.2f;", why, kinds[kind], n / frames);
         }
         logf("direct: %s", out);
