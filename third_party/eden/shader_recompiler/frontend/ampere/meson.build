@@ -13,6 +13,7 @@ eden_sources += files(
   'translate/memory.cpp',
   'translate/move.cpp',
   'translate/special.cpp',
+  'translate/surface.cpp',
   'translate/texture.cpp',
   'translate/translate.cpp',
   'translate_program.cpp',

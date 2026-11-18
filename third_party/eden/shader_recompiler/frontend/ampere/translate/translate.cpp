@@ -217,8 +217,10 @@ void TranslateOne(Translator& t) {
         break;
     }
     switch (opcode) {
-    case 0xb60:
+    case 0xb60: case 0xf60: case 0x361: case 0xb66: case 0xb63: case 0xb69: case 0xb6c: case 0xb6f:
         return TranslateTexture(t);
+    case 0xb97: case 0xb9b: case 0x593: case 0x59f:
+        return TranslateSurface(t);
     default:
         break;
     }

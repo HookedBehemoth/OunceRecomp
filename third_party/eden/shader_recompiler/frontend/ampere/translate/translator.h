@@ -71,6 +71,7 @@ void TranslateMove(Translator& t);
 void TranslateMemory(Translator& t);
 void TranslateAttribute(Translator& t);
 void TranslateTexture(Translator& t);
+void TranslateSurface(Translator& t);
 void TranslateHalf(Translator& t);
 void TranslateExit(Translator& t);
 void TranslateAtomic(Translator& t);
