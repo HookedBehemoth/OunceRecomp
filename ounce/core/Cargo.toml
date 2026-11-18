@@ -1,0 +1,11 @@
+[package]
+name = "ounce-core"
+version = "0.1.0"
+edition = "2021"
+description = "What ounce and its window share: the config file, the games, the output layout and the game runs"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+libc = "0.2"

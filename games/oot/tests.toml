@@ -1,0 +1,17 @@
+# The smoke tests of `ounce test oot [--name <test>]`: one headless run each, compared with the golden runs in the data
+# folder's oot/golden/<test>/ (`ounce test oot --golden` records one). `set` holds the run's settings, as
+# `ounce run --set`; `{golden}` is the test's golden folder. Each test boots straight into its scene through an
+# overlay (patched game files, made with tools/dump/make_chisel_overlay.py) kept in that folder.
+
+default = "kokiri"
+
+# smoke_skip: the presents left out before pictures are compared (the load differs run to run)
+[tests.kokiri]
+seconds = 40
+smoke_skip = 900
+set = ["HOS_FS_OVERLAY={golden}/overlay"]
+
+[tests.market]
+seconds = 40
+smoke_skip = 1500
+set = ["HOS_FS_OVERLAY={golden}/overlay"]

@@ -13,6 +13,7 @@ name = "ounce-lift"
 path = "src/main.rs"
 
 [dependencies]
+ounce-core = { path = "../core" }
 ounce-decode = { path = "decode" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

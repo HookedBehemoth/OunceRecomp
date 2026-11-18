@@ -1,10 +1,13 @@
-//! ounce-builder: a player's dump -> a portable game folder (docs/builder-plan.md).
+//! ounce: builds, runs and tests the games of this checkout (`build`, `run`, `test`; commands.rs), checks the PC
+//! (`probe`), reads dumps (`dump`) and keeps the user's config (`config`). `ounce tool ...` holds the low-level steps a
+//! build is made of, and the window's build of a player's game folder.
 
 #[cfg(feature = "clang")]
 mod clang;
 mod cache;
 #[cfg(feature = "clang")]
 mod checks;
+mod commands;
 mod compile;
 mod dump;
 mod gate;
@@ -28,27 +31,43 @@ use std::time::Instant;
 #[cfg(feature = "clang")]
 const LLVM_MAJOR: u32 = 23;
 
-const HELP: &str = "ounce-builder <command> ...
+const HELP: &str = "ounce <command> ...
+  build <game> [-j N] [--gen-parts]      the game's build into work/<game>/ (game/, lift/, obj/, build.log)
+  build <game> --out <dir> --dump <file.nup|folder> [--quality fast|high]
+                                         a portable player's game folder made from a dump
+  run <game> [--headless] [--seconds N] [--record R | --replay R] [--bench N] [--shots N] [--name N]
+            [--set NAME=VALUE]...       the game from its build; runs write work/<game>/runs/<name>/; --set passes a
+                                         runtime setting (e.g. HOS_FS_OVERLAY=<folder>)
+  test <game> [--name T] [--golden] [--keep-shots] [--set NAME=VALUE]...
+                                         a smoke test of games/<game>/tests.toml: a short headless run against the
+                                         golden runs, then a verdict
+  probe                                  the Vulkan device check: one line per requirement, then the verdict
+  dump <file.nup|folder> [--extract <dir>] [--set] [--verify] [--title <t>] [--only exefs|romfs]
+                                         a dump: its titles and which game it is; --set records it in the config
+  config [path | get <key> | set <key> <value>]
+                                         the config file (keys: <game>.dump, paths.cache, paths.data, tools.python,
+                                         limits.jobs, limits.cache_days, limits.run_free_mem_gb)
+  tool ...                               the low-level commands (ounce tool help)";
+
+const TOOL_HELP: &str = "ounce tool <command> ...
   compile-ll <in.ll> <out.o> [--hot]   one partition's IR -> its object
   compile-all <lift dir> <out dir> [-j N] [--check <obj dir>]
-  lift-compile <out dir> [-j N] [--check <obj dir>] [--cache <dir>] [--game <dir>] [--work <dir>] [--root <dir>] [--exefs <dir>]
+  lift-compile <out dir> --game <dir> [-j N] [--check <obj dir>] [--cache <dir>] [--root <dir>] [--exefs <dir>]
                                        the lift and the compile of every partition and generated module, in memory
-  build <out dir> --direct <ounce_renderer.so> [-j N] [--cache <dir>] [--version <text>] [--check <obj dir>]
-        [--gen <lift dir> [--gen-parts]] [--progress] [--game <dir>] [--work <dir>] [--root <dir>] [--exefs <dir>] [--obj <dir>]
+  build <out dir> --direct <ounce_renderer.so> --game <dir> --obj <dir> [-j N] [--cache <dir>] [--version <text>]
+        [--check <obj dir>] [--gen <lift dir> [--gen-parts]] [--map <file>] [--progress] [--root <dir>] [--exefs <dir>]
         [--dump <file.nup|folder> [--title <t>] [--dump-dir <dir>] [--no-textures]] [--quality fast|high]
         [--prepared <dir> [--romfs <dir>]]
                                        the lift, every compile and the link in this process (feature clang);
                                        --dump makes <out> a game folder: the exefs read in memory, romfs/ copied while the lift
                                        runs, then prepared/tex and the romfs's texture files with their texels zeroed, user/;
                                        --dump-dir also writes the dump there (exefs/, romfs/ whole) for the developer tools;
-                                       --prepared writes a texture store (<dir>/tex) from --romfs (default <work>/dump/romfs)
-  probe                                the Vulkan device check: one line per requirement, then the verdict
-  dump <file.nup|folder> [--verify] [--check [--game <dir>]] [--extract <dir>] [--title <index|version|id>] [--only exefs|romfs]
-                                       a dump: its titles, its checks (--verify), whether it is the game (--check),
-                                       or written out as exefs/ and romfs/
+                                       --prepared writes a texture store (<dir>/tex) from --romfs (default: the
+                                       config's dump); objects, rt64/ and the link order go to --obj
+  dump <src> --check --game <dir>      `@@` lines: whether the dump is the game (the window's check)
   link <out> <objs.rsp> [--order <hot_order.bin>] [--map <file>] [--labels <file>] [--print] [-- <libs>...]
                                        the game's link (a list of objects), lld in this process
-  textures <out dir> [--romfs <dir>] [--game <dir>] [--fast] [-j N] [--only <prefix>]...
+  textures <out dir> --game <dir> [--romfs <dir>] [--fast] [-j N] [--only <prefix>]...
                                        the prepared texture store from a romfs; --compare <a> <b> checks two stores
   objeq <a.o> <b.o>                    equal as linker input: allocated sections, symbols but FILE ones, relocations
   compile-c <out.o> -- <clang args>... a C file compiled in this process by clang's libraries (feature clang)
@@ -66,8 +85,13 @@ pub fn fail(msg: impl std::fmt::Display) -> ! {
     if progress_on() {
         println!("@@error {}", msg.to_string().replace('\n', "; "));
     }
-    eprintln!("ounce-builder: {msg}");
+    eprintln!("ounce: {msg}");
     std::process::exit(1)
+}
+
+/// The user's config file (ounce_core::config); a file that does not parse stops ounce.
+pub fn config() -> ounce_core::config::Config {
+    ounce_core::config::Config::load().unwrap_or_else(|e| fail(e))
 }
 
 /// `@@stage <key> <what>` with --progress: a step of `build` begins
@@ -80,11 +104,27 @@ fn stage(key: &str, what: &str) {
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     match argv.first().map(String::as_str) {
+        #[cfg(feature = "clang")]
+        Some("build") => commands::build(&argv[1..]),
+        Some("run") => commands::run(&argv[1..]),
+        Some("test") => commands::test(&argv[1..]),
+        Some("probe") => probe::command(),
+        Some("dump") => dump::command(&argv[1..]),
+        Some("config") => commands::config_cmd(&argv[1..]),
+        Some("tool") => tool(&argv[1..]),
+        Some("help" | "-h" | "--help") | None => println!("{HELP}"),
+        Some(c) => fail(format!("what is {c}? (ounce help)")),
+    }
+}
+
+/// `ounce tool <command> ...`
+fn tool(argv: &[String]) {
+    match argv.first().map(String::as_str) {
         Some("compile-ll") => {
             let hot = argv.iter().any(|a| a == "--hot");
             let files: Vec<&String> = argv[1..].iter().filter(|a| !a.starts_with("--")).collect();
             if files.len() != 2 {
-                fail(HELP);
+                fail(TOOL_HELP);
             }
             let (src, obj) = (PathBuf::from(files[0]), PathBuf::from(files[1]));
             compile::init().unwrap_or_else(|e| fail(e));
@@ -106,7 +146,6 @@ fn main() {
         Some("lift-compile") => lift_compile(&argv[1..]),
         Some("dump") => dump::command(&argv[1..]),
         Some("textures") => textures::command(&argv[1..]),
-        Some("probe") => probe::command(),
         #[cfg(feature = "clang")]
         Some("build") => build(&argv[1..]),
         Some("objeq") => {
@@ -128,7 +167,7 @@ fn main() {
         #[cfg(feature = "clang")]
         Some("version") => println!("{}", version::describe(std::path::Path::new(argv.get(1).map_or(".", |s| s.as_str())))),
         Some("llvm-version") => println!("{}", llvm::version()),
-        _ => println!("{HELP}"),
+        _ => println!("{TOOL_HELP}"),
     }
 }
 
@@ -266,14 +305,13 @@ fn lift_compile(args: &[String]) {
             "--check" => check = Some(val()),
             "--cache" => cache_dir = Some(val()),
             "--game" => run.opts.game = val(),
-            "--work" => run.opts.work = val(),
             "--root" => run.opts.root = val(),
             "--exefs" => run.opts.exefs = Some(val()),
             _ if out.is_none() && !a.starts_with('-') => out = Some(PathBuf::from(a)),
             _ => fail(format!("lift-compile: what is {a}?")),
         }
     }
-    let out = out.unwrap_or_else(|| fail("lift-compile <out dir> [-j N] [--check <obj dir>] [--game <dir>] [--work <dir>] [--root <dir>] [--exefs <dir>]"));
+    let out = out.unwrap_or_else(|| fail("lift-compile <out dir> --game <dir> [-j N] [--check <obj dir>] [--root <dir>] [--exefs <dir>]"));
     let t = Instant::now();
     let cache = cache_dir.map(|d| cache::Cache::open(&d).unwrap_or_else(|e| fail(e)));
     let gate = gate::Gate::new();
@@ -325,7 +363,7 @@ fn build(args: &[String]) {
     let (mut gen, mut gen_parts, mut progress) = (None::<PathBuf>, false, false);
     let (mut dump_src, mut dump_dir, mut title) = (None::<PathBuf>, None::<PathBuf>, None::<String>);
     let (mut prepared, mut settings, mut romfs_dir) = (None::<PathBuf>, ounce_tex::convert::Settings::FAST, None::<PathBuf>);
-    let (mut obj_dir, mut no_textures) = (None::<PathBuf>, false);
+    let (mut obj_dir, mut no_textures, mut map_file) = (None::<PathBuf>, false, None::<PathBuf>);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut val = || it.next().cloned().unwrap_or_else(|| fail(format!("{a} wants a value")));
@@ -340,7 +378,7 @@ fn build(args: &[String]) {
             "--gen-parts" => gen_parts = true,
             "--progress" => progress = true,
             "--game" => run.opts.game = val().into(),
-            "--work" => run.opts.work = val().into(),
+            "--map" => map_file = Some(val().into()),
             "--root" => run.opts.root = val().into(),
             "--exefs" => run.opts.exefs = Some(val().into()),
             "--dump" => dump_src = Some(val().into()),
@@ -363,21 +401,21 @@ fn build(args: &[String]) {
             hook(info)
         }));
     }
-    let (Some(out), Some(direct)) = (out, direct) else { fail("build <out dir> --direct <ounce_renderer.so> [...]") };
+    let (Some(out), Some(direct), Some(obj)) = (out, direct, obj_dir) else { fail("build <out dir> --direct <ounce_renderer.so> --game <dir> --obj <dir> [...]") };
     let major = llvm::version().split('.').next().and_then(|m| m.parse::<u32>().ok());
     if major != Some(LLVM_MAJOR) {
         fail(format!("this process runs LLVM {}, but the lifter's IR is written for LLVM {LLVM_MAJOR}", llvm::version()));
     }
     let t0 = Instant::now();
     // (a game folder (--dump): the exefs read first, so the lift starts while the romfs is copied into the folder; the
-    // build's own files (objects, the map, the link order) go to <work>/game-build, not into the folder)
+    // build's own files (objects, rt64/, the map, the link order) go to --obj, not into the folder)
+    let config = config();
     let game_folder = dump_src.is_some();
     if progress {
         let textures = game_folder && !no_textures || prepared.is_some();
         let keys = [(game_folder, "dump"), (true, "host"), (true, "lift"), (true, "link"), (game_folder, "romfs"), (textures, "textures")];
         println!("@@stages {}", keys.iter().filter(|k| k.0).map(|k| k.1).collect::<Vec<_>>().join(" "));
     }
-    let inter = if game_folder { run.opts.work.join("game-build") } else { out.clone() };
     let hollowed_list = out.join("prepared").join(textures::HOLLOWED);
     let romfs = dump_src.map(|src| {
         stage("dump", "reading the dump and checking it is the game");
@@ -390,15 +428,14 @@ fn build(args: &[String]) {
     });
     let root = run.opts.root.clone();
     let version = version.unwrap_or_else(|| version::describe(&root));
-    let obj = obj_dir.unwrap_or_else(|| inter.join("obj"));
-    let rt64 = inter.join("rt64");
-    for d in [&obj, &rt64] {
+    let rt64 = obj.join("rt64");
+    for d in [&out, &obj, &rt64] {
         std::fs::create_dir_all(d).unwrap_or_else(|e| fail(format!("{}: {e}", d.display())));
     }
     for (name, text) in ounce_lift::gen::rt64(&root).unwrap_or_else(|e| fail(e)) {
         std::fs::write(rt64.join(name), text).unwrap_or_else(|e| fail(e));
     }
-    let cache_dir = cache_dir.unwrap_or_else(|| run.opts.work.join("builder-cache"));
+    let cache_dir = cache_dir.unwrap_or_else(|| ounce_core::layout::Layout::cache(&config));
     let cache = cache::Cache::open(&cache_dir).unwrap_or_else(|e| fail(e));
     let gate = gate::Gate::new();
     let prog = progress::Progress::new(progress, cjobs, &cache_dir);
@@ -457,10 +494,10 @@ fn build(args: &[String]) {
     objects.extend(host_jobs.iter().map(|j| obj.join(&j.obj)));
     // (linked and labelled beside, then renamed over the old one: see install)
     let exe = out.join(format!("{}.new", game.exe));
-    let map = inter.join(format!("{}.map", game.exe));
+    let map = map_file.unwrap_or_else(|| obj.join(format!("{}.map", game.exe)));
     let game_dir = if run.opts.game.is_dir() { run.opts.game.clone() } else { run.opts.game.parent().unwrap().to_path_buf() };
     let order_bin = game_dir.join("hot_order.bin");
-    let order = order_bin.exists().then(|| link::order_file(&order_bin, &inter).unwrap_or_else(|e| fail(e)));
+    let order = order_bin.exists().then(|| link::order_file(&order_bin, &obj).unwrap_or_else(|e| fail(e)));
     let libs: Vec<String> = ["-lavcodec", "-lswscale", "-lswresample", "-lavutil"].map(String::from).to_vec();
     let sys = link::Sysroot::find().unwrap_or_else(|e| fail(e));
     let x = link::Exe { out: &exe, map: Some(&map), objects: &objects, order: order.as_deref(), libs: &libs };
@@ -502,7 +539,7 @@ fn build(args: &[String]) {
         println!("textures and the romfs's texture files: {:.0} s", t.elapsed().as_secs_f64());
     } else if let Some(p) = &prepared {
         stage("textures", "converting the textures");
-        let romfs_dir = romfs_dir.unwrap_or_else(|| run.opts.work.join("dump/romfs"));
+        let romfs_dir = romfs_dir.unwrap_or_else(|| config.dump(&game.name).unwrap_or_else(|e| fail(e)).join("romfs"));
         textures::make(&romfs_dir, &p.join("tex"), &game, settings, cjobs, Vec::new(), None).unwrap_or_else(|e| fail(e));
     }
     if game_folder {
@@ -510,7 +547,11 @@ fn build(args: &[String]) {
         let user = out.join("user");
         std::fs::create_dir_all(&user).unwrap_or_else(|e| fail(format!("{}: {e}", user.display())));
     }
-    let days: f64 = std::env::var("OUNCE_OBJCACHE_DAYS").ok().and_then(|v| v.parse().ok()).unwrap_or(3.0);
+    // (the build stamp `ounce run` compares with the checkout: the commit, then the version text)
+    let commit = std::process::Command::new("git").arg("-C").arg(&root).args(["rev-parse", "HEAD"]).output().ok()
+        .filter(|o| o.status.success()).map_or("unknown".into(), |o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    std::fs::write(out.join("build.txt"), format!("{commit}\n{version}\n")).unwrap_or_else(|e| fail(format!("build.txt: {e}")));
+    let days = config.cache_days();
     let (pn, pf, pk) = cache.prune(days);
     let (cpu, hwm) = ounce_lift::pipeline::usage();
     println!(

@@ -1,4 +1,4 @@
-//! A `ounce-builder` child process: its output read line by line on threads, so a step that crashes or hangs never
+//! An `ounce` child process: its output read line by line on threads, so a step that crashes or hangs never
 //! takes the window with it.
 
 use std::io::{BufRead, BufReader, Read};

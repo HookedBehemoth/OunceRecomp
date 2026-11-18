@@ -1,6 +1,6 @@
-//! ounce-gui: the builder's window. The player picks the dump and the game folder, the dump and the PC are
-//! checked, the game folder is built and then played; every step is a `ounce-builder` child process whose `@@`
-//! lines the window reads (docs/builder-plan.md, "The window").
+//! ounce-gui: the builder's window. The player picks the game (one of the checkout's games/), the dump and the game
+//! folder; the dump and the PC are checked, the game folder is built and then played. Every step is an `ounce` child
+//! process whose `@@` lines the window reads (docs/builder-plan.md, "The window").
 //!
 //! `ounce-gui [<dump> [<game folder>]]` fills the two fields.
 
@@ -25,42 +25,35 @@ enum Screen {
     Done,
 }
 
-/// The builder and what it reads: found beside this executable or above it, or from OUNCE_BUILDER,
-/// OUNCE_ROOT, OUNCE_DIRECT and OUNCE_WORK.
+/// `ounce` and the checkout it builds from: the checkout above this executable (or the current folder), and `ounce`
+/// beside this executable, else in the checkout's ounce/target/release.
 struct Paths {
     builder: String,
     root: String,
-    direct: String,
-    work: String,
 }
 
 impl Paths {
     fn find() -> Paths {
         let dir = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)).unwrap_or_default();
-        let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty()).map(PathBuf::from);
-        let first = |c: [PathBuf; 2]| c.iter().find(|p| p.is_file()).unwrap_or(&c[0]).clone();
-        let root = env("OUNCE_ROOT")
-            .or_else(|| dir.ancestors().find(|d| d.join("games/oot/game.toml").is_file()).map(Path::to_path_buf))
-            .unwrap_or_else(|| PathBuf::from("."));
-        let builder = env("OUNCE_BUILDER").unwrap_or_else(|| first([dir.join("ounce-builder"), root.join("ounce/target/release/ounce-builder")]));
-        let direct = env("OUNCE_DIRECT").unwrap_or_else(|| first([dir.join("ounce_renderer.so"), root.join("work/sa/meson/renderer/ounce_renderer.so")]));
-        let work = env("OUNCE_WORK").unwrap_or_else(|| root.join("work"));
+        let root = ounce_core::games::root().unwrap_or_else(|_| PathBuf::from("."));
+        let beside = dir.join("ounce");
+        let builder = if beside.is_file() { beside } else { root.join("ounce/target/release/ounce") };
         let s = |p: PathBuf| p.to_string_lossy().into_owned();
-        Paths { builder: s(builder), root: s(root), direct: s(direct), work: s(work) }
+        Paths { builder: s(builder), root: s(root) }
     }
 
-    fn game(&self) -> String {
-        Path::new(&self.root).join("games/oot").to_string_lossy().into_owned()
+    fn games(&self) -> Vec<String> {
+        ounce_core::games::list(Path::new(&self.root))
     }
 
-    /// the game's executable name: its description's `exe = "..."` line
-    fn exe(&self) -> Result<String, String> {
-        let toml = Path::new(&self.game()).join("game.toml");
-        let text = std::fs::read_to_string(&toml).map_err(|e| format!("{}: {e}", toml.display()))?;
-        text.lines()
-            .find_map(|l| l.trim().strip_prefix("exe").map(str::trim).and_then(|r| r.strip_prefix('=')).map(str::trim))
-            .and_then(|v| v.strip_prefix('"')?.strip_suffix('"').map(String::from))
-            .ok_or_else(|| format!("{}: no exe", toml.display()))
+    /// games/<game>
+    fn game_dir(&self, game: &str) -> String {
+        Path::new(&self.root).join("games").join(game).to_string_lossy().into_owned()
+    }
+
+    /// the game's executable name (its game.toml's exe)
+    fn exe(&self, game: &str) -> Result<String, String> {
+        ounce_core::games::Game::load(Path::new(&self.root), game).map(|g| g.exe)
     }
 }
 
@@ -190,6 +183,8 @@ impl Build {
 
 struct App {
     paths: Paths,
+    games: Vec<String>,
+    game: String,
     screen: Screen,
     dump: String,
     out: String,
@@ -245,12 +240,16 @@ fn state_color(state: &str) -> Option<Color32> {
 
 impl App {
     fn new(args: Vec<String>) -> App {
-        let home = std::env::var("HOME").unwrap_or_default();
+        let paths = Paths::find();
+        let games = paths.games();
+        let game = games.first().cloned().unwrap_or_default();
         App {
-            paths: Paths::find(),
+            out: args.get(1).cloned().unwrap_or_else(|| default_out(&game)),
+            paths,
+            games,
+            game,
             screen: Screen::Game,
             dump: args.first().cloned().unwrap_or_default(),
-            out: args.get(1).cloned().unwrap_or_else(|| format!("{home}/Games/ocarina-of-time")),
             high: false,
             identity: Identity::default(),
             checked: String::new(),
@@ -272,7 +271,7 @@ impl App {
             return;
         }
         self.checked = self.dump.clone();
-        let game = self.paths.game();
+        let game = self.paths.game_dir(&self.game);
         self.identity = Identity::default();
         match self.spawn(ctx, &["dump", &self.dump.clone(), "--check", "--game", &game]) {
             Ok(c) => self.identity.child = Some(c),
@@ -289,12 +288,8 @@ impl App {
     }
 
     fn start_build(&mut self, ctx: &egui::Context) {
-        let p = &self.paths;
-        let game = p.game();
-        let args = [
-            "build", &self.out, "--direct", &p.direct, "--dump", &self.dump, "--progress", "--quality",
-            if self.high { "high" } else { "fast" }, "--game", &game, "--work", &p.work, "--root", &p.root,
-        ];
+        let game = self.game.clone();
+        let args = ["build", &game, "--out", &self.out, "--dump", &self.dump, "--progress", "--quality", if self.high { "high" } else { "fast" }];
         self.screen = Screen::Build;
         self.build = Some(match self.spawn(ctx, &args) {
             Ok(c) => Build::new(Some(c)),
@@ -312,6 +307,14 @@ impl App {
                         Some(("identity", r)) => {
                             let (state, why) = r.split_once(' ').unwrap_or((r, ""));
                             self.identity.result = Some(if state == "pass" { Ok(why.to_string()) } else { Err(why.to_string()) });
+                            // (a dump folder that is the game becomes its dump in the config, as `ounce dump --set`)
+                            if state == "pass" && Path::new(&self.checked).is_dir() {
+                                if let Err(e) = ounce_core::config::Config::load()
+                                    .and_then(|mut c| c.set(&format!("{}.dump", self.game), &self.checked))
+                                {
+                                    self.note = e;
+                                }
+                            }
                         }
                         _ => {}
                     },
@@ -319,7 +322,7 @@ impl App {
                 }
             }
             if let Some(st) = c.exit {
-                self.identity.result.get_or_insert_with(|| Err(format!("ounce-builder dump ended with {st}")));
+                self.identity.result.get_or_insert_with(|| Err(format!("ounce dump ended with {st}")));
                 self.identity.child = None;
             }
         }
@@ -355,7 +358,7 @@ impl App {
                     b.outcome = Some(if st.success() && b.stage == "done" {
                         Outcome::Done
                     } else {
-                        Outcome::Failed(b.error.clone().unwrap_or_else(|| format!("ounce-builder ended with {st}")))
+                        Outcome::Failed(b.error.clone().unwrap_or_else(|| format!("ounce build ended with {st}")))
                     });
                 }
                 if matches!(b.outcome, Some(Outcome::Done)) {
@@ -425,6 +428,20 @@ impl eframe::App for App {
 
 impl App {
     fn game_screen(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let before = self.game.clone();
+        egui::ComboBox::from_label("The game").selected_text(self.game.as_str()).show_ui(ui, |ui| {
+            for g in &self.games {
+                ui.selectable_value(&mut self.game, g.clone(), g.as_str());
+            }
+        });
+        if self.game != before {
+            // (another game: its own folder, and the dump checked against it)
+            if self.out == default_out(&before) {
+                self.out = default_out(&self.game);
+            }
+            self.checked.clear();
+        }
+        ui.add_space(8.0);
         if path_row(ui, "The dump: a .nup file, or a folder with exefs/ and romfs/", &mut self.dump, true) {
             self.check_dump(ctx);
         }
@@ -454,12 +471,7 @@ impl App {
         ui.add_space(12.0);
         egui::CollapsingHeader::new("The builder").show(ui, |ui| {
             egui::Grid::new("paths").num_columns(2).show(ui, |ui| {
-                for (k, v) in [
-                    ("ounce-builder", &mut self.paths.builder),
-                    ("Sources", &mut self.paths.root),
-                    ("ounce_renderer.so", &mut self.paths.direct),
-                    ("Work folder", &mut self.paths.work),
-                ] {
+                for (k, v) in [("ounce", &mut self.paths.builder), ("Sources", &mut self.paths.root)] {
                     ui.label(k);
                     ui.add(egui::TextEdit::singleline(v).desired_width(480.0));
                     ui.end_row();
@@ -612,7 +624,7 @@ impl App {
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             if ui.button("Play").clicked() {
-                match self.paths.exe() {
+                match self.paths.exe(&self.game) {
                     Ok(name) => {
                         let exe = Path::new(&self.out).join(name);
                         match std::process::Command::new(&exe).current_dir(&self.out).spawn() {
@@ -633,6 +645,11 @@ impl App {
             ui.label(RichText::new(self.note.as_str()).color(RED));
         }
     }
+}
+
+/// The game folder offered for a game: ~/Games/<game>
+fn default_out(game: &str) -> String {
+    format!("{}/Games/{game}", std::env::var("HOME").unwrap_or_default())
 }
 
 fn main() -> eframe::Result {

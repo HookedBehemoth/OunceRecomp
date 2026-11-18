@@ -1,4 +1,4 @@
-//! The prepared texture store (ounce-tex) as a builder step: `ounce-builder textures`, and `build --textures`.
+//! The prepared texture store (ounce-tex) as a builder step: `ounce tool textures`, and `build --textures`.
 
 use crate::fail;
 use crate::gate::Gate;
@@ -88,14 +88,14 @@ pub fn make(romfs: &Path, out: &Path, game: &ounce_lift::game::Game, settings: S
 }
 
 pub fn command(args: &[String]) {
-    let (mut out, mut romfs, mut game, mut settings) = (None::<PathBuf>, None::<PathBuf>, PathBuf::from("games/oot"), Settings::FAST);
+    let (mut out, mut romfs, mut game, mut settings) = (None::<PathBuf>, None::<PathBuf>, None::<PathBuf>, Settings::FAST);
     let (mut jobs, mut only, mut compare) = (crate::gate::default_jobs(), Vec::new(), Vec::<PathBuf>::new());
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut val = || it.next().cloned().unwrap_or_else(|| fail(format!("{a} wants a value")));
         match a.as_str() {
             "--romfs" => romfs = Some(val().into()),
-            "--game" => game = val().into(),
+            "--game" => game = Some(val().into()),
             "--quality" => settings = quality(&val()),
             "-j" => jobs = val().parse().unwrap_or_else(|_| fail("-j N")),
             "--only" => only.push(val()),
@@ -117,11 +117,12 @@ pub fn command(args: &[String]) {
         std::process::exit(if d.equal() { 0 } else { 1 });
     }
     let Some(out) = out else { fail(HELP) };
-    let romfs = romfs.unwrap_or_else(|| PathBuf::from("work/dump/romfs"));
+    let game = game.unwrap_or_else(|| fail("textures: --game games/<game> is needed"));
+    let g = ounce_lift::game::Game::load(&game).unwrap_or_else(|e| fail(e));
+    let romfs = romfs.unwrap_or_else(|| crate::config().dump(&g.name).unwrap_or_else(|e| fail(e)).join("romfs"));
     if romfs.parent().is_some_and(|d| d.join("prepared").join(HOLLOWED).exists()) {
         fail(format!("{}: a game folder's romfs, its texels zeroed: make the store from the dump", romfs.display()));
     }
-    let g = ounce_lift::game::Game::load(&game).unwrap_or_else(|e| fail(e));
     make(&romfs, &out, &g, settings, jobs, only, None).unwrap_or_else(|e| fail(e));
     let (cpu, hwm) = ounce_lift::pipeline::usage();
     println!("textures: {cpu:.0} s CPU, peak {hwm:.0} MB");

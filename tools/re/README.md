@@ -29,4 +29,4 @@ and `callees`, and `pfn_<proc>` for the slot. The slots come from the game's own
 string as its argument whose result is stored to a fixed address, as in nvnDeviceGetProcAddress loops), cached in
 `work/re/<game>/procs.tsv`.
 
-The exefs is `--exefs`, `OUNCE_RE_EXEFS`, the first line of `work/<game>/dump.txt`, or (OoT) `work/dump.txt`.
+The exefs is `--exefs`, else the game's dump in the user's config (`ounce config set <game>.dump <folder>`).

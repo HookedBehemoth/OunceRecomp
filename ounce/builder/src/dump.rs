@@ -1,4 +1,4 @@
-//! The dump step: `ounce-builder dump`, and the exefs-then-romfs order `build --dump` runs.
+//! The dump step: `ounce dump`, and the exefs-then-romfs order `build --dump` runs.
 
 use crate::fail;
 use ounce_dump::extract::Progress;
@@ -88,17 +88,18 @@ fn check(src: &Path, title: Option<&str>, game: &Path) {
     }
 }
 
-/// `dump <file.nup|folder> [--verify] [--check [--game <dir>]] [--extract <dir>] [--title <t>] [--only exefs|romfs]`
+/// `dump <file.nup|folder> [--verify] [--check --game <dir>] [--extract <dir>] [--title <t>] [--only exefs|romfs] [--set]`
 pub fn command(args: &[String]) {
     let (mut src, mut out, mut verify, mut title, mut only) = (None::<PathBuf>, None::<PathBuf>, false, None::<String>, None::<Part>);
-    let (mut identity, mut game) = (false, PathBuf::from("games/oot"));
+    let (mut identity, mut game, mut set) = (false, None::<PathBuf>, false);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut val = || it.next().cloned().unwrap_or_else(|| fail(format!("{a} wants a value")));
         match a.as_str() {
             "--verify" => verify = true,
             "--check" => identity = true,
-            "--game" => game = val().into(),
+            "--game" => game = Some(val().into()),
+            "--set" => set = true,
             "--extract" => out = Some(val().into()),
             "--title" => title = Some(val()),
             "--only" => {
@@ -112,9 +113,13 @@ pub fn command(args: &[String]) {
             _ => fail(format!("dump: what is {a}?")),
         }
     }
-    let Some(src) = src else { fail("dump <file.nup|folder> [--verify] [--check [--game <dir>]] [--extract <dir>] [--title <t>] [--only exefs|romfs]") };
+    let Some(src) = src else { fail("dump <file.nup|folder> [--verify] [--check --game <dir>] [--extract <dir>] [--title <t>] [--only exefs|romfs] [--set]") };
     if identity {
+        let game = game.unwrap_or_else(|| fail("dump --check: --game games/<game> is needed"));
         return check(&src, title.as_deref(), &game);
+    }
+    if set && out.is_none() && !src.is_dir() {
+        fail("dump --set records a folder: pass the dump's folder, or --extract <folder> with a .nup");
     }
     if verify {
         if out.is_some() {
@@ -134,6 +139,15 @@ pub fn command(args: &[String]) {
     }
     let Some(out) = out else {
         list(&src);
+        if src.is_dir() {
+            match identify(&src) {
+                Ok(g) => println!("game: {g}"),
+                Err(e) => println!("game: {e}"),
+            }
+        }
+        if set {
+            set_dump(&src);
+        }
         return;
     };
     let d = Dump::open(&src, title.as_deref(), &out).unwrap_or_else(|e| fail(e));
@@ -148,6 +162,32 @@ pub fn command(args: &[String]) {
         let t = Instant::now();
         report("romfs", &d.romfs(&mut p).unwrap_or_else(|e| fail(e)), t.elapsed().as_secs_f64());
     }
+    if set {
+        set_dump(&out);
+    }
+}
+
+/// Which game of the checkout a dump folder holds (its exefs against every game.toml's identity).
+fn identify(dir: &Path) -> Result<String, String> {
+    let ex = Exefs::read_dir(&dir.join("exefs"))?;
+    let root = ounce_core::games::root()?;
+    let mut why = Vec::new();
+    for name in ounce_core::games::list(&root) {
+        match ounce_lift::game::Game::load(&root.join("games").join(&name))?.check_exefs(&ex) {
+            Ok(_) => return Ok(name),
+            Err(e) => why.push(e),
+        }
+    }
+    Err(format!("{} is none of the games: {}", dir.display(), why.join("; ")))
+}
+
+/// `--set`: the folder recorded as its game's dump in the config.
+fn set_dump(dir: &Path) {
+    let dir = std::path::absolute(dir).unwrap_or_else(|e| fail(format!("{}: {e}", dir.display())));
+    let game = identify(&dir).unwrap_or_else(|e| fail(e));
+    let mut c = crate::config();
+    c.set(&format!("{game}.dump"), &dir.to_string_lossy()).unwrap_or_else(|e| fail(e));
+    println!("{game}.dump = {} (in {})", dir.display(), c.path.display());
 }
 
 /// The deepest existing folder of `p`, where its free space is measured.

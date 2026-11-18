@@ -11,7 +11,7 @@ usage: work/venv/bin/python tools/dump/make_chisel_overlay.py <out_dir> --route 
            scene frame then waits for ~2200 more actor files), so off by default. --skip-fades: the loading fade opens
            at once and the scene fades in at once; the load starts ~1 s earlier but ends no earlier (no gain), off by
            default. Both: work/assets/native/boot-speed.md.
-Reads the sequence graphs from the dump in work/dump.txt (--romfs: another romfs folder). Then run the game with
+Reads the sequence graphs from the config's oot dump (ounce config; --romfs: another romfs folder). Then run the game with
 HOS_FS_OVERLAY=<out_dir>.
 """
 import sys, os, argparse
@@ -20,15 +20,10 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 
 
 def default_romfs():
-    """The romfs of the dump named in work/dump.txt (its first line that is not a comment)."""
-    try:
-        for line in open(os.path.join(ROOT, 'work', 'dump.txt'), encoding='utf-8'):
-            line = line.strip()
-            if line and not line.startswith('#'):
-                return os.path.join(line, 'romfs')
-    except OSError:
-        pass
-    sys.exit('no dump: write its folder into work/dump.txt')
+    """The romfs of OoT's dump in the user's config (ounce config)."""
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import ounce_config
+    return os.path.join(ounce_config.dump('oot'), 'romfs')
 sys.path.insert(0, HERE)
 import ainb_patch
 
@@ -54,7 +49,7 @@ def main():
     ap.add_argument('--skip-title', action='store_true', help='leave out the title background event (the title movie)')
     ap.add_argument('--skip-fades', action='store_true', help='no loading fade-out before, no fade-in after the first load')
     ap.add_argument('--slot', type=int, help='load route: force SeqExecuteLoadSaveData Index (else CaptionData.SelectedSavePathIndex)')
-    ap.add_argument('--romfs', help='the romfs folder (default: work/dump.txt\'s path + /romfs)')
+    ap.add_argument('--romfs', help='the romfs folder (default: the config\'s oot dump + /romfs)')
     a = ap.parse_args()
     global SEQ
     romfs = a.romfs or default_romfs()

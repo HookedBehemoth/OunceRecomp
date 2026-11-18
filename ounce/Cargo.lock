@@ -1614,16 +1614,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "ounce-builder"
+name = "ounce"
 version = "0.1.0"
 dependencies = [
  "cc",
  "libc",
  "lz4_flex",
+ "ounce-core",
  "ounce-dump",
  "ounce-lift",
  "ounce-tex",
  "sha1",
+]
+
+[[package]]
+name = "ounce-core"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "toml",
 ]
 
 [[package]]
@@ -1644,6 +1654,7 @@ name = "ounce-gui"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "ounce-core",
  "rfd",
 ]
 
@@ -1653,6 +1664,7 @@ version = "0.1.0"
 dependencies = [
  "cpp_demangle",
  "lz4_flex",
+ "ounce-core",
  "ounce-decode",
  "rayon",
  "serde",
@@ -1677,6 +1689,7 @@ dependencies = [
  "blake2b_simd",
  "cc",
  "memchr",
+ "ounce-core",
  "ounce-dump",
  "rayon",
  "sha2",

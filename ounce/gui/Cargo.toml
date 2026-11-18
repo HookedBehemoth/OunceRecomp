@@ -2,9 +2,10 @@
 name = "ounce-gui"
 version = "0.1.0"
 edition = "2021"
-description = "The builder's window: runs ounce-builder as a child and shows its progress lines"
+description = "The builder's window: runs ounce as a child and shows its progress lines"
 publish = false
 
 [dependencies]
+ounce-core = { path = "../core" }
 eframe = { version = "0.37", default-features = false, features = ["glow", "x11", "default_fonts"] }
 rfd = { version = "0.18", default-features = false, features = ["xdg-portal"] }

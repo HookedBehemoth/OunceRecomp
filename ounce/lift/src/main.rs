@@ -1,5 +1,5 @@
-//! ounce-lift <out dir> [-j N] [--parts a,b,...] [--skip] [--game <dir>] [--work <dir>] [--exefs <dir>] [--root <dir>]:
-//! the whole lift from the dump's exefs, the host's C and the game description: gen/, image/image.bin and one .ll per
+//! ounce-lift <out dir> [-j N] [--parts a,b,...] [--skip] --game <dir> [--exefs <dir>] [--root <dir>]:
+//! the whole lift from the dump's exefs (--exefs, else the dump the user's config names for the game), the host's C and the game description: gen/, image/image.bin and one .ll per
 //! partition (EXPORT.md).
 //! --skip: a function using a template not ported yet is left out and counted ("skipped: template X").
 
@@ -40,7 +40,7 @@ mod count {
 
 /// `ounce-lift records [--game <dir>] [--root <dir>] <object>...`: the host objects' hos_patch records against the scan
 fn records(argv: Vec<String>) {
-    let (mut game_dir, mut root, mut objs) = (PathBuf::from("games/oot"), PathBuf::from("."), Vec::new());
+    let (mut game_dir, mut root, mut objs) = (PathBuf::new(), PathBuf::from("."), Vec::new());
     let mut args = argv.into_iter();
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -75,14 +75,13 @@ fn rt64(argv: Vec<String>) {
 }
 
 /// the options every subcommand that lifts takes
-const OPTS: &str = "[--game <dir>] [--work <dir>] [--root <dir>] [--exefs <dir>]";
+const OPTS: &str = "--game <dir> [--root <dir>] [--exefs <dir>]";
 
 /// takes one of OPTS (and its value) into o: false when a is none of them
 fn opt_arg(o: &mut Opts, a: &str, args: &mut impl Iterator<Item = String>) -> bool {
     let mut val = || PathBuf::from(args.next().unwrap_or_else(|| fail(format!("{a} wants a value"))));
     match a {
         "--game" => o.game = val(),
-        "--work" => o.work = val(),
         "--root" => o.root = val(),
         "--exefs" => o.exefs = Some(val()),
         "--max-func" => o.max_func = val().to_string_lossy().parse().unwrap_or_else(|_| fail("--max-func N")),
@@ -97,7 +96,8 @@ fn fail(msg: impl std::fmt::Display) -> ! {
     std::process::exit(1)
 }
 
-const HELP: &str = "ounce-lift: the lifter. Subcommands (each but rt64, records and scan reads the dump; OPTS: --game <dir> (games/oot), --work <dir> (work), --root <dir> (.), --exefs <dir>):
+const HELP: &str = "ounce-lift: the lifter. Subcommands (each but rt64, records and scan reads the dump; OPTS: --game <dir> (games/<game>), --root <dir> (.), --exefs <dir> (default: the dump of the
+user's config, ounce config)):
   [lift] <out> [-j N] [--parts a,b] [--skip] OPTS                  the lift: <out>/gen, image/image.bin, lift_*.ll
   rt64 <dir> [--root <dir>]                                         the guest model (a64.h, a64_rt.c)
   records [--game] [--root] <object>...                             the host objects' hos_patch records against the scan

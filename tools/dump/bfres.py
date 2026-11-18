@@ -16,15 +16,10 @@ ROOT = os.path.dirname(os.path.dirname(_HERE))
 
 
 def default_romfs():
-    """The romfs of the dump named in work/dump.txt (its first line that is not a comment)."""
-    try:
-        for line in open(os.path.join(ROOT, 'work', 'dump.txt'), encoding='utf-8'):
-            line = line.strip()
-            if line and not line.startswith('#'):
-                return os.path.join(line, 'romfs')
-    except OSError:
-        pass
-    sys.exit('no dump: write its folder into work/dump.txt')
+    """The romfs of OoT's dump in the user's config (ounce config)."""
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import ounce_config
+    return os.path.join(ounce_config.dump('oot'), 'romfs')
 
 
 # vertex attribute format: stored as 2 bytes [variant, type] (BfresLibrary reads it as a big-endian u16)

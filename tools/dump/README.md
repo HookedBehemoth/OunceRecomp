@@ -1,8 +1,8 @@
 # tools/dump
 
 Readers and patchers for the game's own file formats, for when you need to look inside a game file or make a test
-overlay. They read the user's dump in place (the folder named in
-`work/dump.txt`, `exefs/` + `romfs/`) and write only where you point them; what they write is made from game files and
+overlay. They read the user's dump in place (the folder the config names, `ounce config get oot.dump`, with
+`exefs/` + `romfs/`) and write only where you point them; what they write is made from game files and
 stays on this PC. Run them with `work/venv/bin/python` (needs `zstandard`, `numpy`); `.zs` files are decompressed with the
 game's dictionaries in `work/zsdic` (`ZSDIC=<folder>` for another).
 
@@ -23,7 +23,7 @@ game's dictionaries in `work/zsdic` (`ZSDIC=<folder>` for another).
 To make a chiseled boot into Kokiri Forest from a new game and run it:
 
     work/venv/bin/python -I tools/dump/make_chisel_overlay.py work/overlay/chisel_kokiri --route newgame --banc KokiriForest_Child
-    OVERLAY=$PWD/work/overlay/chisel_kokiri scripts/run-vk.sh name 60
+    ounce run oot --set HOS_FS_OVERLAY=$PWD/work/overlay/chisel_kokiri
 
 `--route load` continues the save instead; `--start NAME` picks a start position (the market overlay is a start in
 Hyrule Field at the drawbridge); `--skip-fades` and `--skip-title` cut the loading fades and the title movie.

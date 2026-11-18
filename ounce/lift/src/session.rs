@@ -17,8 +17,8 @@ use std::path::{Path, PathBuf};
 /// where the inputs are
 #[derive(Clone)]
 pub struct Opts {
+    /// the game's folder (games/<game>); no default
     pub game: PathBuf,
-    pub work: PathBuf,
     pub root: PathBuf,
     pub exefs: Option<PathBuf>,
     /// the exefs already in memory (a builder's dump); before `exefs`
@@ -28,22 +28,13 @@ pub struct Opts {
 
 impl Default for Opts {
     fn default() -> Opts {
-        Opts { game: PathBuf::from("games/oot"), work: PathBuf::from("work"), root: PathBuf::from("."), exefs: None, exefs_files: None, max_func: 0 }
+        Opts { game: PathBuf::new(), root: PathBuf::from("."), exefs: None, exefs_files: None, max_func: 0 }
     }
 }
 
-/// the dump's exefs as nx2/kit.py finds it: OOT_EXEFS, OOT_DUMP/exefs, else the first line of work/dump.txt
-pub fn dump_exefs(work: &Path) -> Result<PathBuf, String> {
-    if let Some(e) = std::env::var_os("OOT_EXEFS").filter(|v| !v.is_empty()) {
-        return Ok(PathBuf::from(e));
-    }
-    if let Some(d) = std::env::var_os("OOT_DUMP").filter(|v| !v.is_empty()) {
-        return Ok(PathBuf::from(d).join("exefs"));
-    }
-    let cfg = work.join("dump.txt");
-    let text = std::fs::read_to_string(&cfg).map_err(|e| format!("no exefs: set OOT_DUMP or write the dump folder into {}: {e}", cfg.display()))?;
-    let line = text.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with('#')).ok_or("dump.txt: no dump folder")?;
-    Ok(PathBuf::from(line).join("exefs"))
+/// the game's exefs: the dump the user's config names for it (ounce_core::config)
+pub fn dump_exefs(game: &Game) -> Result<PathBuf, String> {
+    Ok(ounce_core::config::Config::load()?.dump(&game.name)?.join("exefs"))
 }
 
 /// the C texts of the game (the runtime's and the patches': Game::sources), as the scan reads them
@@ -97,6 +88,9 @@ impl Base {
     /// the scan, the image, the discovery and the plan
     pub fn new(o: &Opts) -> Result<Base, String> {
         let t0 = std::time::Instant::now();
+        if o.game.as_os_str().is_empty() {
+            return Err("no game: pass --game games/<game>".into());
+        }
         let game = Game::load(&o.game)?;
         let mut ps = patch::scan_texts(&host_texts(&o.root, &game)?)?;
         let horizon = Horizon::load(&o.root)?;
@@ -109,7 +103,7 @@ impl Base {
                 &read
             }
             (None, None) => {
-                read = crate::exefs::Exefs::read_dir(&dump_exefs(&o.work)?)?;
+                read = crate::exefs::Exefs::read_dir(&dump_exefs(&game)?)?;
                 &read
             }
         };

@@ -32,11 +32,10 @@ TABLE = 'System/Resource/ResourceSizeTable.Product.111.Nin_Ounce_NVN2.rsizetable
 
 
 def default_romfs():
-    for line in open(os.path.join(ROOT, 'work', 'dump.txt'), encoding='utf-8'):
-        line = line.strip()
-        if line and not line.startswith('#'):
-            return os.path.join(line, 'romfs')
-    sys.exit('no dump: write its folder into work/dump.txt')
+    """The romfs of OoT's dump in the user's config (ounce config)."""
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import ounce_config
+    return os.path.join(ounce_config.dump('oot'), 'romfs')
 
 
 def vec3(v, what):
@@ -78,7 +77,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('scene')
     ap.add_argument('out')
-    ap.add_argument('--romfs', help="the romfs folder (default: work/dump.txt's path + /romfs)")
+    ap.add_argument('--romfs', help="the romfs folder (default: the config's oot dump + /romfs)")
     a = ap.parse_args()
     romfs = a.romfs or default_romfs()
     desc = tomllib.load(open(a.scene, 'rb'))

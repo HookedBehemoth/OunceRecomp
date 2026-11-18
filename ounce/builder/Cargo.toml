@@ -1,15 +1,16 @@
 [package]
-name = "ounce-builder"
+name = "ounce"
 version = "0.1.0"
 edition = "2021"
-description = "The player's builder: a dump (.nup, or exefs/ + romfs/) -> a portable game folder, in one process"
+description = "ounce: builds, runs and tests the games; the player's builder (a dump -> a portable game folder)"
 publish = false
 
 [[bin]]
-name = "ounce-builder"
+name = "ounce"
 path = "src/main.rs"
 
 [dependencies]
+ounce-core = { path = "../core" }
 ounce-lift = { path = "../lift" }
 ounce-dump = { path = "../dump" }
 ounce-tex = { path = "../tex" }

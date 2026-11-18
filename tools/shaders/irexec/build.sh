@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Builds irexec (tools/shaders/irexec: the post-pass IR interpreter and its command) into work/irexec/, from the
-# renderer build's translator libraries (work/sa/meson: libdx_eden.a, libdx_sirit.a), as tools/shadercensus/build.sh
-# builds censustool. IREXEC_LIBS: another build folder's third_party (default work/sa/meson/third_party).
+# renderer build's translator libraries (work/renderer: libdx_eden.a, libdx_sirit.a), as tools/shadercensus/build.sh
+# builds censustool. IREXEC_LIBS: another build folder's third_party (default work/renderer/third_party).
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../../.." && pwd)
 out=${IREXEC_OUT:-$root/work/irexec}
-libs=${IREXEC_LIBS:-$root/work/sa/meson/third_party}
+libs=${IREXEC_LIBS:-$root/work/renderer/third_party}
 mkdir -p "$out"
 ls "$libs/eden/libdx_eden.a" > /dev/null
 flags=(-std=c++20 -O2 -g0 -fPIC -D_GNU_SOURCE -include algorithm -include cstdio -include cstdlib -include cstring

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Builds difftest (tools/shaders/difftest: the differential of two translator fronts, with irexec) into work/difftest/,
 # from the renderer build's translator libraries as tools/shaders/irexec/build.sh does. DIFFTEST_LIBS: another build
-# folder's third_party (default work/sa/meson/third_party).
+# folder's third_party (default work/renderer/third_party).
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../../.." && pwd)
 out=${DIFFTEST_OUT:-$root/work/difftest}
-libs=${DIFFTEST_LIBS:-$root/work/sa/meson/third_party}
+libs=${DIFFTEST_LIBS:-$root/work/renderer/third_party}
 mkdir -p "$out"
 ls "$libs/eden/libdx_eden.a" > /dev/null
 flags=(-std=c++20 -O2 -g0 -fPIC -D_GNU_SOURCE -include algorithm -include cstdio -include cstdlib -include cstring

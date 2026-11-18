@@ -805,7 +805,7 @@ fn report_lines(b: &Base, lab: &BTreeMap<u64, String>) -> Result<Vec<Line>, Stri
 // ---- dump
 
 /// `ounce-lift dump <address|label>... [--tree] [--opt O1|O2] [--asm] [-o <dir>] OPTS`: for each function, in
-/// <dir>/<address>/ (default <work>/lift/dump: game-derived, never committed): guest.s, ir.txt, lift.ll and with --opt
+/// <dir>/<address>/ (default work/<game>/lift/dump: game-derived, never committed): guest.s, ir.txt, lift.ll and with --opt
 /// lift.opt.ll, with --asm lift.s
 pub fn dump(argv: Vec<String>) {
     let usage = "ounce-lift dump <address|label>... [--tree] [--opt O1|O2] [--asm] [-o <dir>]";
@@ -834,7 +834,7 @@ pub fn dump(argv: Vec<String>) {
             }
         }
     }
-    let dir = a.vals.get("-o").map(PathBuf::from).unwrap_or_else(|| a.o.work.join("lift").join("dump"));
+    let dir = a.vals.get("-o").map(PathBuf::from).unwrap_or_else(|| ounce_core::layout::Layout::new(a.o.root.clone(), &b.game.name).lift_dir().join("dump"));
     let targets: HashSet<u64> = pa.parts.code_targets.iter().copied().collect();
     let mut w = Worker::default();
     for e in want {

@@ -29,18 +29,16 @@ A build takes tens of minutes and about 60 GB of disk; a run uses about 10 GB of
 in the [development guide](docs/development.md#set-up).
 
 ```sh
-cargo build --release -p ounce-builder --manifest-path ounce/Cargo.toml
-ounce/target/release/ounce-builder dump <your-game.nup> --extract work/dump
-python -I tools/re/dump.py --dump work/dump --set
-scripts/build.sh                           # the renderer (Meson), then the lift, compile and link
+cargo build --release -p ounce --manifest-path ounce/Cargo.toml
+export PATH=$PWD/ounce/target/release:$PATH                # ounce is ounce/target/release/ounce
+ounce dump <your-game.nup> --extract <folder> --set     # writes the dump and records it in ~/.config/ounce/config.toml
+ounce build oot                                         # the renderer (Meson), then the lift, compile and link
+ounce run oot                                           # a window, sound and your own saves
 ```
 
-The build writes the game folder `work/sa/build`: the game's executable (game.toml's `exe`, `Ocarina of Time`), `ounce_renderer.so` and `image.bin`. Run it with the
-RomFS and a folder for the saves:
-
-```sh
-"work/sa/build/Ocarina of Time" --romfs work/dump/romfs --user work/user
-```
+The build writes the game folder `work/oot/game`: the game's executable (game.toml's `exe`, `Ocarina of Time`),
+`ounce_renderer.so` and `image.bin`. `ounce run` starts it with the dump's RomFS and a folder for the saves; started by
+hand it takes these arguments:
 
 | Argument | What it does |
 |---|---|
@@ -54,7 +52,7 @@ The [development guide](docs/development.md) has the build and run loop and the 
 
 ## How it works
 
-1. `ounce-builder` (`ounce/`) translates the game's AArch64 code to LLVM IR and compiles it to native code
+1. `ounce` (`ounce/`) translates the game's AArch64 code to LLVM IR and compiles it to native code
    ([the lifter](docs/lifter.md)).
 2. `runtime/` plays the part of the console's system software and is linked with the lifted code and the game's
    patches (`games/oot/patches`).

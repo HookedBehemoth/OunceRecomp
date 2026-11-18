@@ -6,8 +6,8 @@
 #   OVERLAY=work/overlay/<dir>   patched game files read first (HOS_FS_OVERLAY: the chiseled boot)
 #   ZOO=<scene>                  the actor-zoo scene games/oot/zoo/<scene>.toml as the overlay (made on demand: scripts/zoo-overlay.sh)
 #   USER_FROM=<folder>           copied into the run's own user folder first (a save to start from)
-#   EXE=<path>                   another build (default work/sa/build/<the game's exe>; its caches are beside it)
-#   ROMFS=<dir>                  another romfs (default the dump's, work/dump.txt; a game folder's: <folder>/romfs)
+#   EXE=<path>                   another build (default work/oot/game/<the game's exe>; its caches are beside it)
+#   ROMFS=<dir>                  another romfs (default the config's oot dump; a game folder's: <folder>/romfs)
 #   WINDOW=1 SOUND=1 SHOT_EVERY=300
 #   RUN=timing|check             the script takes the GPU lock itself; do not wrap it in flock then:
 #     timing  exclusive (flock -x work/run.lock): fps, launch time, anything that may hang the GPU (a reset kills
@@ -62,7 +62,7 @@ out=$root/work/runs/$name
 rm -rf "$out"; mkdir -p "$out/shots" "$out/user"
 [ -n "${USER_FROM:-}" ] && cp -r "$USER_FROM"/. "$out/user/"
 if [ "$mode" != check ] && game_running; then echo "another game runs"; exit 1; fi
-romfs=${ROMFS:-$(grep -v '^#' "$root/work/dump.txt" | head -1)/romfs}
+romfs=${ROMFS:-$("$root/ounce/target/release/ounce" config get oot.dump)/romfs}
 env_args=(RX_VK_SHOTS="$out/shots" RX_VK_SHOT_EVERY="${SHOT_EVERY:-300}")
 [ "${WINDOW:-0}" = 1 ] || env_args+=(HOS_HEADLESS=1)
 [ "${SOUND:-0}" = 1 ] || env_args+=(HOS_AUDIO=0)
@@ -71,8 +71,8 @@ env_args=(RX_VK_SHOTS="$out/shots" RX_VK_SHOT_EVERY="${SHOT_EVERY:-300}")
 # (an actor-zoo overlay's live.txt: host commands the scene needs, e.g. its time of day)
 [ -n "${OVERLAY:-}" ] && [ -f "$OVERLAY/live.txt" ] && env_args+=(HOS_INPUT_LIVE="$(cd "$OVERLAY" && pwd)/live.txt")
 exe=$(realpath "${EXE:-$game_exe}")
-# (the image beside the executable, as a game folder has it; else work/sa/image/)
-img=$(dirname "$exe")/image.bin; [ -f "$img" ] || img=$root/work/sa/image/image.bin
+# (the image beside the executable)
+img=$(dirname "$exe")/image.bin
 if [ "$mode" = check ]; then   # (a private copy of the build's files: the executable, the renderer, the caches)
   mkdir -p "$out/bin"
   find "$(dirname "$exe")" -maxdepth 1 -type f ! -name '*.lock' -exec cp --reflink=auto -p {} "$out/bin/" \;

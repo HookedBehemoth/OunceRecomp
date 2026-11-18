@@ -2,7 +2,7 @@
 label, or a runtime function) + offset, from the executable's symbol table (nm).
 
 Usage:  python -I tools/re/samap.py [--exe <executable>] <hex offset> [...]
-        (default: work/sa/build/<the game's exe>, games/oot/game.toml's exe)
+        (default: work/oot/game/<the game's exe>, games/oot/game.toml's exe)
 """
 import bisect
 import os
@@ -15,7 +15,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 
 def default_exe():
     with open(os.path.join(ROOT, "games", "oot", "game.toml"), "rb") as f:
-        return os.path.join(ROOT, "work", "sa", "build", tomllib.load(f)["exe"])
+        return os.path.join(ROOT, "work", "oot", "game", tomllib.load(f)["exe"])
 
 
 def main(argv):

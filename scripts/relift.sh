@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 # The build again, by force, for the checkout this copy of the script is in (the main checkout or an agent's worktree):
 # every build lifts the game first (about 8 s; scripts/build.sh), so this is a build that does not stop early
-# because work/sa/build/BUILD.txt already names HEAD. Use it after a change the commit does not show: the dump, the
+# because work/oot/game/BUILD.txt already names HEAD. Use it after a change the commit does not show: the dump, the
 # toolchain.
 #
 #   scripts/relift.sh
 #
-# Stops when a game runs from this checkout's work/sa/build. In the main checkout on native-vk the build is
-# scripts/play-refresh.sh's (it writes work/sa/build/BUILD.txt last), else scripts/build.sh here. Log: work/play/relift.log in
-# the main checkout, work/sa/relift.log in a worktree.
+# Stops when a game runs from this checkout's work/oot/game. In the main checkout on native-vk the build is
+# scripts/play-refresh.sh's (it writes work/oot/game/BUILD.txt last), else scripts/build.sh here. Log: work/play/relift.log in
+# the main checkout, work/oot/relift.log in a worktree.
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 . "$root/scripts/game.sh"
 common=$(git -C "$root" rev-parse --path-format=absolute --git-common-dir) || exit 1
 main=${common%/.git}
-bd=$root/work/sa/build
-if [ "$root" = "$main" ]; then log=$root/work/play/relift.log; else log=$root/work/sa/relift.log; fi
+bd=$root/work/oot/game
+if [ "$root" = "$main" ]; then log=$root/work/play/relift.log; else log=$root/work/oot/relift.log; fi
 mkdir -p "$(dirname "$log")" "$bd"
 cd "$root" || exit 1
 . "$root/scripts/heavy.sh"

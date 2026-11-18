@@ -15,8 +15,8 @@ budget (cut with a note). Run through tools/re/re (work/venv's python -I).
     export                            refresh the lifter's view (work/re/<game>/export, ounce-lift re-export)
 
 The default game is games/oot (OUNCE_RE_GAME sets another). The lifter's view (function bodies, jump tables, PLT,
-symbols) is made once by ounce-lift re-export from the game's exefs: --exefs <dir>, else OUNCE_RE_EXEFS, else the
-first line of work/<game>/dump.txt, else (OoT) work/dump.txt. Addresses are guest addresses (Eden layout), labels
+symbols) is made once by ounce-lift re-export from the game's exefs: --exefs <dir>, else the dump the user's config
+names for the game (ounce config). Addresses are guest addresses (Eden layout), labels
 those of games/<game>/labels.txt.
 """
 import bisect
@@ -76,28 +76,13 @@ class Out:
 # ---- the game
 
 
-def read_dump_txt(p):
-    if os.path.exists(p):
-        for line in open(p, encoding="utf-8"):
-            line = line.strip()
-            if line and not line.startswith("#"):
-                return line
-    return None
-
-
 def find_exefs(game, override=None):
-    cands = [override, os.environ.get("OUNCE_RE_EXEFS"), read_dump_txt(os.path.join(WORK, game, "dump.txt"))]
-    if game == "oot":
-        cands.append(read_dump_txt(os.path.join(WORK, "dump.txt")))
-    for c in cands:
-        if not c:
-            continue
-        if os.path.exists(os.path.join(c, "main")):
-            return c
-        if os.path.exists(os.path.join(c, "exefs", "main")):
-            return os.path.join(c, "exefs")
-    sys.exit("re: no exefs for %s: pass --exefs <dir>, set OUNCE_RE_EXEFS, or write the folder into %s"
-             % (game, os.path.join(WORK, game, "dump.txt")))
+    """--exefs, else the exefs of the dump the user's config names for the game"""
+    if override:
+        return override
+    sys.path.insert(0, os.path.dirname(HERE))
+    import ounce_config
+    return os.path.join(ounce_config.dump(game), "exefs")
 
 
 def lifter():
@@ -110,8 +95,7 @@ def lifter():
 
 def export(gamedir, game, exefs=None):
     out = os.path.join(WORK, "re", game, "export")
-    cmd = [lifter(), "re-export", out, "--game", gamedir, "--root", ROOT, "--work", WORK,
-           "--exefs", find_exefs(game, exefs)]
+    cmd = [lifter(), "re-export", out, "--game", gamedir, "--root", ROOT, "--exefs", find_exefs(game, exefs)]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode:
         sys.exit("re: %s failed:\n%s" % (" ".join(cmd), r.stderr[-2000:]))

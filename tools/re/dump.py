@@ -1,7 +1,7 @@
 """What a dump is: program id, Switch 1 or Switch 2, modules, build ids, SDK, graphics API, romfs size.
 
-Reads the user's decrypted dump in place (exefs/ + romfs/); writes nothing into the repository. With --set it
-records the dump's folder in work/dump.txt (ignored by git), where tools/re/kit.py finds it.
+Reads the user's decrypted dump in place (exefs/ + romfs/); writes nothing. `ounce dump <folder> --set` records a dump
+in the config.
 
 Switch 1 or Switch 2 is decided from several independent signals, all of which must agree:
   - the program id's prefix (Switch 1 titles are 01xx..., Switch 2 ones 04xx...);
@@ -12,7 +12,7 @@ Switch 1 or Switch 2 is decided from several independent signals, all of which m
   - the NVN names in main (NVN2 adds DLSS and mesh-task procs) and the shader container names in romfs
     (Nin_NX_NVN for Maxwell, Nin_Ounce_NVN2 for Ampere).
 
-Usage:  python -I tools/re/dump.py [--dump <folder with exefs/ and romfs/>] [--set] [--no-romfs]
+Usage:  python -I tools/re/dump.py (--dump <folder with exefs/ and romfs/> | --game <game>) [--no-romfs]
 """
 import argparse
 import collections
@@ -123,22 +123,20 @@ def romfs_summary(root, cap=400000):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--dump", default=kit.DUMP, help="the folder with exefs/ and romfs/")
-    p.add_argument("--set", action="store_true", help="record --dump in work/dump.txt")
+    p.add_argument("--dump", help="the folder with exefs/ and romfs/")
+    p.add_argument("--game", help="the game whose dump the config names (ounce config)")
     p.add_argument("--no-romfs", action="store_true")
     a = p.parse_args()
+    if a.game:
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        import ounce_config
+        a.dump = ounce_config.dump(a.game)
     if not a.dump:
-        raise SystemExit("give --dump <folder with exefs/ and romfs/>")
+        raise SystemExit("give --dump <folder with exefs/ and romfs/> or --game <game>")
     exefs = os.path.join(a.dump, "exefs")
     romfs = os.path.join(a.dump, "romfs")
     if not os.path.isdir(exefs):
         raise SystemExit("%s: no exefs/" % a.dump)
-    if a.set:
-        os.makedirs(kit.WORK, exist_ok=True)
-        with open(os.path.join(kit.WORK, "dump.txt"), "w", encoding="utf-8") as f:
-            f.write("# the user's decrypted dump (exefs/ + romfs/), read in place; never copied into the repo\n%s\n"
-                    % os.path.abspath(a.dump))
-        print("recorded in %s" % os.path.join(kit.WORK, "dump.txt"))
 
     print("== dump: %s" % os.path.abspath(a.dump))
     votes = {}
