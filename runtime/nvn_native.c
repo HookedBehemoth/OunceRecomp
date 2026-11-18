@@ -29,7 +29,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include "os.h"
-void f_80365f00(Ctx *);   /* (lifted functions the host calls by name: a code pointer is a host function pointer) */
 uint64_t hos_hostcall(const char *name, void (*fn)(Ctx *, void *), void *user);   /* hos_hostcall.c */
 void hos_gpu_track(uint64_t guest, uint64_t size, int on);                          /* nvdrv.c */
 void rx_nvn_pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t key, int on);   /* rx_backend.c (native-vk layer 0) */
