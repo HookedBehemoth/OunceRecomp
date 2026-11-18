@@ -21,7 +21,7 @@ pub struct Meta {
     // ---- the patch scan's results the image stage reads (format 5)
     /// the symbols the host's HLE(...) and PATCH_ANSWER(...) replace
     pub hle_symbols: Vec<String>,
-    /// nx2/horizon OS_NAMESPACES: an import of a free function of one is stubbed
+    /// an import of a free function of one is stubbed
     pub os_namespaces: Vec<String>,
     pub setjmp_names: Vec<String>,
     pub part_insns: usize,

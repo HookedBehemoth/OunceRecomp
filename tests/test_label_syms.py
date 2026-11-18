@@ -12,13 +12,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
-import gamedesc  # noqa: E402
-gamedesc.use(str(ROOT / "games" / "oot"))   # (the game whose labels these read)
 import label_syms  # noqa: E402
 
 
 def main():
-    labels = label_syms.read()
+    labels = label_syms.read(label_syms.labels_of(str(ROOT / "games" / "oot")))
     if not labels:
         print("label_syms: FAILED (an empty list)")
         return 1

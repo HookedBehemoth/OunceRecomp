@@ -2,7 +2,7 @@
 
 `ounce-lift` needs no export: it lifts the game from the dump's exefs, the host's C (its patch declarations: src/patch.rs,
 patch_scan.py, probes.py, host_effects.py) and the game description (games/oot/game.toml; its binary files: docs/lifter.md, "Game description files"), with the platform's facts in
-ounce/lift/data/horizon.toml (kept equal to nx2/horizon by tests/test_horizon_data.py). In order: the scan, the modules (src/nso.rs), the HLE'd and stubbed symbols and the image (src/eden.rs), the ADR /
+ounce/lift/data/horizon.toml. In order: the scan, the modules (src/nso.rs), the HLE'd and stubbed symbols and the image (src/eden.rs), the ADR /
 ADRP+ADD entries (src/image.rs), the discovery (src/discover.rs), the plan (src/plan.rs), the rows resolved and checked
 and the PATCH_FUNCs checked against the plan, the generated sources (src/gen.rs), the summaries and records
 (src/summary.rs, src/bounds.rs) and each partition's IR, byte for byte the Python lifter's.
@@ -26,8 +26,8 @@ for rt64/). The output holds `<name>.ll` per partition, `lift_answers.ll`, `gen/
   "verify": false, "omit": true,
   "image_sha256": "…",              // the lift's image.bin
   "hle_symbols": ["…", …],          // patch_scan.patches().hle_symbols(): HLE(...) and PATCH_ANSWER(...) symbols
-  "os_namespaces": ["account", …],  // nx2/horizon OS_NAMESPACES: an imported free function of one is stubbed
-  "setjmp_names": ["__setjmp", …],  // nx2/horizon SETJMP_NAMES
+  "os_namespaces": ["account", …],  // an imported free function of one is stubbed
+  "setjmp_names": ["__setjmp", …],  // the setjmp functions
   "noreturn_names": ["abort", …], "noreturn_parts": ["AbortImpl", …],
   "part_insns": 120000,             // game.PART_INSNS
   "answers": [["symbol", value], …],          // the PATCH_ANSWER values, by symbol

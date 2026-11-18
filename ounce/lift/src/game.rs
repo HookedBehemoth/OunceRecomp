@@ -1,4 +1,4 @@
-//! The game declaration (games/<game>/game.toml, the Python side's nx2/gamedesc.py): what the lift and the build take
+//! The game declaration (games/<game>/game.toml): what the lift and the build take
 //! from one game. The lifter holds no fact of one game; it is here or in the game's patch declarations.
 
 use std::path::{Path, PathBuf};

@@ -1,6 +1,5 @@
 # Facts of the platform (Horizon, the Nintendo SDK, its C and C++ runtime), not of one game: the Rust lifter reads them
-# (ounce/lift). nx2/horizon/__init__.py holds the same for the Python lifter while it lives;
-# tests/test_horizon_data.py keeps the two equal.
+# (ounce/lift).
 
 # a function that calls one of these is a setjmp owner (discover)
 setjmp_names = ["__setjmp", "setjmp", "_setjmp"]

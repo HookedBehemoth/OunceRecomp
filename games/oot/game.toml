@@ -1,4 +1,3 @@
-# game.py holds the same data for the Python lifter until it is dropped; tests/test_game_toml.py keeps them equal.
 # The Legend of Zelda: Ocarina of Time (the Switch 2 build), as the lift and the build take it.
 name = "oot"
 

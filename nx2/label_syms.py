@@ -1,6 +1,6 @@
 """Labels for the lifted game's functions, so a profile or a backtrace names what we already know.
 
-The game description's label file (games/<game>/labels.txt, nx2/gamedesc.py) lists guest address -> label (one game
+The game description's label file (games/<game>/game.toml's `labels`) lists guest address -> label (one game
 build: the description's identity). After the
 link, the executable's symbol f_<address> becomes <label>.f_<address>: the label first (a profiler's column shows it),
 the address kept (unique, and every tool that looks for f_<address> still finds it). Only the symbol table changes:
@@ -20,15 +20,18 @@ import subprocess
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # (python -I leaves the script folder off)
-import gamedesc  # noqa: E402
+import tomllib
 LINE = re.compile(r"^([0-9a-f]{8})\s+([a-z][a-z0-9_]*)\s*(?:#.*)?$")
 
 
-def read(path=None):
-    """{address: label} of the label file (path, else the game description's); exits on a malformed line, an address
-    or a label listed twice"""
-    path = path or gamedesc.current().labels
+def labels_of(game):
+    """the label file of a game folder (games/<game>): game.toml's `labels`, beside it"""
+    with open(os.path.join(game, "game.toml"), "rb") as f:
+        return os.path.join(game, tomllib.load(f)["labels"])
+
+
+def read(path):
+    """{address: label} of the label file; exits on a malformed line, an address or a label listed twice"""
     labels, seen, errors = {}, {}, []
     with open(path, encoding="utf-8") as f:
         for n, line in enumerate(f, 1):
@@ -84,20 +87,20 @@ def apply(exe, labels):
 def main(argv):
     if argv[:1] != ["--game"] or len(argv) < 2:
         sys.exit(__doc__)
-    gamedesc.use(argv[1])
+    path = labels_of(argv[1])
     argv = argv[2:]
     if len(argv) >= 1 and argv[0] == "check":
-        print("labels: %d, each address and each label once" % len(read()))
+        print("labels: %d, each address and each label once" % len(read(path)))
         return 0
     if len(argv) == 2 and argv[0] == "apply":
-        labels = read()
+        labels = read(path)
         n, missing = apply(argv[1], labels)
         print("labels: %d of %d functions named in %s" % (n, len(labels), argv[1]))
         for a in missing:
             print("labels: no function f_%08x for '%s' (not a function's entry in this lift?)" % (a, labels[a]))
         return 0
     if len(argv) >= 2 and argv[0] == "name":
-        labels = read()
+        labels = read(path)
         for s in argv[1:]:
             a = int(s.replace("f_", ""), 16)
             print("%08x %s" % (a, labels.get(a, "-")))
