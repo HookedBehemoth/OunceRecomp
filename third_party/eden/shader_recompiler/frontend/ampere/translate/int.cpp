@@ -3,8 +3,9 @@
 // Encoding reference: Mesa NAK sm70_encode.rs (MIT), Copyright 2022 Collabora, Ltd.; the semantics of IADD3's and
 // SHF's results as NAK's constant folding (ir.rs) computes them
 
-// (fork) The direct Ampere front's 32-bit integer ALU: IADD3 (and UIADD3), IMAD (low word, .WIDE, .HI), LEA, LOP3,
-// PLOP3, ISETP, IMNMX, IABS, SHF, SEL.
+// (fork) The direct Ampere front's 32-bit integer ALU: IADD3, IMAD (low word, .WIDE, .HI), LEA, LOP3, PLOP3, ISETP,
+// IMNMX, IABS, SHF, SEL, PRMT, SGXT, FLO, POPC, BREV, and their uniform datapath forms (UIADD3, UIMAD, ULEA, ULOP3,
+// UPLOP3, UISETP, USHF, USEL, UPRMT, USGXT, UFLO, UPOPC, UBREV) on URs and UPs.
 
 #include "shader_recompiler/frontend/ampere/translate/translator.h"
 #include "shader_recompiler/frontend/maxwell/translate/impl/common_funcs.h"
@@ -35,9 +36,9 @@ IR::U32 One(Translator& t, const IR::U1& pred) {
     return IR::U32{t.ir.Select(pred, t.ir.Imm32(1), t.ir.Imm32(0))};
 }
 
-void IADD3(Translator& t, bool uniform) {
+void IADD3(Translator& t) {
     // Rd = a + b + c, each negated by 72, 63, 75 (.X, 74: inverted, the carries 87-90 and 77-80 added); Pu and Pv
-    // (81-83, 84-86) the sum's carries past 32 and 33 bits
+    // (81-83, 84-86) the sum's carries past 32 and 33 bits. UIADD3: the same on URs and UPs
     const bool extended{t.insn.Bit(74)};
     const AluForm form{t.insn.Form()};
     if (form != AluForm::RegReg && form != AluForm::ImmReg && form != AluForm::CbufReg && form != AluForm::URegReg) {
@@ -46,20 +47,13 @@ void IADD3(Translator& t, bool uniform) {
     const bool negate[3]{t.insn.Bit(72), form != AluForm::ImmReg && t.insn.Bit(63), t.insn.Bit(75)};
     t.Expect(73, 1, 0, "IADD3 mode");
     t.Expect(76, 1, 0, "IADD3 mode");
-    if (form != AluForm::ImmReg && !uniform) {
+    if (form != AluForm::ImmReg && !t.uniform) {
         t.Expect(62, 1, 0, "IADD3 mode");
     }
-    // the uniform form (encode_ualu): URa at 24, URb at 32 or an immediate, URc at 64; the carries are UPs
-    const IR::U32 src[3]{uniform ? t.UR(t.insn.Field(24, 6)) : t.Src0().value,
-                         uniform ? (form == AluForm::ImmReg ? t.ir.Imm32(t.insn.Imm32()) : t.UR(t.insn.UReg32()))
-                                 : t.Src1().value,
-                         uniform ? t.UR(t.insn.Field(64, 6)) : t.Src2().value};
-    if (uniform && form != AluForm::RegReg && form != AluForm::ImmReg) {
-        t.Fail("UIADD3 source form");
-    }
-    const auto set_pred{[&](u32 pred, const IR::U1& value) { uniform ? t.SetUP(pred, value) : t.SetP(pred, value); }};
-    const auto pred_src{[&](u32 start) { return uniform ? t.UPredSrc(start) : t.PredSrc(start); }};
-    const auto set_result{[&](const IR::U32& value) { uniform ? t.SetUR(t.insn.Dst(), value) : t.SetR(t.insn.Dst(), value); }};
+    const IR::U32 src[3]{t.Src0().value, t.Src1().value, t.Src2().value};
+    const auto set_pred{[&](u32 pred, const IR::U1& value) { t.SetXP(pred, value); }};
+    const auto pred_src{[&](u32 start) { return t.XPredSrc(start); }};
+    const auto set_result{[&](const IR::U32& value) { t.SetX(t.insn.Dst(), value); }};
     const u32 carry_out[2]{t.insn.PredDst(81), t.insn.PredDst(84)};
     const bool carries{carry_out[0] != PT || carry_out[1] != PT};
     if (!extended) {
@@ -158,21 +152,21 @@ void IMAD(Translator& t) {
         break;
     default:
         negate_c = t.insn.Bit(75);
-        c = t.R(t.insn.Reg64());
+        c = t.X(t.insn.Reg64());
         break;
     }
     if (negate_c) {
         c = extended ? t.ir.BitwiseNot(c) : IR::U32{t.ir.INeg(c)};
     }
-    const bool zero_product{t.insn.Src0() == RZ || (form == AluForm::ImmReg && t.insn.Imm32() == 0) ||
-                            (form == AluForm::RegReg && t.insn.Reg32() == RZ) ||
+    const bool zero_product{t.XIsZero(t.insn.Src0()) || (form == AluForm::ImmReg && t.insn.Imm32() == 0) ||
+                            (form == AluForm::RegReg && t.XIsZero(t.insn.Reg32())) ||
                             ((form == AluForm::RegImm || form == AluForm::RegCbuf || form == AluForm::RegUReg) &&
-                             t.insn.Reg64() == RZ)};
+                             t.XIsZero(t.insn.Reg64()))};
     IR::U32 value{zero_product ? c : IR::U32{t.ir.IAdd(t.ir.IMul(a, b), c)}};
     if (extended) {
-        value = IR::U32{t.ir.IAdd(value, One(t, t.PredSrc(87)))};
+        value = IR::U32{t.ir.IAdd(value, One(t, t.XPredSrc(87)))};
     }
-    t.SetR(t.insn.Dst(), value);
+    t.SetX(t.insn.Dst(), value);
 }
 
 void IMAD_WIDE(Translator& t, bool wide) {
@@ -186,7 +180,7 @@ void IMAD_WIDE(Translator& t, bool wide) {
     t.Expect(72, 1, 0, "IMAD.WIDE mode");
     const bool is_signed{t.insn.Bit(73)};
     const u32 dst{t.insn.Dst()};
-    if (wide && dst != RZ && dst % 2 != 0) {
+    if (wide && !t.XIsZero(dst) && dst % 2 != 0) {
         t.Fail("unaligned destination pair");
     }
     const IR::U32 a{t.Src0().value};
@@ -198,11 +192,11 @@ void IMAD_WIDE(Translator& t, bool wide) {
     case AluForm::CbufReg:
     case AluForm::URegReg: {
         const u32 c{t.insn.Reg64()};
-        if (c != RZ && c % 2 != 0) {
+        if (!t.XIsZero(c) && c % 2 != 0) {
             t.Fail("unaligned addend pair");
         }
-        c_low = t.R(c);
-        c_high = c == RZ ? t.ir.Imm32(0) : t.R(c + 1);
+        c_low = t.X(c);
+        c_high = t.XIsZero(c) ? t.ir.Imm32(0) : t.X(c + 1);
         break;
     }
     case AluForm::RegCbuf: {
@@ -221,12 +215,12 @@ void IMAD_WIDE(Translator& t, bool wide) {
     const IR::U64 sum{t.ir.IAdd(product, t.ir.PackUint2x32(t.ir.CompositeConstruct(c_low, c_high)))};
     const IR::Value words{t.ir.UnpackUint2x32(sum)};
     if (wide) {
-        t.SetR(dst, IR::U32{t.ir.CompositeExtract(words, 0)});
-        if (dst != RZ) {
-            t.SetR(dst + 1, IR::U32{t.ir.CompositeExtract(words, 1)});
+        t.SetX(dst, IR::U32{t.ir.CompositeExtract(words, 0)});
+        if (!t.XIsZero(dst)) {
+            t.SetX(dst + 1, IR::U32{t.ir.CompositeExtract(words, 1)});
         }
     } else {
-        t.SetR(dst, IR::U32{t.ir.CompositeExtract(words, 1)});
+        t.SetX(dst, IR::U32{t.ir.CompositeExtract(words, 1)});
     }
 }
 
@@ -238,8 +232,8 @@ void LOP3(Translator& t) {
     const IR::U32 b{IntSrc1(t)};
     const IR::U32 c{IntSrc2(t)};
     const IR::U32 result{Maxwell::ApplyLUT(t.ir, a, b, c, t.insn.Field(72, 8))};
-    t.SetR(t.insn.Dst(), result);
-    t.SetP(t.insn.PredDst(81), t.ir.INotEqual(result, t.ir.Imm32(0)));
+    t.SetX(t.insn.Dst(), result);
+    t.SetXP(t.insn.PredDst(81), t.ir.INotEqual(result, t.ir.Imm32(0)));
 }
 
 void ISETP(Translator& t) {
@@ -255,7 +249,7 @@ void ISETP(Translator& t) {
     const IR::U32 b{IntSrc1(t)};
     IR::U1 cmp;
     if (t.insn.Bit(72)) {
-        const IR::U1 low{t.PredSrc(68)};
+        const IR::U1 low{t.XPredSrc(68)};
         const IR::U1 equal{t.ir.IEqual(a, b)};
         switch (compare) {
         case CompareOp::Equal:
@@ -278,10 +272,10 @@ void ISETP(Translator& t) {
     } else {
         cmp = Maxwell::IntegerCompare(t.ir, a, b, compare, is_signed);
     }
-    const IR::U1 accum{t.PredSrc(87)};
+    const IR::U1 accum{t.XPredSrc(87)};
     const auto op{static_cast<BooleanOp>(bop)};
-    t.SetP(t.insn.PredDst(81), Maxwell::PredicateCombine(t.ir, cmp, accum, op));
-    t.SetP(t.insn.PredDst(84), Maxwell::PredicateCombine(t.ir, t.ir.LogicalNot(cmp), accum, op));
+    t.SetXP(t.insn.PredDst(81), Maxwell::PredicateCombine(t.ir, cmp, accum, op));
+    t.SetXP(t.insn.PredDst(84), Maxwell::PredicateCombine(t.ir, t.ir.LogicalNot(cmp), accum, op));
 }
 
 void IMNMX(Translator& t) {
@@ -293,7 +287,7 @@ void IMNMX(Translator& t) {
     const IR::U32 b{IntSrc1(t)};
     const IR::U32 min{t.ir.IMin(a, b, is_signed)};
     const IR::U32 max{t.ir.IMax(a, b, is_signed)};
-    t.SetR(t.insn.Dst(), IR::U32{t.ir.Select(t.PredSrc(87), min, max)});
+    t.SetX(t.insn.Dst(), IR::U32{t.ir.Select(t.XPredSrc(87), min, max)});
 }
 
 void SHF(Translator& t) {
@@ -313,7 +307,7 @@ void SHF(Translator& t) {
     const AluForm form{t.insn.Form()};
     const bool hi_zero{form == AluForm::RegImm ? t.insn.Imm32() == 0
                        : form == AluForm::RegCbuf || form == AluForm::RegUReg ? false
-                                                                                : t.insn.Reg64() == RZ};
+                                                                                : t.XIsZero(t.insn.Reg64())};
     auto& ir{t.ir};
     if (shift_operand.immediate) {
         const u32 raw{t.insn.Imm32()};
@@ -331,10 +325,10 @@ void SHF(Translator& t) {
                                   : ir.BitwiseOr(ir.ShiftRightLogical(lo, amount), ir.ShiftLeftLogical(hi, rest));
             } else {
                 value = s == 0 ? hi
-                        : lo_reg == RZ ? IR::U32{ir.ShiftLeftLogical(hi, amount)}
+                        : t.XIsZero(lo_reg) ? IR::U32{ir.ShiftLeftLogical(hi, amount)}
                                        : ir.BitwiseOr(ir.ShiftLeftLogical(hi, amount), ir.ShiftRightLogical(lo, rest));
             }
-            t.SetR(t.insn.Dst(), value);
+            t.SetX(t.insn.Dst(), value);
             return;
         }
     }
@@ -354,25 +348,29 @@ void SHF(Translator& t) {
                                     ir.ShiftLeftLogical(x, s63))};
     }
     const IR::Value words{ir.UnpackUint2x32(shifted)};
-    t.SetR(t.insn.Dst(), IR::U32{ir.CompositeExtract(words, high_word ? 1 : 0)});
+    t.SetX(t.insn.Dst(), IR::U32{ir.CompositeExtract(words, high_word ? 1 : 0)});
 }
 
 void SEL(Translator& t) {
     t.Expect(72, 15, 0, "SEL mode");
     const IR::U32 a{t.Src0().value};
     const IR::U32 b{IntSrc1(t)};
-    t.SetR(t.insn.Dst(), IR::U32{t.ir.Select(t.PredSrc(87), a, b)});
+    t.SetX(t.insn.Dst(), IR::U32{t.ir.Select(t.XPredSrc(87), a, b)});
 }
 
 void LEA(Translator& t) {
-    // Rd = (a << s) + b, s at 75-79; .HI (80): the high word of (c:a) << s; 72 negates (.X: inverts) the shifted value,
+    // Rd = (a << s) + b, s at 75-79; .HI (80): the high word of (c:a) << s (.SX32, 73: c = a's sign); 72 negates (.X: inverts) the shifted value,
     // 63 b (register, constant and uniform forms); .X (74) adds the carry 87-90; 81-83 the carry out
     const bool extended{t.insn.Bit(74)}, high_word{t.insn.Bit(80)};
     const AluForm form{t.insn.Form()};
     if (form != AluForm::RegReg && form != AluForm::ImmReg && form != AluForm::CbufReg && form != AluForm::URegReg) {
         t.Fail("LEA source form");
     }
-    t.Expect(73, 1, 0, "LEA mode");
+    // .SX32 (73): the high word is a's sign (.HI with no c)
+    const bool sign_extend{t.insn.Bit(73)};
+    if (sign_extend && (!high_word || !t.XIsZero(t.insn.Reg64()))) {
+        t.Fail("LEA.SX32 mode");
+    }
     if (form != AluForm::ImmReg) {
         t.Expect(62, 1, 0, "LEA mode");
     }
@@ -387,7 +385,7 @@ void LEA(Translator& t) {
     IR::U32 b{t.Src1().value};
     IR::U32 shifted;
     if (high_word) {
-        const IR::U32 c{t.R(t.insn.Reg64())};
+        const IR::U32 c{sign_extend ? IR::U32{ir.ShiftRightArithmetic(a, ir.Imm32(31))} : t.X(t.insn.Reg64())};
         shifted = shift == 0 ? c
                              : ir.BitwiseOr(ir.ShiftLeftLogical(c, ir.Imm32(shift)),
                                             ir.ShiftRightLogical(a, ir.Imm32(32 - shift)));
@@ -411,41 +409,147 @@ void LEA(Translator& t) {
     IR::U32 sum{ir.IAdd(shifted, b)};
     overflow = ir.LogicalOr(overflow, ir.ILessThan(sum, shifted, false));
     if (extended) {
-        const IR::U1 carry{t.PredSrc(87)};
+        const IR::U1 carry{t.XPredSrc(87)};
         sum = IR::U32{ir.IAdd(sum, One(t, carry))};
         overflow = ir.LogicalOr(overflow, ir.LogicalAnd(carry, ir.IEqual(sum, zero)));
     }
-    t.SetR(t.insn.Dst(), sum);
-    t.SetP(t.insn.PredDst(81), overflow);
+    t.SetX(t.insn.Dst(), sum);
+    t.SetXP(t.insn.PredDst(81), overflow);
 }
 
 void PLOP3(Translator& t) {
     // dst0 (81-83) = LUT0(p0, p1, p2), its table at 64-66 and 72-76; dst1 (84-86) with the table at 16-23; the sources
     // at 87-90, 77-80 and 68-71 (a uniform predicate by 67)
-    const IR::U1 inputs[3]{t.PredSrc(87), t.PredSrc(77), t.insn.Bit(67) ? t.UPredSrc(68) : t.PredSrc(68)};
+    const IR::U1 inputs[3]{t.XPredSrc(87), t.XPredSrc(77), t.insn.Bit(67) || t.uniform ? t.UPredSrc(68) : t.XPredSrc(68)};
     const u32 lut0{t.insn.Field(64, 3) | (t.insn.Field(72, 5) << 3)};
     const u32 lut1{t.insn.Field(16, 8)};
     const auto mask{[&](const IR::U1& p) { return IR::U32{t.ir.Select(p, t.ir.Imm32(~0U), t.ir.Imm32(0))}; }};
     const IR::U32 a{mask(inputs[0])}, b{mask(inputs[1])}, c{mask(inputs[2])};
     for (const auto& [dst, lut] : {std::pair{t.insn.PredDst(81), lut0}, std::pair{t.insn.PredDst(84), lut1}}) {
         if (dst != PT) {
-            t.SetP(dst, t.ir.INotEqual(Maxwell::ApplyLUT(t.ir, a, b, c, lut), t.ir.Imm32(0)));
+            t.SetXP(dst, t.ir.INotEqual(Maxwell::ApplyLUT(t.ir, a, b, c, lut), t.ir.Imm32(0)));
         }
     }
 }
 
 void IABS(Translator& t) {
     t.Expect(64, 27, 0, "IABS mode");
-    t.SetR(t.insn.Dst(), t.ir.IAbs(IntSrc1(t)));
+    t.SetX(t.insn.Dst(), t.ir.IAbs(IntSrc1(t)));
+}
+
+void PRMT(Translator& t) {
+    // byte i of Rd: nibble i of the selector (src1) picks byte (n & 7) of b:a (src2:src0); n & 8 replicates its sign bit.
+    // 72-74: the index mode only
+    t.Expect(72, 19, 0, "PRMT mode");
+    auto& ir{t.ir};
+    const IR::U32 sources[2]{t.Src0().value, IntSrc2(t)};
+    const Operand selector{t.Src1()};
+    if (!selector.immediate) {
+        IR::U32 result{ir.Imm32(0)};
+        const IR::U64 pair{ir.PackUint2x32(ir.CompositeConstruct(sources[0], sources[1]))};
+        for (u32 i = 0; i < 4; ++i) {
+            const IR::U32 nibble{ir.BitFieldExtract(selector.value, ir.Imm32(i * 4), ir.Imm32(4))};
+            const IR::U32 position{ir.ShiftLeftLogical(ir.BitwiseAnd(nibble, ir.Imm32(7)), ir.Imm32(3))};
+            const IR::U32 byte{ir.BitwiseAnd(IR::U32{ir.CompositeExtract(
+                                                 ir.UnpackUint2x32(ir.ShiftRightLogical(pair, position)), 0)},
+                                             ir.Imm32(0xff))};
+            const IR::U32 sign{ir.BitFieldExtract(byte, ir.Imm32(7), ir.Imm32(1), true)};
+            const IR::U1 replicate{ir.INotEqual(ir.BitwiseAnd(nibble, ir.Imm32(8)), ir.Imm32(0))};
+            result = ir.BitFieldInsert(result, IR::U32{ir.Select(replicate, sign, byte)}, ir.Imm32(i * 8), ir.Imm32(8));
+        }
+        t.SetX(t.insn.Dst(), result);
+        return;
+    }
+    // a constant selector: runs of consecutive source bytes as one field each
+    const u32 sel{t.insn.Imm32() & 0xffff};
+    IR::U32 result;
+    for (u32 i = 0; i < 4;) {
+        const u32 nibble{(sel >> (i * 4)) & 0xf};
+        const IR::U32& source{sources[(nibble >> 2) & 1]};
+        IR::U32 field;
+        u32 length{1};
+        if (nibble & 8) {
+            field = ir.BitFieldExtract(source, ir.Imm32((nibble & 3) * 8 + 7), ir.Imm32(1), true);
+        } else {
+            while (i + length < 4 && ((sel >> ((i + length) * 4)) & 0xf) == nibble + length && ((nibble + length) & 3) != 0) {
+                ++length;
+            }
+            field = length == 4 ? source
+                                : ir.BitFieldExtract(source, ir.Imm32((nibble & 3) * 8), ir.Imm32(length * 8));
+        }
+        result = i == 0 && !(nibble & 8) ? field
+                 : ir.BitFieldInsert(i == 0 ? ir.Imm32(0) : result, field, ir.Imm32(i * 8), ir.Imm32(length * 8));
+        i += length;
+    }
+    t.SetX(t.insn.Dst(), result);
+}
+
+void SGXT(Translator& t) {
+    // Rd = the low n bits of a (n = src1, clamped to 32), sign- (73) or zero-extended; n = 0 gives 0
+    t.Expect(72, 1, 0, "SGXT mode");
+    t.Expect(74, 17, 0, "SGXT mode");
+    const bool is_signed{t.insn.Bit(73)};
+    auto& ir{t.ir};
+    const IR::U32 a{t.Src0().value};
+    const Operand bits{t.Src1()};
+    if (bits.immediate) {
+        const u32 n{t.insn.Imm32()};
+        t.SetX(t.insn.Dst(), n >= 32 ? a : n == 0 ? ir.Imm32(0) : ir.BitFieldExtract(a, ir.Imm32(0), ir.Imm32(n), is_signed));
+        return;
+    }
+    if (t.insn.Form() != AluForm::ImmReg) {
+        t.Expect(62, 2, 0, "SGXT source modifiers");
+    }
+    const IR::U32 n{ir.UMin(bits.value, ir.Imm32(32))};
+    const IR::U32 shift{ir.ISub(ir.Imm32(32), n)};
+    const IR::U32 shifted{ir.ShiftLeftLogical(a, ir.BitwiseAnd(shift, ir.Imm32(31)))};
+    const IR::U32 value{is_signed ? ir.ShiftRightArithmetic(shifted, ir.BitwiseAnd(shift, ir.Imm32(31)))
+                                  : ir.ShiftRightLogical(shifted, ir.BitwiseAnd(shift, ir.Imm32(31)))};
+    t.SetX(t.insn.Dst(), IR::U32{ir.Select(ir.IEqual(n, ir.Imm32(0)), ir.Imm32(0), value)});
+}
+
+/// FLO's and POPC's source: src1, 63 its bitwise not (encode_alu with no src0)
+IR::U32 NotSrc1(Translator& t) {
+    const Operand source{t.Src1()};
+    if (source.immediate) {
+        return source.value;
+    }
+    t.Expect(62, 1, 0, "integer source modifiers");
+    return t.insn.Bit(63) ? t.ir.BitwiseNot(source.value) : source.value;
+}
+
+void FLO(Translator& t) {
+    // the index of the most significant 1 (73 signed: of the most significant bit unlike the sign), .SH (74): 31 minus
+    // it; none: 0xffffffff in both
+    t.Expect(72, 1, 0, "FLO mode");
+    t.Expect(75, 16, 0x7 << 6, "FLO mode"); // 81-83: no predicate destination
+    const IR::U32 source{NotSrc1(t)};
+    auto& ir{t.ir};
+    const IR::U32 msb{t.insn.Bit(73) ? ir.FindSMsb(source) : ir.FindUMsb(source)};
+    IR::U32 value{msb};
+    if (t.insn.Bit(74)) {
+        value = IR::U32{ir.Select(ir.IEqual(msb, ir.Imm32(~0U)), msb, ir.ISub(ir.Imm32(31), msb))};
+    }
+    t.SetX(t.insn.Dst(), value);
+}
+
+void POPC(Translator& t) {
+    t.Expect(72, 19, 0, "POPC mode");
+    t.SetX(t.insn.Dst(), t.ir.BitCount(NotSrc1(t)));
+}
+
+void BREV(Translator& t) {
+    t.Expect(72, 19, 0, "BREV mode");
+    t.SetX(t.insn.Dst(), t.ir.BitReverse(IntSrc1(t)));
 }
 } // Anonymous namespace
 
 void TranslateInteger(Translator& t) {
     switch (t.insn.AluOp()) {
     case 0x010:
-        return IADD3(t, false);
+        return IADD3(t);
     case 0x090:
-        return IADD3(t, true);
+        return IADD3(t);
     case 0x011:
         return LEA(t);
     case 0x01c:
@@ -467,7 +571,37 @@ void TranslateInteger(Translator& t) {
     case 0x019:
         return SHF(t);
     case 0x007:
+    case 0x087:
         return SEL(t);
+    case 0x08c:
+        return ISETP(t);
+    case 0x091:
+        return LEA(t);
+    case 0x092:
+        return LOP3(t);
+    case 0x099:
+        return SHF(t);
+    case 0x09c:
+        return PLOP3(t);
+    case 0x0a4:
+        return IMAD(t);
+    case 0x0a5:
+        return IMAD_WIDE(t, true);
+    case 0x016:
+    case 0x096:
+        return PRMT(t);
+    case 0x01a:
+    case 0x09a:
+        return SGXT(t);
+    case 0x100:
+    case 0x0bd:
+        return FLO(t);
+    case 0x101:
+    case 0x0be:
+        return BREV(t);
+    case 0x109:
+    case 0x0bf:
+        return POPC(t);
     default:
         t.Fail("not translated");
     }

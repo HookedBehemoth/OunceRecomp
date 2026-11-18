@@ -58,10 +58,19 @@ public:
     Operand Src2();
     IR::F32 Float(const Operand& operand);
 
+    /// The datapath's registers and predicates: URs and UPs for a uniform datapath instruction, else GPRs and Ps. A
+    /// register field is 8 bits; a uniform one must name UR0-UR63 (URZ: 0)
+    IR::U32 X(u32 reg);
+    void SetX(u32 reg, const IR::U32& value);
+    [[nodiscard]] bool XIsZero(u32 reg) const;
+    IR::U1 XPredSrc(u32 start);
+    void SetXP(u32 pred, const IR::U1& value);
+
     Environment& env;
     IR::IREmitter ir;
     Location pc;
     Insn insn;
+    bool uniform{}; ///< insn is on the uniform datapath
 };
 
 void TranslateFloat(Translator& t);
@@ -78,6 +87,7 @@ void TranslateAtomic(Translator& t);
 void TranslateSpecial(Translator& t);
 void TranslateBarrier(Translator& t);
 void TranslateIsbe(Translator& t);
+void TranslatePredicate(Translator& t);
 
 /// Emits the instructions of [begin, end) into block
 void Translate(Environment& env, IR::Block* block, Location begin, Location end);

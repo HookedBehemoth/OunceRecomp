@@ -84,6 +84,38 @@ IR::U1 Translator::UPredSrc(u32 start) {
     return UP(insn.PredSrc(start), insn.Bit(start + 3));
 }
 
+IR::U32 Translator::X(u32 reg) {
+    if (!uniform) {
+        return R(reg);
+    }
+    if (reg > URZ) {
+        Fail(fmt::format("uniform register field {:#x}", reg));
+    }
+    return UR(reg);
+}
+
+void Translator::SetX(u32 reg, const IR::U32& value) {
+    if (!uniform) {
+        return SetR(reg, value);
+    }
+    if (reg > URZ) {
+        Fail(fmt::format("uniform register field {:#x}", reg));
+    }
+    SetUR(reg, value);
+}
+
+bool Translator::XIsZero(u32 reg) const {
+    return reg == (uniform ? URZ : RZ);
+}
+
+IR::U1 Translator::XPredSrc(u32 start) {
+    return uniform ? UPredSrc(start) : PredSrc(start);
+}
+
+void Translator::SetXP(u32 pred, const IR::U1& value) {
+    uniform ? SetUP(pred, value) : SetP(pred, value);
+}
+
 IR::U32 Translator::Cbuf() {
     if (insn.CbufBindless()) {
         Fail("bindless constant buffer operand");
@@ -96,10 +128,23 @@ IR::U32 Translator::Cbuf() {
 }
 
 Operand Translator::Src0() {
-    return {R(insn.Src0()), insn.Bit(73), insn.Bit(72)};
+    return {X(insn.Src0()), insn.Bit(73), insn.Bit(72)};
 }
 
 Operand Translator::Src1() {
+    if (uniform) {
+        // encode_ualu: URb at 32, an immediate or URc at 64
+        switch (insn.Form()) {
+        case AluForm::RegReg:
+            return {X(insn.Reg32()), insn.Bit(62), insn.Bit(63)};
+        case AluForm::RegImm:
+            return {X(insn.Reg64()), insn.Bit(74), insn.Bit(75)};
+        case AluForm::ImmReg:
+            return {ir.Imm32(insn.Imm32()), false, false, true};
+        default:
+            Fail("uniform ALU source form");
+        }
+    }
     switch (insn.Form()) {
     case AluForm::RegReg:
         return {R(insn.Reg32()), insn.Bit(62), insn.Bit(63)};
@@ -118,6 +163,17 @@ Operand Translator::Src1() {
 }
 
 Operand Translator::Src2() {
+    if (uniform) {
+        switch (insn.Form()) {
+        case AluForm::RegReg:
+        case AluForm::ImmReg:
+            return {X(insn.Reg64()), insn.Bit(74), insn.Bit(75)};
+        case AluForm::RegImm:
+            return {ir.Imm32(insn.Imm32()), false, false, true};
+        default:
+            Fail("uniform ALU source form");
+        }
+    }
     switch (insn.Form()) {
     case AluForm::RegReg:
     case AluForm::ImmReg:
@@ -206,13 +262,18 @@ void TranslateOne(Translator& t) {
         return TranslateFloat(t);
     case 0x010: case 0x012: case 0x017: case 0x019: case 0x024: case 0x025: case 0x027: case 0x00c: case 0x007:
     case 0x011: case 0x01c: case 0x013: case 0x090:
+    case 0x016: case 0x01a: case 0x100: case 0x101: case 0x109:
+    case 0x087: case 0x08c: case 0x091: case 0x092: case 0x096: case 0x099: case 0x09a: case 0x09c: case 0x0a4:
+    case 0x0a5: case 0x0bd: case 0x0be: case 0x0bf:
         return TranslateInteger(t);
-    case 0x002: case 0x082:
+    case 0x002: case 0x082: case 0x1c2:
         return TranslateMove(t);
-    case 0x105: case 0x045:
+    case 0x105: case 0x045: case 0x106: case 0x03e: case 0x043:
         return TranslateConversion(t);
-    case 0x030:
+    case 0x030: case 0x031: case 0x032: case 0x034: case 0x040:
         return TranslateHalf(t);
+    case 0x003: case 0x004: case 0x083:
+        return TranslatePredicate(t);
     default:
         break;
     }
@@ -236,6 +297,7 @@ void Translate(Environment& env, IR::Block* block, Location begin, Location end)
     for (Location pc = begin; pc != end; ++pc) {
         t.pc = pc;
         t.insn = Flow::ReadInsn(env, pc);
+        t.uniform = t.insn.IsUniformDatapath();
         if (t.insn.NeverExecutes()) {
             continue;
         }
