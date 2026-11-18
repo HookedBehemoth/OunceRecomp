@@ -2,9 +2,10 @@
 budget (cut with a note). Run through tools/re/re (work/venv's python -I).
 
   re [--game games/oot|games/dkb] <command> ...
-    fn <addr|label> [--lines N]       the annotated listing: blocks, callees (with the name of a stored reading),
-                                      strings, globals, NVN procs called through their slots
-    tree <addr|label> [--depth N]     the callee tree: label, sdk, read: <name> (stored pseudo-C) or UNREAD
+    fn <addr|label>                   the whole annotated listing: blocks, callees (with the name of a stored reading),
+                                      strings, globals, NVN procs called through their slots; above FN_LIMIT
+                                      instructions an error instead of a cut listing
+    tree <addr|label> [--depth N]     the callee tree: label, sdk, read: <name> (stored pseudo-C), proc or UNREAD
     pseudo <addr|label> [--set <file|->]  the stored pseudo-C (the re agent writes it)
     pc <addr|label>                   experimental pseudo-C without a model
     callers <addr|label>              who calls it (BL, tail B, 8-byte pointers), one line each
@@ -36,6 +37,8 @@ sys.path.insert(0, HERE)
 import pseudo  # noqa: E402
 
 LIMIT_CHARS = 9000
+FN_LIMIT = 6000     # instructions re fn prints whole: ~40 bytes a line, so ~250 kB (~70k tokens) fits the re agent's
+                    # context with room for its work. 36 of DKB's 188k functions are larger (up to 19000)
 
 
 def main_root():
@@ -627,22 +630,25 @@ def cmd_fieldname(g, args):
 # ---- the listing
 
 
-def listing(g, a, hide_name=False):
+def listing(g, a, hide_name=False, proc_calls=None):
+    """the annotated listing; with proc_calls (a dict), only fills it with blr pc -> proc name and returns nothing"""
     pcs = g.body(a)
     ins = pseudo.decode(g, pcs)
     blocks, bmap = pseudo.build_blocks(g, a, pcs, ins)
     bname = {b.start: "B%d" % n for n, b in enumerate(blocks)}
-    bl, b_ = g.callers(a)
-    ptr = g.pointers(a)
-    nm = "f_%08x" % a if hide_name else g.name(a)
     fields = field_names(g)
-    out = ["// %s @ %#x: %d insns, %d blocks; %s; callers: %d bl, %d tail b, %d pointers; frame saves not shown" %
-           (nm, a, len(pcs), len(blocks), ("args x0..x%d read first" % (g.callee_inputs(a) - 1)) if g.callee_inputs(a) else "no args read first", len(bl), len(b_), len(ptr))]
-    if not hide_name and a in g.notes and g.notes[a]:
-        out.append("// label note: " + g.notes[a][:300])
-    own = None if hide_name else read_tag(g, a)
-    if own:
-        out.append("// %s (re pseudo)" % own)
+    out = []
+    if proc_calls is None:
+        bl, b_ = g.callers(a)
+        ptr = g.pointers(a)
+        nm = "f_%08x" % a if hide_name else g.name(a)
+        out.append("// %s @ %#x: %d insns, %d blocks; %s; callers: %d bl, %d tail b, %d pointers; frame saves not shown" %
+                   (nm, a, len(pcs), len(blocks), ("args x0..x%d read first" % (g.callee_inputs(a) - 1)) if g.callee_inputs(a) else "no args read first", len(bl), len(b_), len(ptr)))
+        if not hide_name and a in g.notes and g.notes[a]:
+            out.append("// label note: " + g.notes[a][:300])
+        own = None if hide_name else read_tag(g, a)
+        if own:
+            out.append("// %s (re pseudo)" % own)
     pages = {}
     procs = g.procs()
     held = {}       # reg -> ("slot", address) or ("proc", name): calls through a proc slot get its name
@@ -695,6 +701,8 @@ def listing(g, a, hide_name=False):
                     note = "&." + fields[ops[2].imm]
             elif x.kind == "blr" and held.get(ops[0].reg, ("",))[0] == "proc":
                 note = held[ops[0].reg][1]
+                if proc_calls is not None:
+                    proc_calls[pc] = note
             elif mn.startswith(("ld", "st")) and any(o.type == pseudo.A.ARM64_OP_MEM for o in ops):
                 m = next(o for o in ops if o.type == pseudo.A.ARM64_OP_MEM)
                 if m.mem.base in pages:
@@ -730,7 +738,14 @@ def listing(g, a, hide_name=False):
             elif got:
                 held[ops[0].reg] = got
             out.append("  %x  %-7s %s%s" % (pc, mn, t, ("   ; " + note) if note else ""))
-    return out
+    return None if proc_calls is not None else out
+
+
+def proc_calls(g, a):
+    """blr pc -> the proc it calls through a slot, from the listing's slot tracking"""
+    d = {}
+    listing(g, a, proc_calls=d)
+    return d
 
 
 def callee_saved(r):
@@ -763,12 +778,14 @@ def capstone_write():
 
 
 def cmd_fn(g, args):
-    lines = int(opt(args, "--lines", 220))
+    """the whole listing, never cut: above FN_LIMIT instructions an error instead"""
     a = fn_entry(g, args)
-    o = Out(lines, 16000)
-    for line in listing(g, a, g.hide_name == a):
-        o(line)
-    o.done()
+    n = len(g.body(a))
+    if n > FN_LIMIT:
+        nm = "f_%08x" % a if g.hide_name == a else g.name(a)
+        blocks, _ = pseudo.build_blocks(g, a, g.body(a), pseudo.decode(g, g.body(a)))
+        sys.exit("re: %s @ %#x has %d insns, %d blocks: above the fn limit of %d insns" % (nm, a, n, len(blocks), FN_LIMIT))
+    print("\n".join(listing(g, a, g.hide_name == a)))
 
 
 def cmd_tree(g, args):
@@ -782,7 +799,12 @@ def cmd_tree(g, args):
         _, calls = callees(g, f)
         for t in calls:
             if t is None:
-                o("  " * d + "(indirect call)")
+                pcs = calls[None]
+                named = proc_calls(g, f)
+                for p in sorted(set(named[pc] for pc in pcs if pc in named)):
+                    o("  " * d + "%s  [proc]" % p)
+                if any(pc not in named for pc in pcs):
+                    o("  " * d + "(indirect call)")
                 continue
             t = g.resolve(t)
             known = t in g.labels or t in g.sym
@@ -883,10 +905,17 @@ def cmd_callees(g, args):
     a = g.parse_addr(args[0])
     fn, seen = callees(g, a)
     o = Out(int(opt(args, "--lines", 60)))
-    o("// %s @ %#x calls %d functions (%d sites)" % (g.name(a), a, len(seen), len(fn.calls)))
+    named = proc_calls(g, a) if None in seen else {}
+    o("// %s @ %#x calls %d functions and %d procs (%d sites)" % (g.name(a), a, len(seen) - (None in seen),
+                                                               len(set(named.values())), len(fn.calls)))
     for t, pcs in seen.items():
         if t is None:
-            o("indirect   (blr)                                    x%d at %s" % (len(pcs), ",".join("+%#x" % (p - a) for p in pcs[:6])))
+            by = {}
+            for p in pcs:
+                by.setdefault(named.get(p), []).append(p)
+            for p, sites in sorted(by.items(), key=lambda x: (x[0] is None, x[0] or "")):
+                o("%-10s %-40s x%d %s" % ("proc" if p else "indirect", p or "(blr)", len(sites),
+                                          ",".join("+%#x" % (s - a) for s in sites[:6])))
             continue
         tag = "label" if t in g.labels else "sym" if t in g.sym else ""
         o("%-10s %-40s x%d %s" % ("%#x" % t, g.name(t), len(pcs), tag))

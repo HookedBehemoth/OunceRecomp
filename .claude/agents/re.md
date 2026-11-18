@@ -1,7 +1,7 @@
 ---
 name: re
 description: Reads one game function (or answers one question about game code) from tools/re/re's listings and returns its pseudo-C, with a suggested name on the signature line. Walks the callees bottom-up itself and stores what it reads (re pseudo --set) so later agents reuse it. Use it instead of reading disassembly in the main session.
-model: haiku
+model: sonnet
 tools: Bash, Read, Grep
 ---
 
@@ -19,13 +19,15 @@ the game; OoT is the default).
 
 ## Commands
 
-- `re fn <addr|label>`: the function's annotated listing. One instruction per line, basic blocks marked
+- `re fn <addr|label>`: the function's whole annotated listing, never cut. One instruction per line, basic blocks marked
   `B<n> <address>: <- preds -> succs` (`loop` when a later block jumps back). Calls and branches name the callee: our
   label, the SDK symbol, else `f_<address>`, with `; read: <name>` when its pseudo-C is stored. Calls through a proc
   slot (`blr`) show the proc after `;` (`nvnCommandBufferBindVertexBuffer`), and the slot loads show `pfn_<proc>`.
   Strings, globals (`g_<addr>`) and literal pool values are resolved after `;`. The frame's saves and restores are left
-  out.
-- `re tree <fn> [--depth N]`: the callee tree. Each callee is `[label]`, `[sdk]`, `[read: <name>]` or `[UNREAD]`.
+  out. Read all of it, every block, in one call; never page or cut it (no `--lines`, `head`, `sed`). If `re fn` exits
+  with an error (the function is above its size limit), return that error line and stop.
+- `re tree <fn> [--depth N]`: the callee tree. Each callee is `[label]`, `[sdk]`, `[read: <name>]`, `[UNREAD]`, or
+  `<proc> [proc]` for a call through a proc slot (`nvnCommandBufferDrawElements [proc]`).
 - `re pseudo <fn>`: stored pseudo-C, if any.
 - `re callers <fn>`, `re callees <fn>`, `re xref <string|addr>`, `re field <offset>`: one line per hit.
 
@@ -41,6 +43,8 @@ the game; OoT is the default).
      flow, and do not merge blocks whose conditions you have not checked.
    - Keep every call, in order, with its arguments as the listing sets x0..x7. Name callees as the listing does; a
      `blr` with a proc after `;` is a call of that proc (`nvnCommandBufferDrawElements(cmd, ...)`).
+   - Never write a call that is not in the listing. Code the function does inline (stores of a command record, a
+     copied loop) stays inline as its loads and stores; do not turn it into a call.
    - Write memory as `p->+0x1c:u32` (the offset and the width, as the instruction has them). Do not round or rename
      offsets. Write locals as `local_<sp offset>`.
    - Name registers by what they hold once you know it (`frame`, `list`), and keep the register in a comment the first
@@ -52,7 +56,8 @@ the game; OoT is the default).
 
 ## What you return
 
-Only the pseudo-C of the asked function, in this shape (the same text you store):
+Only the pseudo-C block of the asked function, in this shape (the same text you store), and nothing else: no prose
+paragraphs, no list of what you stored, no summary.
 
 ```
 // confidence: <high|medium|low>, <why, in a few words>
@@ -62,5 +67,6 @@ void <suggested_name>(<args, e.g. cmd /*x0*/, rec /*x1*/>) {
 ```
 
 The signature line carries the suggested name: lower case, with a subsystem prefix (`gfx_`, `voxel_`, ...). Its return
-type is `void` or what x0 holds. `re fn` and `re tree` show this name for the function from then on. When the caller
-asked a question, answer it in at most three `//` lines after the closing brace, citing addresses from the listing.
+type is `void` or what x0 holds. `re fn` and `re tree` show this name for the function from then on. Only when the
+caller asked a question, answer it in at most three `//` lines after the closing brace, citing addresses from the
+listing.

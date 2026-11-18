@@ -15,7 +15,7 @@ addresses and instructions. Delegate the reading and keep only the pseudo-C.
 2. Read the stored readings: `tools/re/re --game <g> pseudo <fn>` prints the pseudo-C an earlier agent wrote, and
    `re tree <fn>` shows which callees are labelled, SDK, read (`[read: <suggested name>]`) or `[UNREAD]`.
 3. Delegate what is unread. Start an Agent with `subagent_type: "re"` and a narrow prompt: the game, the function
-   (address or label) or the question. It reads the listings bottom-up on a cheap model, stores the pseudo-C keyed by
+   (address or label) or the question. It reads the listings bottom-up on Sonnet, stores the pseudo-C keyed by
    the function's body hash, and returns only the pseudo-C: the suggested name on the signature line, the confidence in
    the comment above it, `/* ? */` at uncertain spots. Several independent functions can go to parallel re agents.
 4. Search yourself only with the one-line commands: `re callers`, `re callees`, `re xref <string|addr>`,
@@ -35,10 +35,10 @@ addresses and instructions. Delegate the reading and keep only the pseudo-C.
 
 ## Cost tips
 
-- The listing of a typical function is 30-100 lines; `--lines N` cuts it. Do not page through disassembly with
-  `re asm`.
-- Calls through the game's NVN proc slots are named (`nvnCommandBufferBindVertexBuffer`) in `fn`, `pc` and the stored
-  pseudo-C; a call through `g_<addr>` is not through a known proc slot.
+- The listing of a typical function is 30-100 lines. `re fn` prints the whole function, never a cut; above 6000
+  instructions it exits with an error instead. Do not page through disassembly with `re asm`.
+- Calls through the game's NVN proc slots are named (`nvnCommandBufferBindVertexBuffer`) in `fn`, `tree`, `callees`,
+  `pc` and the stored pseudo-C; a call through `g_<addr>` is not through a known proc slot.
 - Do not dump whole call trees into the main session. Give the re agent the tree and the question.
 - `re pc <fn>` is an experimental deterministic pseudo-C printer (no model). It is cheaper than the listing, but its
   conditions across blocks and its call arguments can be wrong. Check it against `re fn` before you rely on it.
