@@ -158,6 +158,12 @@ void LoadCbuf(Translator& t, u32 bank, const IR::U32& offset, MemType type, Set&
     set(0, IR::U32{t.ir.GetCbuf(binding, offset, static_cast<size_t>(type.bits), type.is_signed)});
 }
 
+/// An indexed load's immediate offset is signed (c[b][Ra + -0x8]: the compiler's addressing of a table entry's
+/// header, OoT mesh stage 25); without an index register it is the address itself
+s32 IndexedCbufOffset(u32 offset) {
+    return static_cast<s16>(offset);
+}
+
 void LDC(Translator& t) {
     // Rd = c[bank][Ra + offset]; 78-79 the mode (0 indexed; the segmented and linear ones are not translated)
     t.Expect(78, 2, 0, "LDC mode");
@@ -170,7 +176,7 @@ void LDC(Translator& t) {
     }
     const u32 offset{t.insn.CbufOffset()};
     const IR::U32 address{t.insn.Src0() == RZ ? t.ir.Imm32(offset)
-                                              : IR::U32{t.ir.IAdd(t.R(t.insn.Src0()), t.ir.Imm32(offset))}};
+                                              : IR::U32{t.ir.IAdd(t.R(t.insn.Src0()), t.ir.Imm32(IndexedCbufOffset(offset)))}};
     LoadCbuf(t, t.insn.CbufBank(), address, type, [&](u32 i, const IR::U32& value) {
         if (dst != RZ) {
             t.SetR(dst + i, value);
@@ -196,7 +202,8 @@ void ULDC(Translator& t) {
     }
     const u32 offset{t.insn.CbufOffset()};
     const u32 index{indexed ? t.insn.Field(24, 6) : URZ};
-    const IR::U32 address{index == URZ ? t.ir.Imm32(offset) : IR::U32{t.ir.IAdd(t.UR(index), t.ir.Imm32(offset))}};
+    const IR::U32 address{index == URZ ? t.ir.Imm32(offset)
+                                       : IR::U32{t.ir.IAdd(t.UR(index), t.ir.Imm32(IndexedCbufOffset(offset)))}};
     LoadCbuf(t, t.insn.CbufBank(), address, type, [&](u32 i, const IR::U32& value) {
         if (dst != URZ) {
             t.SetUR(dst + i, value);
