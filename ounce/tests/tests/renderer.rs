@@ -838,3 +838,56 @@ fn irexec_micro() {
     assert!(out.status.success(), "irexec micro programs failed:\n{stdout}{}", text(&out.stderr));
     assert!(stdout.lines().filter(|l| l.starts_with("ok ")).count() >= 37, "cases missing:\n{stdout}");
 }
+
+/// The differential harness (tools/shaders/difftest) on a handful of instruction encodings (D1 of work/shader-plan):
+/// each a micro program loading its registers from c[1], run through the old front twice on edge-value inputs; both runs
+/// translate and agree, and a move's result is its source's value in every lane.
+#[test]
+fn difftest_micro() {
+    let t = Tmp::new("difftest-micro");
+    let exe = t.join("difftest");
+    run(Command::new(cxx())
+        .args(eden_flags())
+        .args(["-DVK_NO_PROTOTYPES", &inc("third_party/SPIRV-Headers/include")])
+        .arg(path("tools/shaders/difftest/difftest.cpp"))
+        .arg(path("tools/shaders/irexec/irexec.cpp"))
+        .args(eden_objects())
+        .args(sirit_objects())
+        .arg("-lpthread")
+        .arg("-o")
+        .arg(&exe));
+    let insts = [
+        "000fe40000000f000000001600197202", // MOV R25, R22
+        "081fe2000041000000000012140e7220", // FMUL
+        "000fe200000100190000001010147223", // FFMA
+        "000e2200000010000000001b001b7308", // MUFU
+        "100fe2000000410020000011ff157230", // HADD2
+        "000e22000021f1000000000b000b7305", // F2I
+        "000fe400078ec0ff000000ff08087812", // LOP3
+        "000fe40007ffe0ff0000000d060b7210", // IADD3
+        "040fe200078e020500000020080d7824", // IMAD imm
+        "000fc80003f24070000000030800720c", // ISETP
+        "000fe4000400000000000001ff0e7807", // SEL
+        "000fe4000bf252700000003f0500728c", // UISETP
+        "000fe40008000f000000000500137c02", // MOV R, UR
+    ];
+    let list = t.write("insts.txt", &(insts.join("\n") + "\n"));
+    let seed = t.join("micro.seed");
+    run(Command::new(&exe).arg("micro").arg("--insts").arg(&list).arg("--out").arg(&seed));
+    let out = output(Command::new(&exe).arg("d1").arg(&seed).args(["--a", "old", "--b", "old"]));
+    let stdout = text(&out.stdout);
+    assert!(out.status.success(), "difftest d1 failed:\n{stdout}{}", text(&out.stderr));
+    let lines: Vec<&str> = stdout.lines().filter(|l| l.starts_with('{')).collect();
+    assert_eq!(lines.len(), insts.len(), "one line an encoding:\n{stdout}");
+    for l in &lines {
+        assert!(l.contains("\"a\": \"ok\"") && l.contains("\"equal\": true") && l.contains("\"compared\": 8"), "not translated, or old against old differs: {l}");
+    }
+    let shown = text(&output(Command::new(&exe).arg("d1").arg(&seed).args(["--first", "0", "--count", "1", "--show"])).stdout);
+    let reg = |r: u32, lane: u32| {
+        let want = format!("# a R{r} lane {lane} = ");
+        shown.lines().find_map(|l| l.strip_prefix(want.as_str())).unwrap_or_else(|| panic!("no {want} in\n{shown}")).to_string()
+    };
+    for lane in 0..32 {
+        assert_eq!(reg(25, lane), reg(22, lane), "MOV R25, R22 in lane {lane}");
+    }
+}
