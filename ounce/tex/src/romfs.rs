@@ -106,7 +106,7 @@ pub fn find_bntx(dicts: &Dicts, data: &[u8], wher: &str, depth: u32) -> Result<V
     let finder = memchr::memmem::Finder::new(b"BNTX");
     let mut o = finder.find(&b);
     while let Some(p) = o {
-        if p % 8 == 0 && b.get(p + 8..p + 12) == Some(&[1, 1, 4, 0]) {
+        if p % 8 == 0 && b.get(p + 9..p + 12) == Some(&[1, 4, 0]) {   // (version 4.1.x: DKB has 4.1.0 and 4.1.1)
             let size = u32_at(&b, p + 0x1c)? as usize;
             let path = if p == 0 { wher.to_string() } else { format!("{wher}@{p:#x}") };
             out.push((path, b[p..(p + size).min(b.len())].to_vec()));

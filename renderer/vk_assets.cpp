@@ -285,7 +285,8 @@ bool bntx_at(const uint8_t* data, uint32_t off, uint32_t index, const char* name
     const uint8_t* g = host->guest_base();
     if (!data || data < g + off || off < 0x20) return false;
     const uint8_t* b = data - off;
-    if (std::memcmp(b, "BNTX", 4) || rd<uint32_t>(b + 8) != 0x00040101u || index >= rd<uint32_t>(b + 0x24)) return false;
+    if (std::memcmp(b, "BNTX", 4) || (rd<uint32_t>(b + 8) & 0xffffff00u) != 0x00040100u ||   // (version 4.1.x)
+        index >= rd<uint32_t>(b + 0x24)) return false;
     const uint64_t base = (uint64_t)(b - g), size = host->guest_size();
     auto at = [&](uint64_t p) { return p < base ? p + base : p; };   // (guest address)
     const uint64_t tbl = at(rd<uint64_t>(b + 0x28));

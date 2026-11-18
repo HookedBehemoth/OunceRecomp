@@ -38,7 +38,7 @@ fn texel_ranges(dicts: &Dicts, b: &[u8], base: usize, depth: u32, out: &mut Vec<
     let finder = memchr::memmem::Finder::new(b"BNTX");
     let mut o = finder.find(b);
     while let Some(p) = o {
-        if p % 8 == 0 && b.get(p + 8..p + 12) == Some(&[1, 1, 4, 0]) {
+        if p % 8 == 0 && b.get(p + 9..p + 12) == Some(&[1, 4, 0]) {   // (version 4.1.x, as romfs::find_bntx)
             let Ok(size) = u32_at(b, p + 0x1c) else { return };
             let end = (p + size as usize).min(b.len());
             let x = &b[p..end];
