@@ -1,5 +1,5 @@
 /* DKB's side of the runtime's hook points (runtime/game_hooks.h) that are not one patch file's own, and the patches'
-   log lines: one each every 600 presents with HOS_DBG=logpatch, direct mode only. */
+   log lines every 600 presents, direct mode only: the assets' always, the others' with HOS_DBG=logpatch. */
 #include "patches.h"
 
 void passes_log(double frames);
@@ -7,6 +7,10 @@ void passes_log(double frames);
 static void patches_frame(void) {
     static long long presents;
     if (++presents % 600) return;
+    char b[512];
+    assets_log();
+    texdata_vram_line(b, sizeof b);
+    hos_log("assets: %s", b);
     static int on = -1;
     if (on < 0) on = hos_log_switch("logpatch");
     if (!on) return;
