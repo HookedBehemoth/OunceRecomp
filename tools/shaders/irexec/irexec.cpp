@@ -32,7 +32,8 @@
 // - FPMul then FPAdd without NoContraction stay two roundings; NIR may fuse them into an fma
 // - the IR's FpControl rounding and fmz modes are ignored (the back end ignores them too)
 // - divisions by zero: UDiv32 gives 0xffffffff, SDiv32 -1 (or 1 for a negative dividend)
-// - texel results are hashes of the descriptor and every operand (coordinates, lod, bias, offsets, dref), not of
+// - texel results are hashes of the descriptor and every operand (coordinates, lod, bias, offsets, dref; a bias or
+//   LOD clamp only when the info enables it, as the back end reads them), not of
 //   derivatives; a sample's implicit lod is not derived from neighbouring lanes
 // - one subgroup: shared memory between subgroups, and barriers, are not modelled
 #include "irexec.h"
@@ -611,7 +612,12 @@ private:
     // ---- textures ----
     u64 texel_hash(const Op& op, int l, int first, u32 which) const {
         u64 x = h(seed, op.key, (u64)op.code, which);
+        // (a bias or LOD clamp the instruction's info does not enable is no operand: the back end drops it)
+        const IR::TextureInstInfo info{.raw = op.flags};
+        const bool dref_implicit = op.code == Opcode::ImageSampleDrefImplicitLod;
+        const int bias = op.code == Opcode::ImageSampleImplicitLod ? 2 : dref_implicit ? 3 : -1;
         for (int i = first; i < op.nargs; i++) {
+            if (bias >= 0 && ((i == bias && !info.has_bias) || (i == bias + 2 && !info.has_lod_clamp))) continue;
             const Arg& g = c.args[op.args + (u32)i];
             if (g.slot == NONE) {
                 x = h(x, 0xe);
