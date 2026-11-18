@@ -38,7 +38,7 @@ it; `ounce/tex/src/store.rs` the format.
 - The game description's `[assets]` names what is the game's: the romfs file of its zstd dictionaries and the folders
   the texture step skips.
 - The encoders are bc7enc_rdo's, built into the builder: bc7e (ISPC) for BC7, and for BC4 and BC5 an AVX2 search that
-  gives rgbcx's blocks. The sources come from `work/deps/bc7enc_rdo` and ISPC from `work/deps/ispc`
+  gives rgbcx's blocks. The sources are `third_party/bc7enc_rdo`; ISPC, a tool, comes from `work/deps/ispc`
   (`HOOKSHOT_BC7ENC`, `HOOKSHOT_ISPC`).
 - zstd is `ounce/dump`'s (1.5.7, its symbols local). A frame's bytes depend on the zstd version, so a store made with
   another version differs in its packs but not in its content.

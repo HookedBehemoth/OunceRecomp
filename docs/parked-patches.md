@@ -4,7 +4,7 @@ This page records features that were removed from the code, with enough detail t
 bring back a cheat, a debug tool, an experiment, or another game's patch, so you start from what is known.
 
 Each section says what the feature did, why it was parked, and what you need to rebuild it. Addresses are for the game
-build that `games/oot/game.py` names (main build ID `e0f3ccfaf50065ae4ea01eb5aeb13b1a45da3348`); the labels are in
+build that `games/oot/game.toml` names (main build ID `e0f3ccfaf50065ae4ea01eb5aeb13b1a45da3348`); the labels are in
 `games/oot/labels.txt`. Rebuild a feature as a patch declaration ([Write a patch](patches.md)): declared registers, a
 host function of plain values and typed structs, and the instruction word checked at the build.
 

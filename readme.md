@@ -25,10 +25,10 @@ PC, from your own copy of the game**.
 ## Build and run
 
 You need a dump of the game's program `0400486024DEC000`, update v131072, build `e0f3ccfa`; other versions do not work.
-A build takes tens of minutes and about 60 GB of disk; a run uses about 10 GB of RAM.
+A build takes tens of minutes and about 60 GB of disk; a run uses about 10 GB of RAM. The tools it needs are listed
+in the [development guide](docs/development.md#set-up).
 
 ```sh
-scripts/linux/deps.sh                      # LLVM, Python, FFmpeg, SDL2, Vulkan headers
 cargo build --release -p hookshot-builder --manifest-path ounce/Cargo.toml
 ounce/target/release/hookshot-builder dump <your-game.nup> --extract work/dump
 python -I tools/re/dump.py --dump work/dump --set
@@ -56,9 +56,10 @@ The [development guide](docs/development.md) has the build and run loop and the 
 
 1. `hookshot-builder` (`ounce/`) translates the game's AArch64 code to LLVM IR and compiles it to native code
    ([the lifter](docs/lifter.md)).
-2. `runtime/` plays the part of the console's system software and is linked with the lifted code.
+2. `runtime/` plays the part of the console's system software and is linked with the lifted code and the game's
+   patches (`games/oot/patches`).
 3. `runtime/nvn_native.c` records the game's NVN2 graphics calls, and `renderer` replays them on Vulkan.
-4. A fork of Eden's shader recompiler (`renderer/eden`) translates the Switch 2 shaders to SPIR-V.
+4. A fork of Eden's shader recompiler (`third_party/eden`) translates the Switch 2 shaders to SPIR-V.
 
 The [design page](docs/design.md) shows how the parts fit.
 

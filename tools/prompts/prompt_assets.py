@@ -287,7 +287,7 @@ def bntx_textures(b):
 
 def gob_offset(x, y, gobs, pitch):
     """a byte's place in a block-linear texture (x in bytes, y in rows of blocks): the Switch 2's GOB, the Tegra X1's with
-    offset bits 5 and 6 swapped (gpu/legacy/render/rx_nvn.cpp bl_offset)"""
+    offset bits 5 and 6 swapped (the block-linear layout of runtime/nvn_layout.c)"""
     a = (y // (8 * gobs)) * 512 * gobs * pitch + (x // 64) * 512 * gobs + (y % (8 * gobs) // 8) * 512
     return a + (((x & 63) >> 5) << 8 | ((y & 7) >> 2) << 7 | ((x & 31) >> 4) << 6 | ((y >> 1) & 1) << 5 | (y & 1) << 4 | (x & 15))
 

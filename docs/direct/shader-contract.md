@@ -3,7 +3,7 @@
 This page describes what a program translated by the back end expects at a draw, and what the back end provides: how
 programs are identified, how buffers, textures and state reach the shader, and where the caches live. Read it before
 you change `renderer/vk_shader.cpp`, `renderer/vk_draw.cpp`, `renderer/vk_compute.cpp` or the
-translator fork in `renderer/eden`.
+translator fork in `third_party/eden`.
 
 The authoritative definitions are `renderer/vk_shader.h` (the program variant a draw reads, `DrawProg`) and the
 translator's push-data layout in `third_party/eden/shader_recompiler/backend/spirv/emit_spirv.h`.

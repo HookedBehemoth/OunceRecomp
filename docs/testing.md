@@ -13,7 +13,7 @@ locally and report. To run them all:
 python -I -B tests/run_all.py
 ```
 
-It runs every `tests/test_*.py` and `nx2/test_*.py` in its own process, byte-compiles every tracked Python file, goes
+It runs every `tests/test_*.py` in its own process, byte-compiles every tracked Python file, goes
 on after a failure, and ends with a table (slowest first) and each failure's output. To run only some checks, name part
 of their path: `python -I -B tests/run_all.py frame`.
 
@@ -21,12 +21,12 @@ Many checks read source text: they cut a function out of a source file and compi
 reshaped function can break a check far from your change. Update the check in the same change rather than weakening
 it.
 
-Some checks need a compiler, `spirv-val`, the SPIR-V or Vulkan headers (`HOOKSHOT_SPIRV_HEADERS`,
-`HOOKSHOT_VULKAN_HEADERS`, or `RX_CPM`), or the `zstandard` package. A check whose tool is missing is skipped and says
+Some checks need a compiler, `spirv-val`, the SPIR-V or Vulkan headers (`HOOKSHOT_SPIRV_HEADERS`, default
+`third_party/SPIRV-Headers`; `HOOKSHOT_VULKAN_HEADERS`), or the `zstandard` package. A check whose tool is missing is skipped and says
 so; `--strict` (as in CI) fails it instead. The skip list at the top of `tests/run_all.py` names the checks that cannot
 run in CI; `--no-skip` runs them anyway.
 
-To add a check, write a small `tests/test_*.py` or `nx2/test_*.py` that reads source files and runs them, or compiles a
+To add a check, write a small `tests/test_*.py` that reads source files and runs them, or compiles a
 tiny C or C++ fixture; `tests/run_all.py` picks it up. Keep it on the standard library (the pipeline's own packages
 aside) and fast: all checks share one CI job with a 20-minute limit. A check that takes tools as arguments gets an
 entry in `ARGS` at the top of `tests/run_all.py`; one that cannot run in CI gets an entry in `SKIP`, with the reason.

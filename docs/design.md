@@ -23,10 +23,10 @@ hookshot            the lifted game + runtime/ (Horizon: threads, memory, files,
 hookshot_direct.so  the direct back end (renderer), loaded by the host at start
 ```
 
-- **The game is a parameter.** Every lift, build and lifter tool takes one game description, `games/oot/game.py`,
-  which names the dump's identity, the function labels, the hot list and the host's C files. Another dump or another
+- **The game is a parameter.** Every lift, build and lifter tool takes one game description, `games/oot/game.toml`,
+  which names the dump's identity, the title and icon, the function labels, the hot list and the game's patch files. Another dump or another
   game stops the lift and the build. The lifter itself holds no game data ([The lifter](lifter.md#the-game-boundary)).
-- **Patches are C declarations.** Every change to the game's behavior is a declaration in `runtime/` next to a typed host
+- **Patches are C declarations.** Every change to the game's behavior is a declaration in `games/<game>/patches` next to a typed host
   function: a row at an instruction, a replaced function, an SDK replacement, or a constant answer. The lifter scans
   the declarations without compiling the host, and the build checks each one's instruction words against the game
   ([Write a patch](patches.md)).

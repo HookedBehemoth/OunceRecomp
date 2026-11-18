@@ -75,7 +75,7 @@ What a translated program expects at a draw is in [the shader contract](shader-c
 
 ## Programs
 
-All programs are in the romfs. The back end translates them with its fork of Eden's recompiler (`renderer/eden`) and
+All programs are in the romfs. The back end translates them with its fork of Eden's recompiler (`third_party/eden`) and
 keeps shader objects in caches beside the executable. A table keyed by the NVN program's serial holds the variants and
 is read without locks. A program missing at load is compiled then, and the load waits. A program the game set but the
 workers have not read yet is read at its first draw or dispatch, which waits for it: a draw the game makes once, such
@@ -128,5 +128,5 @@ example) sets its slot aside, and the thread gets one slot more (`renderer/vk_cm
 | texture loading | it keeps a resident CPU copy of every texel |
 | render-target placement (`games/oot/patches/rt_slots.c`) | the game makes new objects at new addresses every frame |
 
-The game patches the back end relies on are declared in the `runtime/direct_*.c` files and `games/oot/patches/rt_slots.c`. To list
-every patch and the site it applies to, run `python -m nx2.patch --game games/oot report`.
+The game patches the back end relies on are declared in `games/oot/patches`. To list every patch and the site it
+applies to, run `ounce/target/release/ounce-lift scan --game games/oot`.

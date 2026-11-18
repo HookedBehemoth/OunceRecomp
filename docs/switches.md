@@ -82,8 +82,8 @@ To find every item, search `runtime/` and `renderer/` for `dbg_has`, `dbg_log` a
 Every line of `hookshot_log.txt` (or a test run's `log.txt`) starts with `[hos <seconds> p<present> <thread>]`.
 `HOS_LOG_TIME=0` leaves out the time and present. A line longer than 4 KB ends in `~`.
 
-- The first line names the build as `<version> (source <hash>)`. The hash is a fingerprint of `runtime/`, `gpu/` and
-  `nx2/`, so it tells apart two builds of one commit.
+- The first line names the build as `<version> (source <hash>)`. The hash is a fingerprint of `runtime/`, `renderer/` and
+  `games/`, so it tells apart two builds of one commit.
 - `vk: <n> presents, <x> fps` gives the frame rate.
 - `FATAL: the game threw a C++ exception of type <name> from <address>` means a throw stopped the game: the lifted code
   cannot unwind ([What the lifter emits](lifter-output.md#fibers-and-c-exceptions)).

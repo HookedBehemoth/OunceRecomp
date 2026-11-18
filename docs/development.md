@@ -12,10 +12,11 @@ No game files are in this repository. The build reads your dump where it lies, a
 
 ## Set up
 
-1. Install the tools: clang and lld from LLVM 23 (the lifter refuses another major version), FFmpeg with dav1d, SDL2,
-   and the Vulkan, SPIR-V and VMA headers. `scripts/linux/deps.sh` fetches and builds pinned versions into
-   `build-linux/deps`.
-2. Create a Python environment with the pipeline's packages:
+1. Install the tools from your distribution: clang and lld from LLVM 23 (the lifter refuses another major version),
+   Rust, Meson, Ninja, `glslangValidator`, the Vulkan headers, FFmpeg with dav1d, SDL2 or SDL3, and ISPC for the
+   texture encoder (`HOOKSHOT_ISPC`, else `work/deps/ispc/*/bin/ispc`, else the `PATH`). The SPIR-V headers, VMA and
+   bc7enc_rdo are in `third_party/`.
+2. Create a Python environment for the development and RE tools:
 
    ```sh
    python3 -m venv work/venv
@@ -33,8 +34,8 @@ No game files are in this repository. The build reads your dump where it lies, a
 
    `tools/re/dump.py` checks that the dump is the supported build: program `0400486024DEC000`, update v131072, build
    `e0f3ccfa`. Other versions are refused. `--set` writes the path to `work/dump.txt`.
-4. The renderer's build takes the Vulkan headers from `/usr` and the SPIR-V and VMA headers from `work/deps`
-   (`scripts/linux/deps.sh`). Other places are Meson options (below).
+4. The renderer's build takes the Vulkan headers from `/usr` and the SPIR-V and VMA headers from `third_party/`.
+   Other places are Meson options (below).
 
 A build needs about 60 GB of disk, and a running game about 10 GB of memory.
 
@@ -69,7 +70,7 @@ After a change, rebuild only what the change needs:
 | The hot list, the dump or the toolchain | `scripts/relift.sh` |
 
 The details, including what the object cache keeps, are in [Build and iterate on the lifter](lifter-build.md). A new
-file in `runtime/` belongs in the `host` list of `games/oot/game.py`.
+runtime file belongs in `runtime/sources.txt`, a new patch file in the `patches` list of `games/oot/game.toml`.
 
 Then test the change in the game. [Test Hookshot](testing.md) covers the headless test run, the smoke test, the
 benchmark and profiling.
@@ -87,11 +88,11 @@ meson setup --native-file renderer/meson/clang.ini -Dexe=work/sa/build/hookshot 
 ninja -C work/sa/meson
 ```
 
-The library is `work/sa/meson/gpu/direct/hookshot_direct.so`; `hookshot-builder build` copies it beside `hookshot`. A clean build takes
+The library is `work/sa/meson/renderer/hookshot_direct.so`; `hookshot-builder build` copies it beside `hookshot`. A clean build takes
 about 40 seconds with six jobs.
 
 - The options `vulkan_headers`, `spirv_headers` and `vma_headers` name the header packages. They default to `/usr`,
-  `work/deps/SPIRV-Headers` and `work/deps/VulkanMemoryAllocator`.
+  `third_party/SPIRV-Headers` and `third_party/VulkanMemoryAllocator`.
 - `march` sets the CPU level (default `x86-64-v3`).
 - `exe` names the executable to check the library against. Every symbol the library leaves undefined must be one the
   executable exports (`os_*` or `hos_mem_ledger`); otherwise the build fails. Without `exe`, only the names are
@@ -120,15 +121,13 @@ the tracking branch and writes `work/sa/build/BUILD.txt` when it is done. It ref
 | Path | What it holds |
 |---|---|
 | `ounce/` | The lifter (`ounce/lift`) and the builder (`ounce/builder`), one cargo workspace ([The lifter](lifter.md)) |
-| `nx2/` | The dump tools and the asset converters |
-| `games/oot/` | The game description and the function labels |
-| `runtime/` | The Horizon runtime, the NVN2 layer (`nvn_native.c`), and the game patches; `runtime/os` is its operating-system layer (`os.h`) |
-| `renderer/` | The direct back end, with its fork of Eden's shader recompiler in `eden/` ([Renderer docs](direct/README.md)) |
-| `renderer/api/` | What the host and the back end share: the versioned interface (`vk_api.h`) and the NVN command records |
+| `runtime/` | The generic runtime: Horizon, the NVN2 layer (`nvn_native.c`), the hook points a game's patches fill (`game_hooks.h`); `runtime/os` is its operating-system layer (`os.h`), `runtime/media` the SDL shim (window, sound, controllers, dialogs) |
+| `renderer/` | The direct back end ([Renderer docs](direct/README.md)); `renderer/api/` is what the runtime and the back end share: the versioned interface (`vk_api.h`), the list calls (`vk_list_api.h`) and the NVN command records |
+| `games/oot/` | The game: its description (`game.toml`), its patch files (`patches/`), the labels, the hot list, the icon and the test scenes (`zoo/`) |
 | `scripts/` | Test runs, the play build, log and profile readers, the save copier |
-| `tools/` | Readers for the game's formats (`tools/dump`), reverse-engineering searches (`tools/re`), the shader tools (`tools/shaders`: the register gate, the offline translator, the replacement stage's build) and the shader census (`tools/shadercensus`) |
+| `tools/` | Readers for the game's formats (`tools/dump`), reverse-engineering tools (`tools/re`: the dump check, the labels, the disassemblers and searches), the button-prompt generator (`tools/prompts`), the shader tools (`tools/shaders`: the register gate, the offline translator, the replacement stage's build) and the shader census (`tools/shadercensus`) |
 | `tests/` | The game-free checks, all run by `tests/run_all.py` |
-| `third_party/` | Upstream code with its own licenses: a64-kit's runtime and loader, Opus, zbic, SDL2's license, zstd, Kenney's input prompts |
+| `third_party/` | Upstream code with its own licenses, one folder each: Eden's shader translator (our fork) and Sirit, a64-kit's guest model and loader, SPIRV-Headers, VulkanMemoryAllocator, bc7enc_rdo, Opus, zstd, zbic, SDL2's license, Kenney's input prompts |
 
 ## More pages
 

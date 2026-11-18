@@ -14,7 +14,7 @@ console's graphics API; the back end replaces it on a PC with Vulkan.
 - It shares its interface with the host through `renderer/api` (`vk_api.h`, `rx_nvn.h`) and `renderer/api/vk_list_api.h`.
 - It targets one PC: an AMD RX 6950 XT on Mesa's RADV driver, with every extension Mesa offers. RADV is Mesa's Vulkan
   driver for AMD GPUs.
-- It runs one game build, the one `games/oot/game.py` names.
+- It runs one game build, the one `games/oot/game.toml` names.
 
 Each NVN command-buffer call is recorded as Vulkan on the thread that makes it. No later thread walks the commands
 again, and no step looks back to decide what an earlier command was.

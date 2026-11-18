@@ -50,13 +50,15 @@ lifter refuses a clang whose LLVM major version differs from the one the emitter
 
 The lifter holds no fact about one game. No game address, label or symbol appears in `ounce/lift`. What one game adds comes from three places:
 
-- **The game description**, `games/<game>/game.py` (`nx2/gamedesc.py` documents its fields). Every lift, build and
+- **The game description**, `games/<game>/game.toml` (`ounce/lift/src/game.rs` reads it). Every lift, build and
   lifter tool takes exactly one, as `--game games/oot`. It names the dump's identity (the main module's build ID and
-  the SHA-256 of `exefs/main`), the label file, the hot list, the link order, and the host's C files. Another dump
-  stops the lift, and a build of another game's lift stops the build, each naming both values.
-- **The patch declarations** in those host C files. See [Write a patch](patches.md).
-- **The platform's facts** (Horizon, the SDK, setjmp and noreturn names) in `nx2/horizon`, shared by any title on this
-  SDK.
+  the SHA-256 of `exefs/main`), the window's title and icon, the label file, the hot list, the link order, and the
+  game's patch files (`games/<game>/patches`). Another dump stops the lift, and a build of another game's lift stops
+  the build, each naming both values.
+- **The patch declarations** in the patch files, and the runtime's own (`runtime/sources.txt` lists its files; they
+  replace SDK functions by symbol and hold no game address). See [Write a patch](patches.md).
+- **The platform's facts** (Horizon, the SDK, setjmp and noreturn names) in `ounce/lift/data/horizon.toml`, shared by
+  any title on this SDK.
 
 ### Game description files
 

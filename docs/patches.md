@@ -53,7 +53,9 @@ PATCH_ANSWER(_ZN2nn3aoc17CountAddOnContentEv, 0, "0: no add-on content");
 3. Paste the declaration next to its host function and write the body. Declare only the operands the body uses: each
    one widens what the function's callers must keep in the context.
 
-4. If the file is new, add it to the `host` list in `games/oot/game.py`.
+4. If the file is new, add it to the `patches` list in `games/oot/game.toml`. A patch file holds the game's addresses;
+   the runtime holds none. Where the runtime's own work needs the game, it calls a hook point of
+   `runtime/game_hooks.h`, and the game's `patches/hooks.c` fills it.
 
 5. Check every declaration against the plan:
 
