@@ -18,10 +18,15 @@ bool StageSupportsSubgroups(EmitContext& ctx) {
     return ctx.profile.SupportsSubgroupStage(ctx.stage);
 }
 
-Id GetThreadId(EmitContext& ctx) {
+// (fork) A stage the profile gives no subgroup operations cannot run these: an error, not the lane's own value
+void RequireSubgroups(EmitContext& ctx, std::string_view op) {
     if (!StageSupportsSubgroups(ctx)) {
-        return ctx.u32_zero_value;
+        throw NotImplementedException("{} in stage {} without subgroup operations", op, ctx.stage);
     }
+}
+
+Id GetThreadId(EmitContext& ctx) {
+    RequireSubgroups(ctx, "the subgroup invocation id");
     return ctx.OpLoad(ctx.U32[1], ctx.subgroup_local_invocation_id);
 }
 
@@ -145,9 +150,7 @@ Id EmitLaneId(EmitContext& ctx) {
 }
 
 Id EmitVoteAll(EmitContext& ctx, Id pred) {
-    if (!StageSupportsSubgroups(ctx)) {
-        return pred;
-    }
+    RequireSubgroups(ctx, "VoteAll");
     if (!ctx.profile.warp_size_potentially_larger_than_guest) {
         return ctx.OpGroupNonUniformAll(ctx.U1, SubgroupScope(ctx), pred);
     }
@@ -161,9 +164,7 @@ Id EmitVoteAll(EmitContext& ctx, Id pred) {
 }
 
 Id EmitVoteAny(EmitContext& ctx, Id pred) {
-    if (!StageSupportsSubgroups(ctx)) {
-        return pred;
-    }
+    RequireSubgroups(ctx, "VoteAny");
     if (!ctx.profile.warp_size_potentially_larger_than_guest) {
         return ctx.OpGroupNonUniformAny(ctx.U1, SubgroupScope(ctx), pred);
     }
@@ -177,9 +178,7 @@ Id EmitVoteAny(EmitContext& ctx, Id pred) {
 }
 
 Id EmitVoteEqual(EmitContext& ctx, Id pred) {
-    if (!StageSupportsSubgroups(ctx)) {
-        return ctx.true_value;
-    }
+    RequireSubgroups(ctx, "VoteEqual");
     if (!ctx.profile.warp_size_potentially_larger_than_guest) {
         return ctx.OpGroupNonUniformAllEqual(ctx.U1, SubgroupScope(ctx), pred);
     }
@@ -194,9 +193,7 @@ Id EmitVoteEqual(EmitContext& ctx, Id pred) {
 }
 
 Id EmitSubgroupBallot(EmitContext& ctx, Id pred) {
-    if (!StageSupportsSubgroups(ctx)) {
-        return ctx.OpSelect(ctx.U32[1], pred, ctx.Const(1u), ctx.u32_zero_value);
-    }
+    RequireSubgroups(ctx, "SubgroupBallot");
     const Id ballot{ctx.OpGroupNonUniformBallot(ctx.U32[4], SubgroupScope(ctx), pred)};
     if (!ctx.profile.warp_size_potentially_larger_than_guest) {
         return ctx.OpCompositeExtract(ctx.U32[1], ballot, 0U);
@@ -205,42 +202,33 @@ Id EmitSubgroupBallot(EmitContext& ctx, Id pred) {
 }
 
 Id EmitSubgroupEqMask(EmitContext& ctx) {
-    if (!StageSupportsSubgroups(ctx)) {
-        return ctx.Const(1u);
-    }
+    RequireSubgroups(ctx, "SubgroupEqMask");
     return LoadMask(ctx, ctx.subgroup_mask_eq);
 }
 
 Id EmitSubgroupLtMask(EmitContext& ctx) {
-    if (!StageSupportsSubgroups(ctx)) {
-        return ctx.u32_zero_value;
-    }
+    RequireSubgroups(ctx, "SubgroupLtMask");
     return LoadMask(ctx, ctx.subgroup_mask_lt);
 }
 
 Id EmitSubgroupLeMask(EmitContext& ctx) {
-    if (!StageSupportsSubgroups(ctx)) {
-        return ctx.Const(1u);
-    }
+    RequireSubgroups(ctx, "SubgroupLeMask");
     return LoadMask(ctx, ctx.subgroup_mask_le);
 }
 
 Id EmitSubgroupGtMask(EmitContext& ctx) {
-    if (!StageSupportsSubgroups(ctx)) {
-        return ctx.u32_zero_value;
-    }
+    RequireSubgroups(ctx, "SubgroupGtMask");
     return LoadMask(ctx, ctx.subgroup_mask_gt);
 }
 
 Id EmitSubgroupGeMask(EmitContext& ctx) {
-    if (!StageSupportsSubgroups(ctx)) {
-        return ctx.Const(1u);
-    }
+    RequireSubgroups(ctx, "SubgroupGeMask");
     return LoadMask(ctx, ctx.subgroup_mask_ge);
 }
 
 Id EmitShuffleIndex(EmitContext& ctx, IR::Inst* inst, Id value, Id index, Id clamp,
                     Id segmentation_mask) {
+    RequireSubgroups(ctx, "ShuffleIndex");
     const Id not_seg_mask{ctx.OpNot(ctx.U32[1], segmentation_mask)};
     const Id thread_id{EmitLaneId(ctx)};
     const Id min_thread_id{ComputeMinThreadId(ctx, thread_id, segmentation_mask)};
@@ -251,9 +239,6 @@ Id EmitShuffleIndex(EmitContext& ctx, IR::Inst* inst, Id value, Id index, Id cla
     const Id in_range{ctx.OpSLessThanEqual(ctx.U1, src_thread_id, max_thread_id)};
 
     SetInBoundsFlag(inst, in_range);
-    if (!StageSupportsSubgroups(ctx)) {
-        return value;
-    }
     const IR::Value lane{inst->Arg(1).Resolve()};
     const IR::Value segment{inst->Arg(3).Resolve()};
     if (lane.IsImmediate() && segment.IsImmediate() && segment.U32() == 0) {
@@ -266,10 +251,7 @@ Id EmitShuffleIndex(EmitContext& ctx, IR::Inst* inst, Id value, Id index, Id cla
 
 Id EmitShuffleUp(EmitContext& ctx, IR::Inst* inst, Id value, Id index, Id clamp,
                  Id segmentation_mask) {
-    if (!StageSupportsSubgroups(ctx)) {
-        SetInBoundsFlag(inst, ctx.false_value);
-        return value;
-    }
+    RequireSubgroups(ctx, "ShuffleUp");
     const Id delta{GuestLane(ctx, index)};
     const Id thread_id{EmitLaneId(ctx)};
     const Id max_thread_id{GetMaxThreadId(ctx, thread_id, clamp, segmentation_mask)};
@@ -284,10 +266,7 @@ Id EmitShuffleUp(EmitContext& ctx, IR::Inst* inst, Id value, Id index, Id clamp,
 
 Id EmitShuffleDown(EmitContext& ctx, IR::Inst* inst, Id value, Id index, Id clamp,
                    Id segmentation_mask) {
-    if (!StageSupportsSubgroups(ctx)) {
-        SetInBoundsFlag(inst, ctx.false_value);
-        return value;
-    }
+    RequireSubgroups(ctx, "ShuffleDown");
     const Id delta{GuestLane(ctx, index)};
     const Id thread_id{EmitLaneId(ctx)};
     const Id max_thread_id{GetMaxThreadId(ctx, thread_id, clamp, segmentation_mask)};
@@ -302,10 +281,7 @@ Id EmitShuffleDown(EmitContext& ctx, IR::Inst* inst, Id value, Id index, Id clam
 
 Id EmitShuffleButterfly(EmitContext& ctx, IR::Inst* inst, Id value, Id index, Id clamp,
                         Id segmentation_mask) {
-    if (!StageSupportsSubgroups(ctx)) {
-        SetInBoundsFlag(inst, ctx.false_value);
-        return value;
-    }
+    RequireSubgroups(ctx, "ShuffleButterfly");
     const Id mask{GuestLane(ctx, index)};
     const Id thread_id{EmitLaneId(ctx)};
     const Id max_thread_id{GetMaxThreadId(ctx, thread_id, clamp, segmentation_mask)};
@@ -330,15 +306,6 @@ Id EmitQuadBroadcast(EmitContext& ctx, Id value, Id lane) {
     const Id src_thread_id{ctx.OpBitwiseOr(ctx.U32[1], base, local_lane)};
     return ShuffleAbsolute(ctx, value, src_thread_id);
 }
-
-namespace {
-// (fork) A stage the profile gives no subgroup operations cannot run these: an error, not the lane's own value
-void RequireSubgroups(EmitContext& ctx, std::string_view op) {
-    if (!StageSupportsSubgroups(ctx)) {
-        throw NotImplementedException("{} in stage {} without subgroup operations", op, ctx.stage);
-    }
-}
-} // Anonymous namespace
 
 // (fork) With a subgroup wider than the guest's 32 lanes, the first active lane of this lane's 32
 Id EmitSubgroupReadFirstLane(EmitContext& ctx, Id value) {
