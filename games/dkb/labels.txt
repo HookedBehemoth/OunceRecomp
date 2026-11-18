@@ -175,3 +175,5 @@
 808a6a60 font_cache_line_find             # games/dkb/patches/assets.c: a free cell of a line of the glyph cache's height class (cache, class, width) # ?
 8086a52c gfx_memory_pool_map              # games/dkb/patches/assets.c: the pool's CPU mapping (font_glyph_plot's atlas base, plus [cache+0x1ea0]) # ?
 8086a540 gfx_memory_pool_flush            # games/dkb/patches/assets.c: after a glyph's writes (font_glyph_plot 0x80768508) # ?
+806c6f64 gpu_tex_storage_zeroed_make      # 2026-11-18 analysis: allocates a texture's storage (0x804e0908), memsets it to 0 and flushes it (0x804aafa0) before the texture object is made over it (0x804df598, 0x80488b2c); the 64x64x18 R11G11B10F cube array of HOS_DBG=texwatch (memset lr 0x806c7094)
+804ddbd0 gpu_tex_storage_zeroed_make2     # 2026-11-18 analysis: the same allocate-memset(0) idiom over [obj+0x10] + the pool's CPU base, [obj+0x50] bytes; texwatch's 1x1 RGBA32F textures (memset lr 0x804dec10)
