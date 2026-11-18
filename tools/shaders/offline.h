@@ -78,6 +78,7 @@ inline Code load(const uint8_t* ctl, const uint8_t* area_p, size_t area_n) {
         c.threads = w58 & 0xffff, c.payload_bytes = w58 >> 16, c.max_primitives = w60 & 0xffff, c.max_vertices = w60 >> 16, c.topology = ctl[0x5f];
     if (!graphics) {
         std::memcpy(c.local, ctl + 0x58, 12), std::memcpy(&c.shared, ctl + 0x64, 4);
+        if (new_front) std::memcpy(&c.local_mem, ctl + 0x68, 4);   // (the QMD's local memory per thread)
         c.cs_ubo = ctl[0xb1], c.cs_ssbo = ctl[0xb2], c.cs_tex = ctl[0xb3], c.cs_img = ctl[0xb6];
         c.cs_push = ((uint32_t)ctl[0xa9] * 4 + 15) & ~15u;
     }
@@ -183,7 +184,7 @@ public:
     bool IsTexturePixelFormatInteger(u32) override { return false; }
     u32 ReadViewportTransformState() override { return 1; }
     u32 TextureBoundBuffer() const override { return nvn.texture_bound != ~0u ? nvn.texture_bound : stage == Shader::Stage::Compute ? 0 : 2; }
-    u32 LocalMemorySize() const override { return stage == Shader::Stage::Compute ? 0 : nvn.local_mem; }
+    u32 LocalMemorySize() const override { return nvn.local_mem; }
     u32 SharedMemorySize() const override { return stage == Shader::Stage::Compute ? nvn.shared : 0; }
     std::array<u32, 3> WorkgroupSize() const override {
         if (stage != Shader::Stage::Compute) return {1, 1, 1};

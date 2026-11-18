@@ -6,7 +6,8 @@
 //   difftest d1 <micro.seed> [--inputs K]            each micro program run on edge-value inputs, A against B
 //   difftest d2 <seed>                                Shader::Info of each stage, field by field
 //   difftest d3 <seed> [--inputs K]                   each stage run in irexec with K input seeds, A against B
-//   (d1/d3 --show: input 0's trace states as "# <side> ..." lines, a micro program's registers by name)
+//   (d1/d3 --show: input 0's trace states as "# <side> ..." lines, a micro program's registers by name; d2 --show: every
+//   Info field of both sides)
 //   common: --a <front> --b <front> (default old, old), --first F --count C, --alias b=a (B's bank b read as A's a:
 //   irexec's bank_alias and D2's bank numbers; --a old --b new means --alias 24=17 unless one is given)
 // d1/d2/d3 print a JSON line a stage ("index", "a"/"b": "ok" or the error, "equal", the first difference); "@@stage <i>"
@@ -491,6 +492,9 @@ int d2(const seed::Seed& s, const Run& r) {
             std::set<std::string> keys;
             for (const auto& [k, _] : fa) keys.insert(k);
             for (const auto& [k, _] : fb) keys.insert(k);
+            if (r.show)
+                for (const auto* f : {&fa, &fb})
+                    for (const auto& [k, v] : *f) std::printf("# %s %s = %s\n", f == &fa ? "a" : "b", k.c_str(), v.c_str());
             std::string diffs;
             for (const auto& k : keys) {
                 const auto ia = fa.find(k), ib = fb.find(k);
