@@ -17,5 +17,6 @@ eden_sources += files(
   'translate/surface.cpp',
   'translate/texture.cpp',
   'translate/translate.cpp',
+  'translate/warp.cpp',
   'translate_program.cpp',
 )

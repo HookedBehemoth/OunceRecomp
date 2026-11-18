@@ -22,7 +22,8 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
     const Info& info{program.info};
     program.info.maximal_reconvergence = info.uses_subgroup_vote || info.uses_subgroup_shuffles ||
                                          info.uses_subgroup_mask || info.uses_subgroup_reduce ||
-                                         info.uses_subgroup_invocation_id;
+                                         info.uses_subgroup_invocation_id ||
+                                         info.uses_quad_shuffles || info.uses_cooperative_matrix;
     return program;
 }
 

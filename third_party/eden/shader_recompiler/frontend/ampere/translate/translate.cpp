@@ -254,6 +254,8 @@ void TranslateOne(Translator& t) {
         return TranslateIsbe(t);
     case 0x321: case 0x322: case 0x326: case 0x526: case 0x925:
         return TranslateAttribute(t);
+    case 0x806: case 0x886: case 0x389: case 0x589: case 0x989: case 0xf89: case 0x3a1: case 0x3c4: case 0x822:
+        return TranslateWarp(t);
     default:
         break;
     }
