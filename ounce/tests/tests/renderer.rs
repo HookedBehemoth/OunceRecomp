@@ -814,3 +814,27 @@ fn subgroup_ir_ops() {
     let err = std::fs::read_to_string(t.join("3.err")).expect("case 3 (no subgroup operations) gave no error");
     assert!(err.contains("SubgroupReadFirstLane") && err.contains("without subgroup operations"), "case 3's error: {err}");
 }
+
+/// The post-pass IR interpreter (tools/shaders/irexec) on small programs with known results
+/// (fixtures/irexec_micro.cpp): the subgroup reductions, ballots and shuffles in lockstep, a divergent if and a loop of
+/// phis reconverging, the loop safety counter and the step cap, float edge cases (NaN through NMin/NMax and saturate,
+/// denormals flushed, conversions saturating), NIR's bit field semantics, a fragment quad's derivatives with demoted
+/// lanes, and shared atomics in lane order.
+#[test]
+fn irexec_micro() {
+    let t = Tmp::new("irexec-micro");
+    let exe = t.join("fixture");
+    run(Command::new(cxx())
+        .args(eden_flags())
+        .arg(fixture_path("irexec_micro.cpp"))
+        .arg(path("tools/shaders/irexec/irexec.cpp"))
+        .args(eden_objects())
+        .args(sirit_objects())
+        .arg("-lpthread")
+        .arg("-o")
+        .arg(&exe));
+    let out = output(&mut Command::new(&exe));
+    let stdout = text(&out.stdout);
+    assert!(out.status.success(), "irexec micro programs failed:\n{stdout}{}", text(&out.stderr));
+    assert!(stdout.lines().filter(|l| l.starts_with("ok ")).count() >= 36, "cases missing:\n{stdout}");
+}
