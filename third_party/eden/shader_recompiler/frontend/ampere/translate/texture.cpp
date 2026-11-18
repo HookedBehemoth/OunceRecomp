@@ -166,14 +166,17 @@ bool HalfResults(Translator& t) {
 }
 
 /// Writes the enabled components (mask 72-75) of a result: the first two to Rd and Rd+1, the others to the second
-/// destination (64-71) or, when that is RZ, on from Rd+2. F16 results go as pairs, (c0, c1) in Rd, (c2, c3) in the
-/// second destination (or Rd+1), the low half first.
+/// destination (64-71). F16 results go as pairs, (c0, c1) in Rd, (c2, c3) in the second destination, the low half
+/// first.
 template <typename Component>
 void WriteResults(Translator& t, u32 mask, bool half, Component&& component) {
     const u32 dst{t.insn.Dst()}, second{t.insn.Reg64()};
     const bool split{second != RZ};
+    if (!split && std::popcount(mask) > 2) {
+        t.Fail("more than two results without a second destination");
+    }
     const auto target{[&](u32 n) -> u32 {
-        if (!split || n < 2) {
+        if (n < 2) {
             return dst == RZ ? RZ : dst + n;
         }
         return second + (n - 2);
@@ -193,7 +196,7 @@ void WriteResults(Translator& t, u32 mask, bool half, Component&& component) {
     }
     for (u32 pair = 0; pair * 2 < written; ++pair) {
         const IR::F32 high{pair * 2 + 1 < written ? values[pair * 2 + 1] : t.ir.Imm32(0.0f)};
-        const u32 reg{pair == 0 ? (dst == RZ ? RZ : dst) : split ? second : (dst == RZ ? RZ : dst + 1)};
+        const u32 reg{pair == 0 ? dst : second};
         t.SetR(reg, t.ir.PackHalf2x16(t.ir.CompositeConstruct(values[pair * 2], high)));
     }
 }
@@ -453,12 +456,15 @@ void TXQ(Translator& t) {
     const IR::U32 level{t.R(ra)};
     const IR::Value query{t.ir.ImageQueryDimension(CbufHandle(t), level, t.ir.Imm1((mask & 8) == 0))};
     const u32 dst{t.insn.Dst()}, second{t.insn.Reg64()};
+    if (second == RZ && std::popcount(mask) > 2) {
+        t.Fail("more than two results without a second destination");
+    }
     u32 written{0};
     for (u32 element = 0; element < 4; ++element) {
         if (((mask >> element) & 1) == 0) {
             continue;
         }
-        const u32 target{second == RZ || written < 2 ? (dst == RZ ? RZ : dst + written) : second + (written - 2)};
+        const u32 target{written < 2 ? (dst == RZ ? RZ : dst + written) : second + (written - 2)};
         t.SetR(target, IR::U32{t.ir.CompositeExtract(query, element)});
         ++written;
     }
