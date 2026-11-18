@@ -182,47 +182,64 @@ bool create_device() {
     std::vector<VkExtensionProperties> exts(n);
     vkEnumerateDeviceExtensionProperties(dev.physical, nullptr, &n, exts.data());
     std::vector<const char*> want;
-    for (const char* e : {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
-                          VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME}) {
-        if (!has_extension(exts, e)) {
-            logf("direct: the device lacks %s", e);
-            return false;
-        }
-        want.push_back(e);
+    if (!has_extension(exts, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
+        logf("direct: the device lacks %s", VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+        return false;
     }
-    dev.dma_buf_import = true;
+    want.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    if (has_extension(exts, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) && has_extension(exts, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME)) {
+        want.push_back(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME), want.push_back(VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
+        dev.dma_buf_import = true;
+    }
+    if (has_extension(exts, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME)) {
+        want.push_back(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
+        dev.host_import = true;
+        VkPhysicalDeviceExternalMemoryHostPropertiesEXT hp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
+        VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+        p2.pNext = &hp;
+        vkGetPhysicalDeviceProperties2(dev.physical, &p2);
+        dev.host_align = hp.minImportedHostPointerAlignment;
+    }
 
-    // the queues: one family for graphics and compute; a sparse-binding-only one for layer 0's binds
+    // the queues: one family for graphics and compute; layer 0's binds on a queue of their own that has sparse binding (a
+    // sparse-binding-only family, else another family, else a second queue of the graphics family), else the graphics queue
     vkGetPhysicalDeviceQueueFamilyProperties(dev.physical, &n, nullptr);
     std::vector<VkQueueFamilyProperties> families(n);
     vkGetPhysicalDeviceQueueFamilyProperties(dev.physical, &n, families.data());
     dev.queue_family = UINT32_MAX;
-    uint32_t sparse_family = UINT32_MAX;
-    for (uint32_t i = 0; i < n; i++) {
-        const VkQueueFlags f = families[i].queueFlags;
-        if (dev.queue_family == UINT32_MAX && (f & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) == (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))
+    for (uint32_t i = 0; i < n && dev.queue_family == UINT32_MAX; i++)
+        if ((families[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) == (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))
             dev.queue_family = i;
-        else if (sparse_family == UINT32_MAX && (f & VK_QUEUE_SPARSE_BINDING_BIT) && !(f & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)))
-            sparse_family = i;
-    }
-    if (dev.queue_family == UINT32_MAX || sparse_family == UINT32_MAX) {
-        char fams[256] = "";
-        for (uint32_t i = 0, k = 0; i < n && k < sizeof fams; i++) {
-            const VkQueueFlags f = families[i].queueFlags;
-            k += (uint32_t)std::snprintf(fams + k, sizeof fams - k, "%s%u:%s%s%s%s", i ? ", " : "", i, f & VK_QUEUE_GRAPHICS_BIT ? " graphics" : "",
-                                         f & VK_QUEUE_COMPUTE_BIT ? " compute" : "", f & VK_QUEUE_TRANSFER_BIT ? " transfer" : "",
-                                         f & VK_QUEUE_SPARSE_BINDING_BIT ? " sparse" : "");
-        }
-        if (dev.queue_family == UINT32_MAX) logf("direct: the device has no queue family with both graphics and compute (families %s)", fams);
-        else
-            logf("direct: the device has no queue family for sparse binding without graphics or compute, which layer 0's binds need "
-                 "beside the one queue (families %s)", fams);
+    if (dev.queue_family == UINT32_MAX) {
+        logf("direct: the device has no queue family with both graphics and compute");
         return false;
     }
-    const float priority = 1.0f;
+    const auto sparse = [&](uint32_t i) { return (families[i].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) != 0; };
+    const auto plain = [&](uint32_t i) { return !(families[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)); };
+    uint32_t sparse_family = UINT32_MAX, sparse_index = 0;
+    const char* kind = "";
+    for (int pass = 0; pass < 4 && sparse_family == UINT32_MAX; pass++) {
+        static const char* const kinds[4] = {"sparse binding only", "another family", "a second graphics queue", "the graphics queue"};
+        kind = kinds[pass];
+        for (uint32_t i = 0; i < n && sparse_family == UINT32_MAX; i++) {
+            if (!sparse(i)) continue;
+            if (pass == 0 && plain(i)) sparse_family = i;
+            if (pass == 1 && i != dev.queue_family) sparse_family = i;
+            if (pass == 2 && i == dev.queue_family && families[i].queueCount > 1) sparse_family = i, sparse_index = 1;
+            if (pass == 3 && i == dev.queue_family) sparse_family = i;
+        }
+    }
+    dev.sparse_shared = sparse_family == dev.queue_family && sparse_index == 0;
+    if (sparse_family == UINT32_MAX) logf("direct: no queue for sparse binding: layer 0 is off");
+    else logf("direct: layer 0's binds on queue family %u index %u (%s)", sparse_family, sparse_index, kind);
+    const float priority[2] = {1.0f, 1.0f};
     VkDeviceQueueCreateInfo qs[2] = {{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}, {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}};
-    qs[0].queueFamilyIndex = dev.queue_family, qs[0].queueCount = 1, qs[0].pQueuePriorities = &priority;
-    qs[1].queueFamilyIndex = sparse_family, qs[1].queueCount = 1, qs[1].pQueuePriorities = &priority;
+    uint32_t nq = 1;
+    qs[0].queueFamilyIndex = dev.queue_family, qs[0].queueCount = 1, qs[0].pQueuePriorities = priority;
+    if (sparse_family != UINT32_MAX && sparse_family != dev.queue_family)
+        qs[nq].queueFamilyIndex = sparse_family, qs[nq].queueCount = 1, qs[nq].pQueuePriorities = priority, nq++;
+    else if (sparse_index == 1)
+        qs[0].queueCount = 2;
 
     // features: every core one the device has (the later milestones use them), but robust buffer access (it costs)
     VkPhysicalDeviceVulkan14Features f14{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES};
@@ -256,7 +273,7 @@ bool create_device() {
     dev.features = f.features;
     VkDeviceCreateInfo ci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     ci.pNext = &f;
-    ci.queueCreateInfoCount = 2;
+    ci.queueCreateInfoCount = nq;
     ci.pQueueCreateInfos = qs;
     ci.enabledExtensionCount = (uint32_t)want.size();
     ci.ppEnabledExtensionNames = want.data();
@@ -268,7 +285,7 @@ bool create_device() {
     GPU_VK_DEVICE(GPU_VK_LOAD)
 #undef GPU_VK_LOAD
     vkGetDeviceQueue(dev.device, dev.queue_family, 0, &dev.queue);
-    vkGetDeviceQueue(dev.device, sparse_family, 0, &dev.sparse_queue);
+    if (sparse_family != UINT32_MAX) vkGetDeviceQueue(dev.device, sparse_family, sparse_index, &dev.sparse_queue);
     return true;
 }
 

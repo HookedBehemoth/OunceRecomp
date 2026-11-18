@@ -28,6 +28,7 @@
     X(vkResetFences) X(vkCreateSemaphore) X(vkDestroySemaphore) X(vkWaitSemaphores) X(vkGetSemaphoreCounterValue)      \
     X(vkCreateImage) X(vkGetImageMemoryRequirements) X(vkBindImageMemory) X(vkAllocateMemory) X(vkFreeMemory)          \
     X(vkCreateBuffer) X(vkGetBufferMemoryRequirements) X(vkGetBufferDeviceAddress) X(vkGetMemoryFdPropertiesKHR)         \
+    X(vkGetMemoryHostPointerPropertiesEXT)                                                                             \
     X(vkDestroyImage) X(vkCreateImageView) X(vkDestroyImageView) X(vkDestroyBuffer) X(vkCmdBeginRendering)               \
     X(vkCmdEndRendering) X(vkCmdClearAttachments) X(vkCmdCopyBufferToImage) X(vkCmdCopyImageToBuffer) X(vkCmdCopyImage) \
     X(vkCmdBlitImage) X(vkCmdResolveImage) X(vkCmdClearDepthStencilImage) X(vkDestroyCommandPool) X(vkResetCommandBuffer)      \
@@ -69,9 +70,12 @@ struct Device {
     uint32_t queue_family = 0;
     VkQueue queue = VK_NULL_HANDLE;   // (the one queue: every submit and present, under queue_mu)
     std::mutex queue_mu;
-    VkQueue sparse_queue = VK_NULL_HANDLE;   // (layer 0's binds: a sparse-binding-only family, under sparse_mu)
+    VkQueue sparse_queue = VK_NULL_HANDLE;   // (layer 0's binds: create_device picks it; under sparse_mu)
     std::mutex sparse_mu;
+    bool sparse_shared = false;   // (sparse_queue is queue: binds under queue_mu)
     bool dma_buf_import = false;
+    bool host_import = false;   // (VK_EXT_external_memory_host)
+    uint64_t host_align = 0;    // (its minImportedHostPointerAlignment)
     bool nested_rendering = false;   // (M3a: VK_KHR_maintenance7: secondaries and inline commands in one dynamic rendering)
     bool memory_budget = false;      // (VK_EXT_memory_budget: the driver's heap budgets and usage; without it, estimated)
     // the window (none: presents clear an image of their own)

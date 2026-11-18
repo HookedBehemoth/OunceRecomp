@@ -58,16 +58,7 @@ static int reserve_guest(void) {
 #else
     void hos_commit_init(void);
     hos_commit_init();   /* (the crash report) */
-    /* Shared (a memfd's pages, which the back end imports as dma-bufs instead of host pointers: amdgpu checks every page
-       of a host-pointer import again at each submission, 15-45 ms a submission in Kokiri Forest) where the GPU export
-       works; HOS_GUEST_MEMFD=1 or 0: shared or private regardless */
-    const char *e = getenv("HOS_GUEST_MEMFD"), *note = NULL;
-    const int share = !e ? OS_GUEST_SHARE_AUTO : atoi(e) ? OS_GUEST_SHARE_ON : OS_GUEST_SHARE_OFF;
-    const int kind = os_guest_reserve((void *)A64_HOST_BASE, GUEST_SPACE, share, &note);
-    if (kind < 0) return 0;
-    if (kind == OS_GUEST_SHARED) hos_log("mem: the guest window is shared with the GPU as dma-bufs");
-    else hos_log("mem: the guest window is private memory, host-pointer imports for the GPU (slow submissions on AMD): %s",
-                 note ? note : "-");
+    if (os_guest_reserve((void *)A64_HOST_BASE, GUEST_SPACE) < 0) return 0;   /* (os_guest.h: how the GPU sees it) */
     return 1;
 #endif
 }

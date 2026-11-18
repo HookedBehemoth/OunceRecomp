@@ -39,7 +39,7 @@ fn layer0_pools() {
     let line_end = lp + find(&cp[lp..], "\n");
     assert!(cp[..line_end].contains("window_make(pl[i].window)"), "chunk_places makes the windows");
     // imports outside mu; binds submitted and waited for before the bits; the bits before the chunk's state
-    assert!(find(claimed, "dma_buf_memory(") < find(claimed, "std::lock_guard lk(mu)"), "imports outside the lock");
+    assert!(find(claimed, "guest_memory(") < find(claimed, "std::lock_guard lk(mu)"), "imports outside the lock");
     assert!(find(claimed, "submit_binds(binds)") < find(claimed, "bits->set(c)"), "the binds before the bits");
     assert!(find(claimed, "bits->set(c)") < find(claimed, "cstate[c].store(CH_BOUND"), "the bits before the state");
     assert!(block(&pools, "VkResult submit_binds(").contains("vkWaitForFences"));

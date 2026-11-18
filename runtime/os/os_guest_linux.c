@@ -1,8 +1,7 @@
-/* The guest window on Linux (os_guest.h). Shared: a sealed memfd mapped MAP_SHARED at the window's address, its ranges
-   exported as dma-bufs with udmabuf (UDMABUF_CREATE), discarded with MADV_REMOVE. Private: anonymous memory, discarded
-   with MADV_DONTNEED. Either way MAP_NORESERVE (pages made on first touch) and MADV_NOHUGEPAGE: a huge-page collapse
-   under a GPU import makes the kernel pin the pages again at the next submission (~250 ms a submit on RADV). The
-   memfd is chosen only where udmabuf works: a shared mapping's pages cannot be host-pointer imports. */
+/* The guest window on Linux (os_guest.h): a sealed memfd mapped MAP_SHARED at the window's address, its ranges exported
+   as dma-bufs with udmabuf (UDMABUF_CREATE), discarded with MADV_REMOVE. MAP_NORESERVE (pages made on first touch) and
+   MADV_NOHUGEPAGE: a huge-page collapse under a GPU import makes the kernel pin the pages again at the next submission
+   (~250 ms a submit on RADV). */
 #include "os_guest.h"
 #include "os.h"
 #include <errno.h>
@@ -34,41 +33,37 @@ static int udmabuf_open(const char **note) {
     return 1;
 }
 
-int os_guest_reserve(void *base, uint64_t size, int share, const char **note) {
-    if (note) *note = NULL;
-    const int can = udmabuf_open(note);
-    if (share == OS_GUEST_SHARE_ON || (share == OS_GUEST_SHARE_AUTO && can)) {
-        const int fd = (int)syscall(SYS_memfd_create, "ounce-guest", MFD_CLOEXEC | MFD_ALLOW_SEALING);
-        if (fd >= 0 && ftruncate(fd, (off_t)size) == 0) {
-            fcntl(fd, F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_GROW);
-            void *p = mmap(base, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED_NOREPLACE | MAP_NORESERVE, fd, 0);
-            if (p == base) {
-                memfd = fd;
-                madvise(base, size, MADV_NOHUGEPAGE);
-                return OS_GUEST_SHARED;
-            }
-            if (p != MAP_FAILED) munmap(p, size);
+int os_guest_reserve(void *base, uint64_t size) {
+    const int fd = (int)syscall(SYS_memfd_create, "ounce-guest", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+    if (fd < 0) return OS_EFAIL;
+    if (ftruncate(fd, (off_t)size) == 0) {
+        fcntl(fd, F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_GROW);
+        void *p = mmap(base, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED_NOREPLACE | MAP_NORESERVE, fd, 0);
+        if (p == base) {
+            memfd = fd;
+            madvise(base, size, MADV_NOHUGEPAGE);
+            return 0;
         }
-        if (fd >= 0) close(fd);
-        if (note) *note = "no memfd for the window";
-    } else if (share == OS_GUEST_SHARE_OFF && note) {
-        *note = "not asked for";
+        if (p != MAP_FAILED) munmap(p, size);
     }
-    if (mmap(base, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE | MAP_NORESERVE, -1, 0) != base)
-        return OS_EFAIL;
-    madvise(base, size, MADV_NOHUGEPAGE);
-    return OS_GUEST_PRIVATE;
+    close(fd);
+    return OS_EFAIL;
 }
 
-void os_guest_discard(void *p, size_t n) { madvise(p, n, memfd >= 0 ? MADV_REMOVE : MADV_DONTNEED); }
+void os_guest_discard(void *p, size_t n) { madvise(p, n, MADV_REMOVE); }
 
 uint64_t os_guest_resident(void) {
     struct stat st;
     return memfd >= 0 && !fstat(memfd, &st) ? (uint64_t)st.st_blocks * 512 : 0;
 }
 
-bool os_guest_exportable(uint64_t *max_bytes) {
-    if (memfd < 0 || udmabuf < 0) return false;
+bool os_guest_exportable(uint64_t *max_bytes, const char **note) {
+    if (note) *note = NULL;
+    if (memfd < 0) {
+        if (note) *note = "no guest window";
+        return false;
+    }
+    if (!udmabuf_open(note)) return false;
     if (max_bytes) *max_bytes = udmabuf_limit;
     return true;
 }

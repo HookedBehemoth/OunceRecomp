@@ -1,10 +1,11 @@
 // Layer 0 (plan, Architecture): guest memory for the GPU in window buffers, one backing for every
 // pool byte. Cut down from gpu/legacy/vk/vk_pools.cpp (its comments have the scheme and the measurements; the arithmetic is
 // layer0_windows.h, a verbatim copy) and the dma-buf import of gpu/legacy/vk/vk_memory.cpp. As there, with its defaults as constants:
-// 16 MB host chunks imported once as udmabufs of the memfd's own pages and bound into the two windows that hold them, ahead
+// 16 MB host chunks imported once as os_guest's handles (udmabufs of the memfd's own pages on Linux; host pointers where a
+// platform gives those) and bound into the two windows that hold them, ahead
 // of use for pools up to 64 MB (an importer thread); CPU_NO_ACCESS pools in VRAM (the VRAM class, step 7b), kept 10 s after
 // their finalize and handed back on the same pool again, 2048 MB at most. Left for M2 with the bindings: the per-binding
-// path (a range bound at its first use), the shaders' page table and the BDA window table. Linux only.
+// path (a range bound at its first use), the shaders' page table and the BDA window table.
 
 #include <algorithm>
 #include <chrono>
@@ -36,7 +37,8 @@ constexpr uint64_t G = l0::kGran;
 constexpr uint32_t kCpuNoAccess = 0x1, kCpuUncached = 0x2, kCpuCached = 0x4, kGpuNoAccess = 0x8, kPhysical = 0x100,
                    kVirtual = 0x200, kShaderCode = 0x40;   // (NVNmemoryPoolFlags)
 constexpr uint64_t kBlock = 256ull << 20;
-constexpr uint64_t kChunkMb = 16, kVramLimit = 2048ull << 20;
+constexpr uint64_t kChunkMb = 16,   // (64 MB: 1.7 GB more pinned in Kokiri, boot binds 4x slower, no submit gain)
+                kVramLimit = 2048ull << 20;
 constexpr double kKeepS = 10;
 
 constexpr VkBufferUsageFlags kWindowUsage =
@@ -46,32 +48,34 @@ constexpr VkBufferUsageFlags kWindowUsage =
     VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT;
 
 // ---- guest memory exported to the GPU (os_guest.h): imported by the handle's kind ----
-int dmabuf_failures = 0;
-uint64_t dmabuf_limit = 0;
+int import_failures = 0;
+uint64_t export_limit = 0;   // (the largest range one export takes: udmabuf's size limit on Linux)
 
-bool dmabuf_open() {   // (once, at layer0_on)
-    const bool can = os_guest_exportable(&dmabuf_limit);
-    if (!can || !dev.dma_buf_import) {
-        logf("direct: layer 0: guest memory is not exported to the GPU (%s)", !can ? "the window is private memory" : "no dma-buf import");
+bool export_open() {   // (once, at layer0_on)
+    const char* note = nullptr;
+    if (!os_guest_exportable(&export_limit, &note)) {
+        logf("direct: layer 0: guest memory is not exported to the GPU (%s)", note ? note : "-");
         return false;
     }
     return true;
 }
 VkDeviceMemory import_dma_buf(uint64_t lo, uint64_t size, int fd);
+VkDeviceMemory import_host(uint64_t lo, uint64_t size, void* ptr);
 /// The memory of guest [lo, lo + size) as an import of its export; VK_NULL_HANDLE when the export or the import refused it
 std::atomic<uint32_t> import_type{UINT32_MAX};   // (for mem_account at a free)
-VkDeviceMemory dma_buf_memory(uint64_t lo, uint64_t size) {
+VkDeviceMemory guest_memory(uint64_t lo, uint64_t size) {
     os_gpu_handle h;
     const int r = os_guest_export(lo, size, &h);
     if (r) {
-        if (dmabuf_failures++ < 8) logf("direct: guest %#llx..%#llx: not exported (%d)", (unsigned long long)lo, (unsigned long long)(lo + size), r);
+        if (import_failures++ < 8) logf("direct: guest %#llx..%#llx: not exported (%d)", (unsigned long long)lo, (unsigned long long)(lo + size), r);
         return VK_NULL_HANDLE;
     }
     switch (h.kind) {
     case OS_GPU_DMABUF_FD: return import_dma_buf(lo, size, h.fd);
-    default:   // (OS_GPU_HOST_POINTER: VK_EXT_external_memory_host, for a system without dma-bufs: not made yet)
+    case OS_GPU_HOST_POINTER: return import_host(lo, size, h.ptr);
+    default:
         os_gpu_handle_close(&h);
-        if (dmabuf_failures++ < 8) logf("direct: guest memory exported as handle kind %d, which this back end does not import", h.kind);
+        if (import_failures++ < 8) logf("direct: guest memory exported as handle kind %d, which this back end does not import", h.kind);
         return VK_NULL_HANDLE;
     }
 }
@@ -95,7 +99,7 @@ VkDeviceMemory import_dma_buf(uint64_t lo, uint64_t size, int fd) {
     }
     if (type == UINT32_MAX) {
         os_gpu_handle_close(&h);
-        if (dmabuf_failures++ < 8) logf("direct: a dma-buf of guest memory has no memory type");
+        if (import_failures++ < 8) logf("direct: a dma-buf of guest memory has no memory type");
         return VK_NULL_HANDLE;
     }
     VkImportMemoryFdInfoKHR im{VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR};
@@ -112,8 +116,56 @@ VkDeviceMemory import_dma_buf(uint64_t lo, uint64_t size, int fd) {
     const VkResult r = vkAllocateMemory(dev.device, &ai, nullptr, &memory);
     if (r != VK_SUCCESS) {   // (the fd is the caller's again when the import fails)
         os_gpu_handle_close(&h);
-        if (dmabuf_failures++ < 8)
+        if (import_failures++ < 8)
             logf("direct: guest %#llx..%#llx: its dma-buf not imported (VkResult %d)", (unsigned long long)lo, (unsigned long long)(lo + size), (int)r);
+        return VK_NULL_HANDLE;
+    }
+    import_type.store(type, std::memory_order_relaxed);
+    mem_account(MO_L0_IMPORT, type, (int64_t)size);
+    return memory;
+}
+
+/// a host pointer's import (VK_EXT_external_memory_host): the window's own pages
+VkDeviceMemory import_host(uint64_t lo, uint64_t size, void* ptr) {
+    static uint32_t type = UINT32_MAX;
+    static std::mutex type_mu;
+    if (!dev.host_import || ((uintptr_t)ptr | size) % (dev.host_align ? dev.host_align : 1)) {
+        if (import_failures++ < 8) logf("direct: guest %#llx: no host-pointer import (alignment %llu)", (unsigned long long)lo, (unsigned long long)dev.host_align);
+        return VK_NULL_HANDLE;
+    }
+    {
+        std::lock_guard lk(type_mu);
+        if (type == UINT32_MAX) {
+            VkMemoryHostPointerPropertiesEXT hp{VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
+            const VkResult r = vkGetMemoryHostPointerPropertiesEXT(dev.device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, ptr, &hp);
+            std::string types;
+            for (uint32_t i = 0; i < dev.memory.memoryTypeCount; i++)
+                if (hp.memoryTypeBits >> i & 1) types += " " + std::to_string(i) + ":" + std::to_string(dev.memory.memoryTypes[i].propertyFlags);
+            logf("direct: layer 0: host-pointer memory types (VkResult %d):%s", (int)r, types.c_str());
+            constexpr VkMemoryPropertyFlags hc = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+            for (uint32_t i = 0; r == VK_SUCCESS && i < dev.memory.memoryTypeCount && type == UINT32_MAX; i++)
+                if ((hp.memoryTypeBits >> i & 1) && (dev.memory.memoryTypes[i].propertyFlags & hc) == hc) type = i;
+        }
+    }
+    if (type == UINT32_MAX) {
+        if (import_failures++ < 8) logf("direct: a host pointer of guest memory has no memory type");
+        return VK_NULL_HANDLE;
+    }
+    VkImportMemoryHostPointerInfoEXT im{VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT};
+    im.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
+    im.pHostPointer = ptr;
+    VkMemoryAllocateFlagsInfo fl{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
+    fl.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+    im.pNext = &fl;
+    VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    ai.pNext = &im;
+    ai.allocationSize = size;
+    ai.memoryTypeIndex = type;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    const VkResult r = vkAllocateMemory(dev.device, &ai, nullptr, &memory);
+    if (r != VK_SUCCESS) {
+        if (import_failures++ < 8)
+            logf("direct: guest %#llx..%#llx: its host pointer not imported (VkResult %d)", (unsigned long long)lo, (unsigned long long)(lo + size), (int)r);
         return VK_NULL_HANDLE;
     }
     import_type.store(type, std::memory_order_relaxed);
@@ -179,7 +231,8 @@ Window* window_make(uint32_t k) {   // (mu held)
     Window& w = windows[k];
     if (w.buffer) return &w;
     VkExternalMemoryBufferCreateInfo eb{VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO};
-    eb.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    eb.handleTypes = (dev.dma_buf_import ? VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT : 0) |
+                     (dev.host_import ? VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT : 0);
     VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     bi.pNext = &eb;
     bi.flags = VK_BUFFER_CREATE_SPARSE_BINDING_BIT | VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT | VK_BUFFER_CREATE_SPARSE_ALIASED_BIT;
@@ -238,7 +291,7 @@ VkResult submit_binds(std::vector<One>& binds) {
     }
     VkResult r;
     {
-        std::lock_guard qk(dev.sparse_mu);
+        std::lock_guard qk(dev.sparse_shared ? dev.queue_mu : dev.sparse_mu);
         r = vkQueueBindSparse(dev.sparse_queue, 1, &si, bind_fence);
     }
     if (r == VK_SUCCESS) {
@@ -271,7 +324,7 @@ void bind_claimed(const std::vector<uint64_t>& claimed) {
     std::vector<std::pair<uint64_t, VkDeviceMemory>> got;
     std::vector<uint64_t> failed;
     for (uint64_t c : claimed) {
-        const VkDeviceMemory m = dma_buf_memory(c * chunk, chunk);
+        const VkDeviceMemory m = guest_memory(c * chunk, chunk);
         if (m) got.push_back({c, m});
         else failed.push_back(c);
     }
@@ -556,13 +609,14 @@ bool layer0_on() {
     if (!(dev.features.sparseBinding && dev.features.sparseResidencyBuffer && dev.features.sparseResidencyAliased))
         why = "no sparse residency of aliased buffers";
     else if (!host->guest_size()) why = "no guest window";
-    else if (!dmabuf_open()) why = "no dma-bufs of guest memory";
+    else if (!dev.sparse_queue) why = "no queue for sparse binding";
+    else if (!export_open()) why = "no export of guest memory";
     if (why) {
         logf("direct: layer 0 off: %s", why);
         state.store(0, std::memory_order_release);
         return false;
     }
-    chunk = l0::chunk_bytes(kChunkMb, dmabuf_limit);
+    chunk = l0::chunk_bytes(kChunkMb, export_limit);
     guest_bytes = std::min<uint64_t>(host->guest_size(), (uint64_t)l0::kWindows * l0::kStride);
     bits = new l0::ChunkBits(guest_bytes, chunk);
     ready = new l0::ChunkBits(guest_bytes, G);
@@ -570,9 +624,9 @@ bool layer0_on() {
     cstate.reset(new std::atomic<uint8_t>[bits->chunks]);
     for (uint64_t c = 0; c < bits->chunks; c++) cstate[c].store(CH_NONE, std::memory_order_relaxed);
     os_thread_release(os_thread_start(worker_main, nullptr, 0, "direct layer 0"));
-    logf("direct: layer 0 on: guest memory in 4 GB windows every 2 GB, chunks of %llu MB (udmabuf's limit %llu MB), every "
+    logf("direct: layer 0 on: guest memory in 4 GB windows every 2 GB, chunks of %llu MB (an export's limit %llu MB), every "
          "GPU-readable pool bound in full at its creation (but the texture data pool); CPU_NO_ACCESS pools in VRAM (up to %llu MB, "
-         "kept %.0f s)", (unsigned long long)(chunk >> 20), (unsigned long long)(dmabuf_limit >> 20), (unsigned long long)(kVramLimit >> 20), kKeepS);
+         "kept %.0f s)", (unsigned long long)(chunk >> 20), (unsigned long long)(export_limit >> 20), (unsigned long long)(kVramLimit >> 20), kKeepS);
     state.store(1, std::memory_order_release);
     return true;
 }
