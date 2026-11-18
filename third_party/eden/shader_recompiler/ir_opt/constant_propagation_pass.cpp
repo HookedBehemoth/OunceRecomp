@@ -469,10 +469,16 @@ void FoldFPAdd32(IR::Inst& inst) {
     if (FoldWhenAllImmediates(inst, [](f32 a, f32 b) { return a + b; })) {
         return;
     }
+    // (fork) x + -0 is x for every x (+0 + -0 = +0, a NaN stays one), unless denormals are flushed; x + +0 is not
+    // (-0 + +0 = +0)
+    const IR::FmzMode fmz{inst.Flags<IR::FpControl>().fmz_mode};
+    if (fmz == IR::FmzMode::FTZ || fmz == IR::FmzMode::FMZ) {
+        return;
+    }
     const IR::Value lhs_value{inst.Arg(0)};
     const IR::Value rhs_value{inst.Arg(1)};
     const auto check_neutral = [](const IR::Value& one_operand) {
-        return one_operand.IsImmediate() && std::abs(one_operand.F32()) == 0.0f;
+        return one_operand.IsImmediate() && std::bit_cast<u32>(one_operand.F32()) == 0x80000000U;
     };
     if (check_neutral(lhs_value)) {
         inst.ReplaceUsesWith(rhs_value);
