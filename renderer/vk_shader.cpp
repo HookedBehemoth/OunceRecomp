@@ -215,6 +215,12 @@ public:
         local_memory = static_cast<uint32_t>(sph.LocalMemorySize()) + sph.common3.shader_local_memory_crs_size;
         is_proprietary_driver = true;
     }
+    /// (a passthrough geometry stage) the attributes it passes on: those the vertex stage before it stores
+    void pass_through(const Shader::VaryingState& vertex_stores) {
+        gp_passthrough_mask.fill(0);
+        for (size_t i = 0; i < gp_passthrough_mask.size() * 32; i++)
+            if (!vertex_stores.mask[i]) gp_passthrough_mask[i / 32] |= 1u << (i % 32);
+    }
     u64 ReadInstruction(u32 address) override { return address / 8 < nvn.code.size() ? nvn.code[address / 8] : 0; }
     u32 TranslateProgramAddress(u32 address) const override {
         if (const auto t = Shader::Ampere::NativeProgramAddress(nvn.code, address)) return *t;
@@ -515,8 +521,9 @@ struct Slot {
     // (0 being read, 1 a vertex (+ fragment) or mesh-only (+ fragment) program, 2 not one, 3 its code not readable, 4 a task
     // stage (M4b: not drawn))
     std::atomic<int> state{0};
-    StageScan vs, fs, prim;   // (M4b: vs is the mesh stage's of a mesh program; prim its header-only stage)
+    StageScan vs, fs, prim, gs;   // (M4b: vs is the mesh stage's of a mesh program; prim its header-only stage)
     bool has_fs = false, mesh = false, has_prim = false;
+    bool has_gs = false;        // (a vertex program with a geometry stage between its vertex and fragment stages)
     bool task = false;          // (M4c: a task+mesh program, its task stage run as a compute step; vs is its mesh stage)
     uint64_t task_key = 0;      // (its task stage's code key)
     const char* why = "";
@@ -1111,7 +1118,7 @@ bool finish(Variant& v) {
             const size_t k = std::strlen(d.shape);
             std::snprintf(d.shape + k, sizeof d.shape - k, "%s%s: tex %d bank %d game %d computed, img %zu, ssbo %zu%s%s",
                           k ? "; " : "", st.vk_stage == VK_SHADER_STAGE_VERTEX_BIT ? "vs" : st.vk_stage == VK_SHADER_STAGE_MESH_BIT_EXT ? "ms"
-                                         : st.vk_stage == VK_SHADER_STAGE_COMPUTE_BIT ? "ts" : "fs", bank, game, computed,
+                                         : st.vk_stage == VK_SHADER_STAGE_COMPUTE_BIT ? "ts" : st.vk_stage == VK_SHADER_STAGE_GEOMETRY_BIT ? "gs" : "fs", bank, game, computed,
                           info.image_descriptors.size(), info.storage_buffers_descriptors.size(),
                           info.uses_global_memory ? ", global memory" : "", info.texture_buffer_descriptors.size() ? ", texel buffers" : "");
         }
@@ -1165,7 +1172,10 @@ bool finish(Variant& v) {
         // (M4b: a mesh stage never has a task stage before it: the device has none enabled)
         if (st.vk_stage == VK_SHADER_STAGE_MESH_BIT_EXT) ci.flags |= VK_SHADER_CREATE_NO_TASK_SHADER_BIT_EXT;
         ci.stage = st.vk_stage;
-        ci.nextStage = st.vk_stage == VK_SHADER_STAGE_VERTEX_BIT || st.vk_stage == VK_SHADER_STAGE_MESH_BIT_EXT ? VK_SHADER_STAGE_FRAGMENT_BIT : 0;
+        const bool geometry_next = st.vk_stage == VK_SHADER_STAGE_VERTEX_BIT && v.stages.back().vk_stage == VK_SHADER_STAGE_GEOMETRY_BIT;
+        ci.nextStage = geometry_next ? VK_SHADER_STAGE_GEOMETRY_BIT
+                     : st.vk_stage == VK_SHADER_STAGE_VERTEX_BIT || st.vk_stage == VK_SHADER_STAGE_MESH_BIT_EXT || st.vk_stage == VK_SHADER_STAGE_GEOMETRY_BIT
+                     ? VK_SHADER_STAGE_FRAGMENT_BIT : 0;
         // (M4c: a task stage is a compute shader; its program has no task shader object)
         ci.codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT;
         ci.codeSize = st.spirv.size() * 4;
@@ -1195,13 +1205,14 @@ bool finish(Variant& v) {
             static std::atomic<int> told{0};
             if (told++ < 20) logf("direct: program %016llx: its %s shader object not made (%d)", (unsigned long long)d.key,
                                   st.vk_stage == VK_SHADER_STAGE_VERTEX_BIT ? "vertex" : st.vk_stage == VK_SHADER_STAGE_MESH_BIT_EXT ? "mesh"
-                                  : st.vk_stage == VK_SHADER_STAGE_COMPUTE_BIT ? "task (compute)" : "fragment", (int)r);
+                                  : st.vk_stage == VK_SHADER_STAGE_COMPUTE_BIT ? "task (compute)"
+                                  : st.vk_stage == VK_SHADER_STAGE_GEOMETRY_BIT ? "geometry" : "fragment", (int)r);
             return false;
         }
         object_made(1, "a shader object");
         st_objects_made.fetch_add(1, std::memory_order_relaxed);
         (st.vk_stage == VK_SHADER_STAGE_VERTEX_BIT ? d.vs : st.vk_stage == VK_SHADER_STAGE_MESH_BIT_EXT ? d.ms
-         : st.vk_stage == VK_SHADER_STAGE_COMPUTE_BIT ? d.ts : d.fs) = obj;
+         : st.vk_stage == VK_SHADER_STAGE_COMPUTE_BIT ? d.ts : st.vk_stage == VK_SHADER_STAGE_GEOMETRY_BIT ? d.gs : d.fs) = obj;
     }
     if (d.skip) {
         static std::mutex mu;
@@ -1259,7 +1270,9 @@ void record_answers(Variant& v, const DState& s) {
     }
 }
 
-bool translate_variant(Variant& v, const DState& s, const Code& vsc, const Code* fsc, const uint8_t color_types[8]) {
+/// A vertex program: its vertex stage, its geometry stage when it has one (stored last: stages vertex, fragment, geometry;
+/// translated for triangle input, the only input the draw path gives it), its fragment stage
+bool translate_variant(Variant& v, const DState& s, const Code& vsc, const Code* gsc, const Code* fsc, const uint8_t color_types[8]) {
     try {
         Shader::Backend::Bindings bindings{};
         int questions = 0;
@@ -1267,23 +1280,31 @@ bool translate_variant(Variant& v, const DState& s, const Code& vsc, const Code*
         auto vs = translate(vs_env);
         questions += vs_env.questions;
         Shader::RuntimeInfo vrt{};
-        if (!vs->program.info.stores[Shader::IR::Attribute::PointSize]) vrt.fixed_state_point_size = 1.0f;
+        if (!gsc && !vs->program.info.stores[Shader::IR::Attribute::PointSize]) vrt.fixed_state_point_size = 1.0f;
         for (int i = 0; i < 16; i++) vrt.generic_input_types[i] = attribute_type_of(s.vattr[i]);
         vrt.previous_stage_stores.mask.set();
-        vrt.convert_depth_mode = host->depth_minus_w() != 0;
+        vrt.convert_depth_mode = !gsc && host->depth_minus_w() != 0;   // (in the last stage before the rasterizer)
         VStage& vst = v.stages.emplace_back();
         vst.nvn_stage = 0, vst.vk_stage = VK_SHADER_STAGE_VERTEX_BIT;
         vst.spirv = Shader::Backend::SPIRV::EmitSPIRV(profile_graphics(VK_SHADER_STAGE_VERTEX_BIT), vrt, vs->program, bindings);
         schedule_late(vst.spirv, late_vertex());
         vst.info = vs->program.info;
         vst.c1 = vsc.c1;
+        std::unique_ptr<Translation> gs;
+        if (gsc) {
+            Env gs_env{s, *gsc, Shader::Stage::Geometry};
+            gs_env.pass_through(vs->program.info.stores);
+            gs = translate(gs_env);
+            questions += gs_env.questions;
+            st_game_words.fetch_add(gs_env.game_words, std::memory_order_relaxed);
+        }
         if (fsc) {
             Env fs_env{s, *fsc, Shader::Stage::Fragment};
             auto fs = translate(fs_env);
             questions += fs_env.questions;
             st_game_words.fetch_add(fs_env.game_words, std::memory_order_relaxed);
             Shader::RuntimeInfo frt{};
-            frt.previous_stage_stores = vs->program.info.stores;
+            frt.previous_stage_stores = gs ? gs->program.info.stores : vs->program.info.stores;
             for (int i = 0; i < 8; i++) frt.color_output_types[i] = static_cast<Shader::AttributeType>(color_types[i]);
             uint32_t float_targets = 0;   // (the frozen back end's NaN guard of float targets, on by default)
             for (int i = 0; i < 8; i++)
@@ -1294,6 +1315,17 @@ bool translate_variant(Variant& v, const DState& s, const Code& vsc, const Code*
             fst.spirv = Shader::Backend::SPIRV::EmitSPIRV(profile_graphics(VK_SHADER_STAGE_FRAGMENT_BIT), frt, fs->program, bindings);
             fst.info = fs->program.info;
             fst.c1 = fsc->c1;
+        }
+        if (gs) {
+            Shader::RuntimeInfo grt{};
+            grt.previous_stage_stores = vs->program.info.stores;
+            grt.input_topology = Shader::InputTopology::Triangles;
+            grt.convert_depth_mode = host->depth_minus_w() != 0;
+            VStage& gst = v.stages.emplace_back();
+            gst.nvn_stage = 2, gst.vk_stage = VK_SHADER_STAGE_GEOMETRY_BIT;
+            gst.spirv = Shader::Backend::SPIRV::EmitSPIRV(profile_graphics(VK_SHADER_STAGE_GEOMETRY_BIT), grt, gs->program, bindings);
+            gst.info = gs->program.info;
+            gst.c1 = gsc->c1;
         }
         if (questions) record_answers(v, s);
         st_game_words.fetch_add(vs_env.game_words, std::memory_order_relaxed);
@@ -1309,7 +1341,7 @@ bool translate_variant(Variant& v, const DState& s, const Code& vsc, const Code*
 
 uint64_t slot_pair(const Slot& s) {   // (M4c: a task+mesh program's salted with its task code: never a mesh-only program's family)
     return s.task ? pair_key(hash_bytes("task", 4, s.task_key) ^ hash_bytes("mesh", 4, s.vs.key), s.has_fs ? s.fs.key : 0)
-                  : pair_key_of(s.mesh, s.vs.key, s.has_fs ? s.fs.key : 0);
+                  : pair_key_of(s.mesh, s.vs.key ^ (s.has_gs ? hash_bytes("geom", 4, s.gs.key) : 0), s.has_fs ? s.fs.key : 0);
 }
 
 // <stamp graphics>
@@ -1462,7 +1494,7 @@ bool translate_task_mesh_variant(Variant& v, const DState& s, const Code& tc, co
 /// (a worker) the program's stages read, and its kept variants made
 void scan_slot(Slot* s) {
     Code codes[6];
-    int vs = -1, fs = -1, mesh = -1, task = -1, prim = -1;
+    int vs = -1, fs = -1, mesh = -1, task = -1, prim = -1, gs = -1;
     bool other = false;
     for (uint32_t i = 0; i < s->prog.nstage && i < 6; i++) {
         if (!scan_code(s->prog.sd[i], codes[i])) {
@@ -1477,8 +1509,10 @@ void scan_slot(Slot* s) {
         else if (c.stage == 0) vs = (int)i;
         else if (c.stage == 1) fs = (int)i;
         else if (c.stage == 7) mesh = (int)i;
+        else if (c.stage == 2 && gs < 0) gs = (int)i;
         else other = true;
     }
+    if (gs >= 0 && (task >= 0 || mesh >= 0 || !dev.features.geometryShader)) other = true;   // (a geometry stage only after a vertex stage)
     if (task >= 0) {   // (M4c: a task+mesh program: its task stage a compute step, its mesh stage native; drawn by DRAW_MESH only)
         s->tm = task_mesh_of(codes[task].key, mesh >= 0 ? codes[mesh].key : 0, fs >= 0 ? codes[fs].key : 0);
         // (what cannot be drawn so: skipped and counted by program, named once with the reason (rule 2))
@@ -1501,11 +1535,12 @@ void scan_slot(Slot* s) {
         if (prim >= 0) s->has_prim = true, s->prim.key = codes[prim].key, std::memcpy(s->prim.sph, codes[prim].sph, sizeof s->prim.sph);
         vs = mesh;
     } else if (vs < 0 || other || mesh >= 0) {
-        s->why = vs < 0 ? "no vertex or mesh stage (compute)" : mesh >= 0 ? "a vertex and a mesh stage" : "a geometry or tessellation stage";
+        s->why = vs < 0 ? "no vertex or mesh stage (compute)" : mesh >= 0 ? "a vertex and a mesh stage" : "a tessellation stage, or a second geometry stage";
         return s->state.store(2, std::memory_order_release);
     }
     s->vs.key = codes[vs].key, std::memcpy(s->vs.sph, codes[vs].sph, sizeof s->vs.sph);
     if (fs >= 0) s->has_fs = true, s->fs.key = codes[fs].key, std::memcpy(s->fs.sph, codes[fs].sph, sizeof s->fs.sph);
+    if (gs >= 0) s->has_gs = true, s->gs.key = codes[gs].key, std::memcpy(s->gs.sph, codes[gs].sph, sizeof s->gs.sph);
     const uint64_t pair = slot_pair(*s);
     bool fresh = false;
     {
@@ -1536,8 +1571,9 @@ void scan_slot(Slot* s) {
         const auto t0 = clk::now();
         const bool read = disk_read(d, *v);
         st_disk_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - t0).count(), std::memory_order_relaxed);
-        if (!read || v->stages.size() != 1u + s->has_fs + s->task || (v->stages[0].vk_stage == VK_SHADER_STAGE_MESH_BIT_EXT) != s->mesh ||
-            (v->stages.back().vk_stage == VK_SHADER_STAGE_COMPUTE_BIT) != s->task)
+        if (!read || v->stages.size() != 1u + s->has_fs + s->task + s->has_gs || (v->stages[0].vk_stage == VK_SHADER_STAGE_MESH_BIT_EXT) != s->mesh ||
+            (v->stages.back().vk_stage == VK_SHADER_STAGE_COMPUTE_BIT) != s->task ||
+            (v->stages.back().vk_stage == VK_SHADER_STAGE_GEOMETRY_BIT) != s->has_gs)
             continue;
         v->d.variant = 0;
         for (const RawAnswer& a : v->answers) v->d.variant = (v->d.variant ^ ((uint64_t)a.stage << 32 | (uint64_t)a.desc << 16 | a.type)) * 1099511628211ull;
@@ -1664,7 +1700,8 @@ const DrawProg* shader_pick(const DState& s, const uint8_t color_types[8], Shade
     const uint64_t key = slot->task ? task_mesh_key(slot->task_key, slot->vs.key, slot->fs.key, slot->has_fs ? slot->fs.sph : nullptr,
                                                     slot->has_prim ? slot->prim.sph : nullptr, color_types)
                          : slot->mesh ? mesh_key(slot->vs.key, slot->fs.key, slot->has_fs ? slot->fs.sph : nullptr, slot->has_prim ? slot->prim.sph : nullptr, color_types)
-                                      : graphics_key(slot->vs.key, slot->vs.sph, slot->fs.key, slot->has_fs ? slot->fs.sph : nullptr, s.vattr, color_types);
+                                      : graphics_key(slot->vs.key, slot->vs.sph, slot->fs.key, slot->has_fs ? slot->fs.sph : nullptr, s.vattr, color_types) ^
+                                            (slot->has_gs ? hash_bytes("geom", 4, slot->gs.key) : 0);
     const Variant* same_key = nullptr;
     for (const Variant* v = slot->fam->variants.load(std::memory_order_acquire); v; v = v->next) {
         if (v->d.key != key) continue;
@@ -1697,7 +1734,7 @@ const DrawProg* shader_pick(const DState& s, const uint8_t color_types[8], Shade
         bool ok = false;
         auto v = std::make_unique<Variant>();
         v->d.key = job->key;
-        int vs = -1, fs = -1, ms = -1, prim = -1, ts = -1;
+        int vs = -1, fs = -1, ms = -1, prim = -1, ts = -1, gs = -1;
         Code codes[6];
         for (uint32_t i = 0; i < sl.prog.nstage && i < 6; i++)
             if (parse_code(sl.prog.sd[i], codes[i])) {
@@ -1706,13 +1743,14 @@ const DrawProg* shader_pick(const DState& s, const uint8_t color_types[8], Shade
                 else if (codes[i].stage == 1) fs = (int)i;
                 else if (codes[i].stage == 7) ms = (int)i;
                 else if (codes[i].stage == 6) ts = (int)i;
+                else if (codes[i].stage == 2 && gs < 0) gs = (int)i;
             }
         // (M4c: a task stage only where the slot found one, and then always)
-        const bool made = (ts >= 0) == sl.task && (fs >= 0) == sl.has_fs &&
+        const bool made = (ts >= 0) == sl.task && (fs >= 0) == sl.has_fs && (gs >= 0) == sl.has_gs &&
                           (sl.task ? ms >= 0 && translate_task_mesh_variant(*v, job->s, codes[ts], codes[ms], prim >= 0 ? &codes[prim] : nullptr,
                                                                             fs >= 0 ? &codes[fs] : nullptr, job->ct)
                            : sl.mesh ? ms >= 0 && translate_mesh_variant(*v, job->s, codes[ms], prim >= 0 ? &codes[prim] : nullptr, fs >= 0 ? &codes[fs] : nullptr, job->ct)
-                                     : vs >= 0 && translate_variant(*v, job->s, codes[vs], fs >= 0 ? &codes[fs] : nullptr, job->ct));
+                                     : vs >= 0 && translate_variant(*v, job->s, codes[vs], gs >= 0 ? &codes[gs] : nullptr, fs >= 0 ? &codes[fs] : nullptr, job->ct));
         if (made) {
             for (const RawAnswer& a : v->answers) v->d.variant = (v->d.variant ^ ((uint64_t)a.stage << 32 | (uint64_t)a.desc << 16 | a.type)) * 1099511628211ull;
             disk_save(*v, slot_pair(sl));

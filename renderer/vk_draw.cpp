@@ -230,7 +230,7 @@ struct ListDraw {
     // (what the command buffer being recorded has: set again from nothing for each new one)
     VkCommandBuffer cb = VK_NULL_HANDLE;
     bool heap = false, dyn_valid = false, vi_valid = false, vb_valid = false, ib_valid = false, push_valid = false;
-    VkShaderEXT vs = VK_NULL_HANDLE, fs = VK_NULL_HANDLE, ms = VK_NULL_HANDLE;
+    VkShaderEXT vs = VK_NULL_HANDLE, fs = VK_NULL_HANDLE, ms = VK_NULL_HANDLE, gs = VK_NULL_HANDLE;
     bool shaders = false;
     uint32_t vb_bound = 0;   // (the vertex bindings given a buffer in this command buffer)
     Dyn dyn;
@@ -1185,6 +1185,10 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         return count(l, map[why]);
     }
     if (prog->mesh != mesh) return count(l, R_KIND);
+    // (a geometry stage is translated for triangle input)
+    if (prog->gs && topo != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST && topo != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP &&
+        topo != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN)
+        return count(l, R_KIND);
     if (prog->skip) {
         count_step_a(prog->skip, l->info.kind);
         return count(l, R_STEP_A);
@@ -1285,8 +1289,8 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     // (recorded)
     if (!x.heap) heap_bind(cb), x.heap = true;
     const VkShaderEXT want_vs = mesh ? VK_NULL_HANDLE : prog->vs, want_ms = mesh ? prog->ms : VK_NULL_HANDLE;
-    const VkShaderEXT want_fs = prog->fs;
-    if (!x.shaders || x.vs != want_vs || x.fs != want_fs || x.ms != want_ms) {
+    const VkShaderEXT want_fs = prog->fs, want_gs = mesh ? VK_NULL_HANDLE : prog->gs;
+    if (!x.shaders || x.vs != want_vs || x.fs != want_fs || x.ms != want_ms || x.gs != want_gs) {
         // (every graphics stage the device has: the ones the program has not bound to none; never a task stage)
         VkShaderStageFlagBits st[6] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT};
         VkShaderEXT sh[6] = {want_vs, want_fs};
@@ -1294,10 +1298,10 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         if (dev.features.tessellationShader)
             st[n] = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, sh[n++] = VK_NULL_HANDLE,
             st[n] = VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, sh[n++] = VK_NULL_HANDLE;
-        if (dev.features.geometryShader) st[n] = VK_SHADER_STAGE_GEOMETRY_BIT, sh[n++] = VK_NULL_HANDLE;
+        if (dev.features.geometryShader) st[n] = VK_SHADER_STAGE_GEOMETRY_BIT, sh[n++] = want_gs;
         if (caps.mesh) st[n] = VK_SHADER_STAGE_MESH_BIT_EXT, sh[n++] = want_ms;
         vkCmdBindShadersEXT(cb, n, st, sh);
-        x.vs = want_vs, x.fs = want_fs, x.ms = want_ms, x.shaders = true;
+        x.vs = want_vs, x.fs = want_fs, x.ms = want_ms, x.gs = want_gs, x.shaders = true;
     }
     {
         const ListDraw::DynKey k{s.dyn_gen, topo, prog, p.set_rt_at, p.w, p.h, p.n};

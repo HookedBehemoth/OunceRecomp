@@ -29,6 +29,7 @@ enum ShaderMiss : uint8_t {
 struct DrawProg {
     uint64_t key = 0, variant = 0;
     VkShaderEXT vs = VK_NULL_HANDLE, fs = VK_NULL_HANDLE;
+    VkShaderEXT gs = VK_NULL_HANDLE;   // (a geometry stage between them: drawn with triangle input only)
     // (M4b: a mesh-only program: its mesh stage's object, no vertex stage; drawn by DRAW_MESH only. Its stages' code keys and
     // whether a draw has used it yet, for the first-use log)
     bool mesh = false;
