@@ -1,5 +1,5 @@
 /* runtime/os/os_linux.c under load: the locks exclude, the condition variable, event and semaphore lose no wake-up,
-   timeouts end, sleeps are not rounded to milliseconds. Built and run by tests/test_os.py. */
+   timeouts end, sleeps are not rounded to milliseconds. */
 #include "os.h"
 #include <stdio.h>
 #include <stdlib.h>

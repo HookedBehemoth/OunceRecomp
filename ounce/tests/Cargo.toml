@@ -1,0 +1,20 @@
+[package]
+name = "ounce-tests"
+version = "0.1.0"
+edition = "2021"
+description = "The game-free checks of the runtime, the renderer, the game's patches and the tools: one test binary"
+publish = false
+# (one test binary, tests/main.rs and its modules: one link)
+autotests = false
+
+[lib]
+test = false
+doctest = false
+
+[[test]]
+name = "checks"
+path = "tests/main.rs"
+
+[dependencies]
+ounce-lift = { path = "../lift" }
+regex = "1"

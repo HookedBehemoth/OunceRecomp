@@ -1,4 +1,4 @@
-/* runtime/media/hos_motion.h with synthetic SDL readings: no SDL, controller or game. tests/test_motion.py builds and runs it.
+/* runtime/media/hos_motion.h with synthetic SDL readings: no SDL, controller or game.
 
    A simulated pad: its true up vector (the world's up in its frame) turns with the true rotation, the accelerometer
    reads it (times G), and the gyroscope reads the true rotation plus an offset (its bias) and noise (a tiny one, a

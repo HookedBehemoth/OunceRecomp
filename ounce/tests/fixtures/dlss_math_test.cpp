@@ -1,4 +1,4 @@
-#include "../runtime/dlss_math.h"
+#include "dlss_math.h"
 
 #include <cmath>
 #include <cstdio>

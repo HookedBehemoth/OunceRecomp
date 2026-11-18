@@ -1,6 +1,6 @@
 // The window scheme of layer 0 (renderer/layer0_windows.h): its windows are a 64 KB granule short of 4 GB (RADV's maxBufferSize is 4 GB - 4), so the
 // longest range whole in the window of its start is a granule short of 2 GB, the last granule of each 2 GB stretch is in its own
-// window only, and a range's pieces never reach past a window's end. tests/test_direct_layer0_windows.py builds and runs it.
+// window only, and a range's pieces never reach past a window's end. The renderer check layer0_windows builds and runs it.
 #include <cstdio>
 #include <cstdlib>
 #include <random>

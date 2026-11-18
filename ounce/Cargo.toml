@@ -1,9 +1,9 @@
 # OunceRecomp's Rust: the lifter (lift, its decoder lift/decode), the player's builder (builder) and its window (gui), one
 # workspace with one Cargo.lock and one target/.
 [workspace]
-members = ["lift", "lift/decode", "builder", "dump", "tex", "gui"]
+members = ["lift", "lift/decode", "builder", "dump", "tex", "gui", "tests"]
 # (the window is built on its own: cargo build --profile gui -p ounce-gui)
-default-members = ["lift", "lift/decode", "builder", "dump", "tex"]
+default-members = ["lift", "lift/decode", "builder", "dump", "tex", "tests"]
 resolver = "2"
 
 [workspace.dependencies]
