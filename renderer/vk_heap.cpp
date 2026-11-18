@@ -162,6 +162,9 @@ bool sampled_view(const Image* im, const nvn_tex* t, const nvn_view* v, VkImageV
     VkFormat f = im->placeholder ? VK_FORMAT_R8G8B8A8_UNORM : widened(vk_format(nf).format);
     const bool depth = !(im->aspect & VK_IMAGE_ASPECT_COLOR_BIT);
     if (depth || f == VK_FORMAT_UNDEFINED || im->placeholder) f = im->format;
+    // (an ASTC texture's image is in the store's format for it, BC7 or BC5: vk_format's BC7 would read a BC5 image's blocks
+    // as BC7, which the size check below lets through)
+    else if (nvn_astc(nf)) f = image_astc_view_format(im, nf);
     else if (f != im->format) {   // (a reinterpreting view: only within the image's size class, which MUTABLE_FORMAT allows)
         int bw = 1, bh = 1;
         const int bpb = nvn_block_size(nf, &bw, &bh);

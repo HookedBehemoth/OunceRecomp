@@ -98,6 +98,9 @@ void image_key_describe(const nvn_tex* t, char* out, size_t cap);
 VkImageView image_attachment_view(Image* im, int nvn_format, uint32_t level, uint32_t layer, VkFormat* format_out);
 /// The format of a view of t (its view's, or its own)
 int image_view_format(const nvn_tex* t, const nvn_view* v);
+/// A sampled view's format for an ASTC NVN format: the image's own (the store's BC7, BC5 for a normal map, or an older
+/// store's choice), in its sRGB or UNORM twin as the NVN format says
+VkFormat image_astc_view_format(const Image* im, int nvn_format);
 /// WriteTexels: the linear texels copied into the image at the call (the calling thread's upload, sent at once)
 void image_write_texels(const nvn_tex* t, unsigned level, unsigned layer0, const NVNcopyRegion* r, const uint8_t* src,
                         uint64_t row, uint64_t img);

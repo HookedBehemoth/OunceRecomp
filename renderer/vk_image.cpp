@@ -712,6 +712,18 @@ Image* image_find(const nvn_tex* t) {
 
 int image_view_format(const nvn_tex* t, const nvn_view* v) { return v && v->set_format ? v->format : t->d.format; }
 
+VkFormat image_astc_view_format(const Image* im, int nvn_format) {
+    const VkFormat lin = linear_twin(im->format);
+    if (nvn_format < 0x87) return lin;
+    switch (lin) {
+    case VK_FORMAT_R8G8B8A8_UNORM: return VK_FORMAT_R8G8B8A8_SRGB;
+    case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: return VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
+    case VK_FORMAT_BC3_UNORM_BLOCK: return VK_FORMAT_BC3_SRGB_BLOCK;
+    case VK_FORMAT_BC7_UNORM_BLOCK: return VK_FORMAT_BC7_SRGB_BLOCK;
+    default: return im->format;
+    }
+}
+
 VkImageView image_attachment_view(Image* im, int nvn_format, uint32_t level, uint32_t layer, VkFormat* format_out) {
     if (!im || im->placeholder || (im->compressed && !im->block_views) || level >= im->levels) return VK_NULL_HANDLE;
     const ObjectsFor objects_for("an attachment view of a game's texture");   // 
