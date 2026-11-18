@@ -1,4 +1,4 @@
-// The builder's LLVM: a lifted partition's IR text -> an x86-64 ELF object, in this process, as nx2/build.py's
+// The builder's LLVM: a lifted partition's IR text -> an x86-64 ELF object, in this process, as the builder's
 // `opt | clang -x ir -c` makes it (the same target machine options, pass pipeline and code generation level).
 // libLLVM is linked dynamically; the C API lacks the TargetOptions clang sets (function sections, addrsig), so
 // this file builds the target machine through the C++ API.

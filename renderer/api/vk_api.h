@@ -33,7 +33,7 @@ enum { HOS_PAD_SOUTH, HOS_PAD_EAST, HOS_PAD_WEST, HOS_PAD_NORTH, HOS_PAD_BACK, H
        HOS_PAD_LSTICK, HOS_PAD_RSTICK, HOS_PAD_LSHOULDER, HOS_PAD_RSHOULDER, HOS_PAD_UP, HOS_PAD_DOWN, HOS_PAD_LEFT,
        HOS_PAD_RIGHT, HOS_PAD_LTRIGGER, HOS_PAD_RTRIGGER, HOS_PAD_N };
 enum { HOS_BIND_PAD, HOS_BIND_KEY };
-/* (hookshot) the controller faces of the button prompts (games/oot/patches/prompts.c): the Switch, then nx2/prompt_faces.py FACES' order;
+/* (hookshot) the controller faces of the button prompts (games/oot/patches/prompts.c): the Switch, then tools/prompts/prompt_faces.py FACES' order;
    the Button prompts row's value is one more (0 Auto) */
 enum { HOS_PROMPT_SWITCH, HOS_PROMPT_XBOX, HOS_PROMPT_PS4, HOS_PROMPT_PS5, HOS_PROMPT_STEAMDECK, HOS_PROMPT_N };
 /* keys only (HOS_BIND_KEY), after the Switch's buttons: the left stick's and the camera's directions */

@@ -25,7 +25,7 @@ A call site, a return address or a patch site lies inside a function. To find wh
 ## Label a function
 
 Lifted functions are named `f_<guest address>`. `games/oot/labels.txt` gives the ones we understand a label. After
-the link, `nx2/label_syms.py` renames their symbols to `<label>.f_<address>`, so profiles, backtraces and debuggers show
+the link, `tools/re/labels.py` renames their symbols to `<label>.f_<address>`, so profiles, backtraces and debuggers show
 what a function is. Only the symbol table changes; a label costs no rebuild.
 
 Add a label whenever an analysis identifies a function, in the same commit as the note that documents it. Follow these
@@ -39,5 +39,5 @@ rules:
   the site in the note.
 - End each entry with `# <file>[ section]: what`, naming the place that documents it.
 
-To check the list, run `python -I nx2/label_syms.py --game games/oot check`. `name <address> ...` prints the labels of
+To check the list, run `python -I tools/re/labels.py --game games/oot check`. `name <address> ...` prints the labels of
 addresses for scripts.

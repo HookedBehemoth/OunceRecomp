@@ -1,6 +1,6 @@
 /* The SDK functions the game calls that the host answers with a constant, each with the reason that is enough (runtime/
    patch.h PATCH_ANSWER). An OS-facing import neither implemented (HLE) nor answered here stops the game when called,
-   naming it (nx2/standalone.py gen_stubs, runtime/hos_hostcall.c hos_import_stop). Every answer below was seen called
+   naming it (ounce/lift/src/gen.rs gen_stubs, runtime/hos_hostcall.c hos_import_stop). Every answer below was seen called
    in play and in the smoke and benchmark runs (they returned 0 as generated stubs before 2026-11-15). Answers that
    leave a result unwritten (a float in s0, an output struct) are marked so: real HLEs if the game ever needs more. */
 #include "hos.h"

@@ -9,9 +9,9 @@ no rebuild beyond the 1 s rewrite of the executable.
 
 The list holds descriptions, not the game's names: lower case, digits and underscores, each used once.
 
-  python -I nx2/label_syms.py --game games/oot check                 the list alone (no build needed)
-  python -I nx2/label_syms.py --game games/oot apply <executable>    rename in place (hookshot-builder does this after the link)
-  python -I nx2/label_syms.py --game games/oot name <address> ...    the labels of addresses (for scripts)
+  python -I tools/re/labels.py --game games/oot check                 the list alone (no build needed)
+  python -I tools/re/labels.py --game games/oot apply <executable>    rename in place (hookshot-builder does this after the link)
+  python -I tools/re/labels.py --game games/oot name <address> ...    the labels of addresses (for scripts)
 """
 import os
 import re

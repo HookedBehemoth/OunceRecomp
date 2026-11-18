@@ -1,7 +1,7 @@
 """Disassemble the guest image (Eden layout) around an address, for reading crash reports.
 
-    python -I nx2/disasm.py 0x800bae78            # 16 instructions before and after
-    python -I nx2/disasm.py 0x800b9320 0x800b9500  # a range
+    python -I tools/re/image_disasm.py 0x800bae78            # 16 instructions before and after
+    python -I tools/re/image_disasm.py 0x800b9320 0x800b9500  # a range
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

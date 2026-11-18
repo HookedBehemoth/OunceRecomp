@@ -28,10 +28,10 @@ No game files are in this repository. The build reads your dump where it lies, a
    ```sh
    cargo build --release -p hookshot-builder --manifest-path ounce/Cargo.toml
    ounce/target/release/hookshot-builder dump <your-game.nup> --extract work/dump
-   python -I nx2/dump.py --dump work/dump --set
+   python -I tools/re/dump.py --dump work/dump --set
    ```
 
-   `nx2/dump.py` checks that the dump is the supported build: program `0400486024DEC000`, update v131072, build
+   `tools/re/dump.py` checks that the dump is the supported build: program `0400486024DEC000`, update v131072, build
    `e0f3ccfa`. Other versions are refused. `--set` writes the path to `work/dump.txt`.
 4. The renderer's build takes the Vulkan headers from `/usr` and the SPIR-V and VMA headers from `work/deps`
    (`scripts/linux/deps.sh`). Other places are Meson options (below).

@@ -1,5 +1,5 @@
 """Game counters that add the frame step, or the step times a whole number, cut to whole frames keep counting above 60 fps
-(games/oot/patches/frame_whole.h; the lifter calls it at the two counters' instructions: nx2/lift2/probes.py WHOLE).
+(games/oot/patches/frame_whole.h; the lifter calls it at the two counters' instructions: ounce/lift WHOLE).
 
 The pick-up indicator above Link's head (f_80a87e50) moves the count it shows toward the wallet's by (int)(step * per) and fades
 when they meet. Under a Frame rate cap above 60 the step is the frame's own

@@ -1,6 +1,6 @@
-"""hookshot.exe offset -> lifted function (f_<guest address>) + offset, from work/sa/build/hookshot.map (build.py --standalone).
+"""An offset in the hookshot executable -> lifted function (f_<guest address>) + offset, from the link map work/sa/build/hookshot.map.
 
-Usage:  python -I nx2/samap.py <hex offset> [...]
+Usage:  python -I tools/re/samap.py <hex offset> [...]
 """
 import bisect
 import os

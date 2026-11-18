@@ -137,8 +137,8 @@ int a64_call_miss(Ctx *c, uint64_t target) {
 }
 
 /* An OS-facing import the host neither replaces (HLE) nor answers (PATCH_ANSWER, runtime/nn_answers.c): the generated stub
-   (gen/a64_stubs.c, nx2/standalone.py gen_stubs) stops the game here, naming the function; the caller is the lr. A
-   direct call of the stub is lifted as a noreturn call (nx2/lift2/bounds.py "stop") */
+   (gen/a64_stubs.c, ounce/lift/src/gen.rs gen_stubs) stops the game here, naming the function; the caller is the lr. A
+   direct call of the stub is lifted as a noreturn call (ounce/lift "stop") */
 __attribute__((noreturn)) void hos_import_stop(Ctx *c, const char *sym, const char *name);
 void hos_import_stop(Ctx *c, const char *sym, const char *name) {
     hos_fatal(c, "the game called %s (%s), which the host neither implements nor answers", name, sym);

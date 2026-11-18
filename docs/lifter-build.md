@@ -48,7 +48,6 @@ It writes the guest code, the lifter's IR, the LLVM IR and, with the options, th
 | Check | What it tests | Needs the dump |
 |---|---|---|
 | `cargo test --manifest-path ounce/Cargo.toml` | The lifter's decoder and lift | No |
-| The verification build | The summaries against a real run ([The lifter](lifter.md#the-verification-build)) | Yes |
 
 In the game, the smoke test and a benchmark are the landing checks ([Test Hookshot](testing.md)).
 
@@ -60,7 +59,6 @@ In the game, the smoke test and a benchmark are the landing checks ([Test Hooksh
 | `scripts/build.sh -j N`, `HOOKSHOT_JOBS` | Build | Parallel compiles at most |
 | `HOOKSHOT_MEM_RESERVE_GB`, `HOOKSHOT_MEM_GATE=0` | Build | Memory the build leaves free (default 1.5); no memory gate |
 | `scripts/build.sh --gen-parts` | Build | The partitions' IR in `work/sa` for diffout and the dump tools |
-| `HOOKSHOT_LIFT_VERIFY=1` | Build | The verification build |
 | `HOOKSHOT_LIFT_SUMMARY_JOBS` | Build | The summary job's workers (default 8) |
 | `LIFT2_DEFAULT_NAN=1` | Lift | ARM's default NaN for NaNs made from non-NaN operands |
 | `HOOKSHOT_LLVM_BIN` | Lift, build | Where clang and the LLVM tools are |

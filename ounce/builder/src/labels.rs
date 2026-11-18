@@ -1,4 +1,4 @@
-//! The game's labels in the executable's symbol table (nx2/label_syms.py): f_<address> becomes <label>.f_<address>.
+//! The game's labels in the executable's symbol table (tools/re/labels.py): f_<address> becomes <label>.f_<address>.
 //! Only .symtab's names change: the new names are added to .strtab, which lld writes last before the section
 //! headers, so the loaded bytes, the map and every other section stay where they are.
 

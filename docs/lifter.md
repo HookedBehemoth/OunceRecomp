@@ -90,17 +90,3 @@ function. A build whose declarations changed recomputes the summaries without a 
 What to expect: computing the summaries cold takes about two minutes and about 1.5 GB per process; from the cache, a
 few seconds. The build prints how many call sites keep registers and why the others do not.
 
-## The verification build
-
-To check that the summaries are conservative enough, build with `HOOKSHOT_LIFT_VERIFY=1`. Every function with a full
-summary is then wrapped (`runtime/lift2_verify.c`):
-
-- At entry, registers the summary says are not read are poisoned.
-- At exit, a returning noreturn function, a changed preserved register, or a write the summary does not allow is
-  reported.
-- Before each call, context fields that the lifter decided no one reads are poisoned, so a wrong omission shows up.
-- Calls to replaced SDK functions go through a stub that reports a callee-saved register the host changed.
-
-Violations go to the game log and `lift2_violations.txt`, once per function, kind and register. A good run reports
-none. Run the smoke scene and a benchmark with this build after any change to the summaries or to what the lifter
-keeps across calls.

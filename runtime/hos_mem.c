@@ -300,7 +300,7 @@ HLE(_ZN2nn2os15QueryMemoryInfoEPNS0_10MemoryInfoE) {
 HLE(_ZN2nn2os21SetDyingMessageRegionEmm) { RET(0); }
 
 /* The ledger's owners in MB into out, their sum in bytes, and the address space handed to the guest (image, system region,
-   heap, regions). Returns the length written. Exported to the direct back end (nx2/build.py) */
+   heap, regions). Returns the length written. Exported to the direct back end (ounce/builder) */
 size_t hos_mem_ledger(char *out, size_t cap, uint64_t *ours, uint64_t *guest_committed) {
     static const char *const names[HL_N] = {"nvn recordings", "nvn command memory", "terrain tiles kept", "video pictures"};
     size_t k = 0;

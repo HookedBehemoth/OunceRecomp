@@ -3523,7 +3523,7 @@ static const nvn_impl impls[] = {
 /* An NVN function the SDK exports with no NV(...) here (nvnInstallGlobalDebugCallback, nvnBootstrapLoaderInternal,
    nvnDevtoolsBootstrap, the external memory pool builder, nvndetailUseMiddleWare): a call goes through nvn2_dispatch to
    unimplemented below, which stops the game; a direct call of one is lifted as a noreturn call
-   (nx2/lift2/host_effects.py stops) */
+   (ounce/lift stops) */
 
 /* A proc not implemented here: the game may ask for it (nvnDeviceGetProcAddress hands out every name it asks for), a
    call of it stops the game with its name and caller. A proc the game needs is an NV(...) above. */

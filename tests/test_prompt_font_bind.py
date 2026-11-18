@@ -1,7 +1,7 @@
 """Game-free: the button prompts' font patch at run time (games/oot/patches/prompts.c cmap4_glyph, cmap4_bind) on a cmap made the way the
-build makes it (nx2/prompt_assets.py cmap4): a bound Switch button's code point gets its pad input's icon, an unbound one keeps
+build makes it (tools/prompts/prompt_assets.py cmap4): a bound Switch button's code point gets its pad input's icon, an unbound one keeps
 its own, and the pad icons stay. Also the faces' order: games/oot/patches/prompts.c faces[], renderer/api/vk_api.h HOS_PROMPT_* and
-nx2/prompt_faces.py FACES (after the Switch).
+tools/prompts/prompt_faces.py FACES (after the Switch).
 
 python -I -B tests/test_prompt_font_bind.py [--cc gcc]
 """
@@ -13,7 +13,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
+sys.path.insert(0, str(ROOT / "tools/prompts"))
 import prompt_assets  # noqa: E402
 import prompt_faces  # noqa: E402
 

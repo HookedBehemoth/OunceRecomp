@@ -4,7 +4,7 @@
 #
 #   scripts/run-vk.sh <name> [seconds] [-- extra NAME=VALUE ...]
 #   OVERLAY=work/overlay/<dir>   patched game files read first (HOS_FS_OVERLAY: the chiseled boot)
-#   ZOO=<scene>                  the actor-zoo scene zoo/<scene>.toml as the overlay (made on demand: scripts/zoo-overlay.sh)
+#   ZOO=<scene>                  the actor-zoo scene games/oot/zoo/<scene>.toml as the overlay (made on demand: scripts/zoo-overlay.sh)
 #   USER_FROM=<folder>           copied into the run's own user folder first (a save to start from)
 #   EXE=<path>                   another build (default work/sa/build/hookshot; its caches are beside it)
 #   ROMFS=<dir>                  another romfs (default the dump's, work/dump.txt; a game folder's: <folder>/romfs)

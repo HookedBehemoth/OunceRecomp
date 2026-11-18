@@ -15,7 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifndef HOOKSHOT_VERSION   /* (nx2/build.py gives it: the release and a fingerprint of the sources, nx2/version.py) */
+#ifndef HOOKSHOT_VERSION   /* (ounce/builder gives it: the release and a fingerprint of the sources, ounce/builder/src/version.rs) */
 #define HOOKSHOT_VERSION "unknown"
 #endif
 const char *hos_version(void) { return HOOKSHOT_VERSION; }

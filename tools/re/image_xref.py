@@ -1,7 +1,7 @@
 """Cross references in the guest image (Eden layout): direct B/BL to an address, and 8-byte words equal to it
 (vtables, function pointer tables, GOT entries).
 
-    python -I nx2/xref.py 0x800bae10 [0x800bae20 ...]
+    python -I tools/re/image_xref.py 0x800bae10 [0x800bae20 ...]
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

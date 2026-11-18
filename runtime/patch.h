@@ -1,8 +1,8 @@
 /* Patch declarations: host code at guest addresses, written next to its body (docs/patches.md).
 
-   The lifter reads these macros from the source with a token scanner of a fixed grammar (nx2/lift2/patch_scan.py), and
+   The lifter reads these macros from the source with a token scanner of a fixed grammar (ounce/lift/src/patch.rs), and
    the compiler expands the same text into the host function's prototype and a record in the object section hos_patch
-   that the build compares with the scan (nx2/build.py): a declaration one of them sees and the other does not stops
+   that the build compares with the scan (ounce/builder): a declaration one of them sees and the other does not stops
    the build. A declaration stands at file scope, outside #if, and is never made by another macro.
 
      PATCH_AT(pc, word(W), mode, result, fn, operand...) { body }
@@ -24,7 +24,7 @@
        another site of fn (after its PATCH_AT): the operands' types must be fn's parameters' (a compile error else).
      PATCH_FUNC(addr, word(W), body(H), aapcs, result, fn, [orig,] [guest(A, ...),] operand...) { body }
      PATCH_FUNC_SYM(symbol, aapcs, result, fn, [orig,] [guest(A, ...),] operand...) { body }
-       the lifted function at addr (its first word W and its body's hash H, nx2/lift2/patch_scan.py body_hash, checked
+       the lifted function at addr (its first word W and its body's hash H, ounce/lift/src/patch.rs body_hash, checked
        at the build), or the one the image exports as symbol, replaced by fn: every call of it is a call of fn with the
        declared operands (x0-x8, w0-w8, s0-s7, q0-q7, x30 for the return address, sp; as(...) names them), its result
        (none, x0, w0, s0, q0) the call's. The operands are what fn itself uses. orig, first: fn may run the function's
@@ -42,8 +42,8 @@
        a function the image replaces with a constant answer: x0 is value and nothing else is written (any other result
        register keeps what it held). No host function: at a direct call (BL, or a tail branch) the lifter writes value to
        x0 and x30 as the BL would, and makes no call; the function's generic entry f_<addr> (a code pointer, a BLR) is
-       lifted IR doing the same (nx2/lift2/game.py answers_ir). An import the game calls that the host neither
-       implements nor answers stops the game, naming it (nx2/standalone.py gen_stubs; a direct call of it is noreturn):
+       lifted IR doing the same (ounce/lift answers_ir). An import the game calls that the host neither
+       implements nor answers stops the game, naming it (ounce/lift/src/gen.rs gen_stubs; a direct call of it is noreturn):
        each answer is one the game was seen to need, with the reason it is enough.
      SVC(number, name, inputs, results) { body }
        the host's answer to the guest's `svc #number` (number: 0x and two upper-case hex digits), unsigned __int128
@@ -58,7 +58,7 @@
 
 /* A PATCH_FUNC's orig: the replaced function's lifted body, called as guest_orig(orig, a0, ...): a0.. go to x0.. (the
    registers after them keep the call's values), the body runs on the call's context and stack, and its x0 comes back.
-   The body writes what its summary says it may; the function's callers get that in its record (nx2/lift2/bounds.py) */
+   The body writes what its summary says it may; the function's callers get that in its record (ounce/lift) */
 typedef struct GuestFn { struct GuestContext *c; void (*body)(struct GuestContext *); } GuestFn;
 #define HOS_NARGS_(_1, _2, _3, _4, _5, _6, _7, _8, _9, n, ...) n
 #define HOS_NARGS(...) HOS_NARGS_(__VA_ARGS__ __VA_OPT__(,) 9, 8, 7, 6, 5, 4, 3, 2, 1, 0)
@@ -803,7 +803,7 @@ typedef struct GuestFn { struct GuestContext *c; void (*body)(struct GuestContex
     HOS_R_##result fn(HOS_PARAMS(__VA_ARGS__))
 /* (a PATCH_FUNC: the record, the C function's prototype, and the adapter the lifted f_<addr> tail-calls,
    hos_func_<key>(Ctx *): it reads the declared operands from the call's context, calls fn and writes its result. The
-   function's own lifted body is hos_orig_<key> (nx2/lift2/game.py), handed to fn as orig) */
+   function's own lifted body is hos_orig_<key> (ounce/lift), handed to fn as orig) */
 #define HOS_FUNC_(fname, oname, result, fn, ...)                                                                      \
     static HOS_R_##result fn(HOS_PARAMS(__VA_ARGS__));                                                               \
     void oname(Ctx *A64_NOESC c) __attribute__((weak));   /* (referenced only through orig) */                        \

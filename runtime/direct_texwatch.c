@@ -210,7 +210,7 @@ static void start(void) {
     os_fault_add(handler, true);
     os_thread_release(os_thread_start(rearm, NULL, 0, "texwatch"));
     hos_log("texwatch: CPU writes into texture storage are watched (HOS_DBG=texwatch; writers named as exe+offset: "
-            "nx2/samap.py)");
+            "tools/re/samap.py)");
 }
 
 void direct_texwatch_created(const void *texture, uint64_t init_lr) {

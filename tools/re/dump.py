@@ -1,7 +1,7 @@
 """What a dump is: program id, Switch 1 or Switch 2, modules, build ids, SDK, graphics API, romfs size.
 
 Reads the user's decrypted dump in place (exefs/ + romfs/); writes nothing into the repository. With --set it
-records the dump's folder in work/dump.txt (ignored by git), where nx2/kit.py finds it.
+records the dump's folder in work/dump.txt (ignored by git), where tools/re/kit.py finds it.
 
 Switch 1 or Switch 2 is decided from several independent signals, all of which must agree:
   - the program id's prefix (Switch 1 titles are 01xx..., Switch 2 ones 04xx...);
@@ -12,7 +12,7 @@ Switch 1 or Switch 2 is decided from several independent signals, all of which m
   - the NVN names in main (NVN2 adds DLSS and mesh-task procs) and the shader container names in romfs
     (Nin_NX_NVN for Maxwell, Nin_Ounce_NVN2 for Ampere).
 
-Usage:  python -I nx2/dump.py [--dump <folder with exefs/ and romfs/>] [--set] [--no-romfs]
+Usage:  python -I tools/re/dump.py [--dump <folder with exefs/ and romfs/>] [--set] [--no-romfs]
 """
 import argparse
 import collections

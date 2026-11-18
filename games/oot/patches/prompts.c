@@ -1,6 +1,6 @@
 /* (hookshot) The button prompts of the controller in use: the game's button-icon font (Font2/Scalable/External.*.bfotf,
    every icon in a text: dialogue, the control hints, menus) served from prompts/<face>/External.bfotf in the game folder,
-   which nx2/prompt_assets.py draws per controller face at build time, with each Switch button's icon pointed at the icon of
+   which tools/prompts/prompt_assets.py draws per controller face at build time, with each Switch button's icon pointed at the icon of
    the pad input bound to it (runtime/nn_hid.c's controls, the menu's Layout preset and Controls page). So the icons say which
    button to press on this pad, custom controls too.
 
@@ -33,7 +33,7 @@ int hos_mods_has(const char *prefix, const char *suffix);   /* mods.c */
 #define MAGIC 0x18029a7fu
 #define PAD_BASE 0xF700
 static const char *const faces[HOS_PROMPT_N] = {"switch", "xbox", "ps4", "ps5", "steamdeck"};
-/* the Switch buttons' code points in the font, in HOS_SW_* order (nx2/prompt_assets.py SWITCH) */
+/* the Switch buttons' code points in the font, in HOS_SW_* order (tools/prompts/prompt_assets.py SWITCH) */
 static const uint16_t switch_code[HOS_SW_N] = {0xE040, 0xE041, 0xE042, 0xE043, 0xE056, 0xE057, 0xE044, 0xE045,
                                                0xE046, 0xE047, 0xE04B, 0xE04C, 0xE062, 0xE060, 0xE063, 0xE061};
 
@@ -255,7 +255,7 @@ static void add_run(Run **runs, size_t *nruns, size_t *cap, uint32_t off, uint32
 }
 
 /* prompts/Common.bntx.zs: the game's textures (prompts/Common.bntx) with the blocks of prompts/<face>/textures.bin that this
-   pad's controls choose (nx2/prompt_assets.py: "HPTX", u32 count; each: u8 Switch button (0xff: always), u8 pad input, u16,
+   pad's controls choose (tools/prompts/prompt_assets.py: "HPTX", u32 count; each: u8 Switch button (0xff: always), u8 pad input, u16,
    u32 runs; each run: u32 offset, u32 length, the bytes; a later entry over an earlier). Written again only when the face, the
    controls or the blocks changed (prompts/Common.key) */
 /* out: the game's file (game) with the runs written over it (a later one over an earlier where they meet), as raw zstd blocks;
@@ -361,7 +361,7 @@ int hos_prompts_face(void) {
     return os_once_done(&setup_once) && setup(dir, sizeof dir, &face) ? face : -1;
 }
 
-/* the Talk ring's place for each of A B X Y (0 east, 1 south, 2 north, 3 west: nx2/prompt_assets.py RING_PLACES): where its pad
+/* the Talk ring's place for each of A B X Y (0 east, 1 south, 2 north, 3 west: tools/prompts/prompt_assets.py RING_PLACES): where its pad
    input is among the face buttons, else its own place on the Switch when free, else the first one free */
 static void ring_places(const int *bind, int place[4]) {
     static const int of_pad[4] = {1, 0, 3, 2};   /* (HOS_PAD_SOUTH, EAST, WEST, NORTH) */
@@ -382,9 +382,9 @@ static void ring_places(const int *bind, int place[4]) {
 }
 
 /* prompts/Common.blarc.zs: the game's layouts (prompts/Common.blarc) with
-   - the Talk ring's A B X Y where their pad inputs are (prompts/ring.bin, nx2/prompt_assets.py: "HPRG", u32 count; each: u8
+   - the Talk ring's A B X Y where their pad inputs are (prompts/ring.bin, tools/prompts/prompt_assets.py: "HPRG", u32 count; each: u8
      group, u8 Switch button placed, u8 place, u8, u32 runs, the runs);
-   - the ocarina hint's icons moved apart for the wide ones bound (prompts/<face>/hint.bin, nx2/prompt_assets.py HINTS: "HPHN",
+   - the ocarina hint's icons moved apart for the wide ones bound (prompts/<face>/hint.bin, tools/prompts/prompt_assets.py HINTS: "HPHN",
      u32 count of pad inputs, each one's icon's extra width (f32), u32 panes; each: u32 offset, u8 slot, 3 bytes, f32 x): each
      icon the one before's extra further on, the last one where it is;
    none when both are as the game has them (the game's own file) */
@@ -508,7 +508,7 @@ int hos_prompts_romfs(const char *key, char *out, size_t cap) {
     static os_once once[3] = {OS_ONCE_INIT, OS_ONCE_INIT, OS_ONCE_INIT};   /* the font, the textures, the layouts */
     const size_t kn = strlen(key);
     if (!strncmp(key, SIZES_PATH, sizeof SIZES_PATH - 1) && kn > 14 && !strcmp(key + kn - 14, ".rsizetable.zs")) {
-        char dir[OS_PATH_MAX];   /* (the game's size table with room for the faces' fonts, larger than its: nx2/prompt_assets.py) */
+        char dir[OS_PATH_MAX];   /* (the game's size table with room for the faces' fonts, larger than its: tools/prompts/prompt_assets.py) */
         int face;
         if (!setup(dir, sizeof dir, &face)) return 0;
         snprintf(out, cap, "%sprompts/rsizetable.zs", dir);

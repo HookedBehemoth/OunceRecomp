@@ -3,7 +3,7 @@
 # moment the scene is ready it measures <frames> frames, writes bench.csv in the run's folder and exits. Prints the summary.
 #
 #   scripts/bench.sh <scene> [frames] [-- NAME=VALUE ...]     the extra variables go to the game (switches)
-#   scene: kokiri, hf, market (the chiseled boots of scripts/play.sh), an actor-zoo scene (zoo/<name>.toml: run-vk.sh's ZOO=,
+#   scene: kokiri, hf, market (the chiseled boots of scripts/play.sh), an actor-zoo scene (games/oot/zoo/<name>.toml: run-vk.sh's ZOO=,
 #   with its live.txt) or a folder name under work/overlay
 #   NAME=<run name> (default bench-<scene>), READY=<frames settled in a row> (60), SECS=<longest run> (110), EXE=<build>
 #   as for run-vk.sh. RUN=timing: exclusive, one game at a time; it waits for any other hookshot to end first.
@@ -18,7 +18,7 @@ case "$scene" in
   kokiri) overlay=$root/work/overlay/chisel_kokiri ;;
   hf) overlay=$root/work/overlay/chisel_hf ;;
   market) overlay=$root/work/overlay/chisel_hf_market ;;
-  *) if [ -f "$root/zoo/$scene.toml" ]; then zoo=$scene; overlay=
+  *) if [ -f "$root/games/oot/zoo/$scene.toml" ]; then zoo=$scene; overlay=
      else overlay=$root/work/overlay/$scene; [ -d "$overlay" ] || { echo "no overlay $overlay"; exit 2; }; fi ;;
 esac
 name=${NAME:-bench-$scene}

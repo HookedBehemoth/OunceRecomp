@@ -1,5 +1,5 @@
 // The direct back end's shared state (renderer, hookshot_direct.so; docs/direct-backend-plan.md). Linux and RADV only.
-// Vulkan is loaded from libvulkan.so.1 at start (VK_NO_PROTOTYPES, nx2/build.py): the functions below, global, instance
+// Vulkan is loaded from libvulkan.so.1 at start (VK_NO_PROTOTYPES, ounce/builder): the functions below, global, instance
 // and device level.
 #pragma once
 

@@ -1,13 +1,13 @@
 """(hookshot) Each face's controller for the pause menu's controls page, drawn like the game's Pro Controller (Controller_Pro: flat
-greys, a black outline), at the build from the user's RomFS: nx2/prompt_assets.py calls picture(). Its look is the drawing in each
-face's entry of nx2/prompt_faces.py; a hand-made picture in nx2/prompt_faces/<face>/Controller_Pro.png takes its place.
+greys, a black outline), at the build from the user's RomFS: tools/prompts/prompt_assets.py calls picture(). Its look is the drawing in each
+face's entry of tools/prompts/prompt_faces.py; a hand-made picture in tools/prompts/prompt_faces/<face>/Controller_Pro.png takes its place.
 
 The body is the Kenney font's controller glyph (third_party/kenney_input; the Steam Deck: deck() below, Kenney's is a shorter one),
 filled, outlined and with its bumpers raised (they stop short of a touchpad); the sticks and the d-pad are the Pro Controller's own,
 scaled; the face and small buttons blank discs with the face's labels (the Home button's the game's own icon). All of it drawn SS
 times as large and scaled down: smooth edges.
 
-    python -I nx2/prompt_draw.py --romfs <dir> --out <dir>   (each face's picture as <face>.png, to look at)
+    python -I tools/prompts/prompt_draw.py --romfs <dir> --out <dir>   (each face's picture as <face>.png, to look at)
 """
 import os
 import sys

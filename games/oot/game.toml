@@ -35,7 +35,7 @@ zstd_dictionaries = "Pack/ZsDic.pack.zs"
 texture_skip_dirs = ["Sound", "Voice", "TerrainArc"]
 
 # zstd_decompress_sequences' local continuations: `adr x7, <label>` ... `br x7` inside the function, pc: word; the
-# code pointer audit accepts them, nx2/lift2/code_ptrs.py
+# code pointer audit accepts them, ounce/lift/src/plan.rs
 [[local_continuations]]
 pc = 0x8011060C
 word = 0x10FFFCA7

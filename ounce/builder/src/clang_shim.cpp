@@ -1,5 +1,5 @@
 // A C file -> an x86-64 object in this process, through clang's libraries: the driver's command line (as
-// nx2/build.py gives it to clang) made a compiler invocation, then EmitObjAction with the object kept in memory.
+// ounce/builder gives it to clang) made a compiler invocation, then EmitObjAction with the object kept in memory.
 // Built only with the `clang` feature, against a static LLVM with clang (LLVM_STATIC_DIR).
 
 #include "clang/Basic/DiagnosticOptions.h"

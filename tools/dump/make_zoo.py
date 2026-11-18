@@ -3,7 +3,7 @@ Game-derived output: local only.
 
 usage: work/venv/bin/python tools/dump/make_zoo.py <scene.toml> <out_dir> [--romfs DIR]
 
-The scene description (zoo/*.toml) holds actor names and numbers only:
+The scene description (games/oot/zoo/*.toml) holds actor names and numbers only:
     base = "SageRoom"            an existing map (its GameBancParam name); its two bancs are rewritten in the overlay
     start = ""                   the StartPos (its Name) the player starts at; "" the map's unnamed one
     keep = ["StartPos", ...]     the base map's actors kept, by Gyaml name ("*" every one); the rest are left out

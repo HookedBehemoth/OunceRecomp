@@ -18,7 +18,7 @@ void hos_commit(uint64_t addr, uint64_t size) {
         hos_log("mem: commit of %#llx bytes at %#llx: outside the guest window", (unsigned long long)size, (unsigned long long)addr);
 }
 
-/* A crash nothing handles: what, where (hookshot+offset: nx2/samap.py names the lifted function), and the guest
+/* A crash nothing handles: what, where (hookshot+offset: tools/re/samap.py names the lifted function), and the guest
    state of the thread, as of its last call out of lifted code, with its frame chain from x29. */
 static uint64_t peek_guest(uint64_t a) {
     if (a >= HOS_GUEST_SPACE - 8 || !hos_guest_range(a, 8)) return 0;

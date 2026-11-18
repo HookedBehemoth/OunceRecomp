@@ -2,12 +2,12 @@
 
 The dump (the user's own decrypted copy: a folder with exefs/ and romfs/) is never copied into the repository. Its
 location comes from, in order: OOT_EXEFS (the exefs folder itself), OOT_DUMP (the folder holding exefs/ and romfs/),
-or the first line of work/dump.txt (the same, written once by hand or by nx2/dump.py).
+or the first line of work/dump.txt (the same, written once by hand or by tools/re/dump.py).
 """
 import os
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 KIT = os.path.join(ROOT, "third_party", "a64-kit")
 for sub in ("lift", "tools", "hos", "rt"):
     p = os.path.join(KIT, sub)

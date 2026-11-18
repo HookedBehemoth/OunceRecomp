@@ -84,7 +84,7 @@ python -I tools/dump/make_chisel_overlay.py work/overlay/chisel_kokiri --route n
 user folder. Maps that work include `KokiriForest_Child`, `HyruleField_Child`, `HyruleField_Adult`,
 `KakarikoVillage_Child` and `InsideTheDekuTree`.
 
-An *actor zoo* is a scene described in `zoo/<scene>.toml`: an existing map, a start position, which of its actors stay,
+An *actor zoo* is a scene described in `games/oot/zoo/<scene>.toml`: an existing map, a start position, which of its actors stay,
 and actors to add. `tools/dump/make_zoo.py` turns it into an overlay; `ZOO=<scene>` and `scripts/play.sh <scene>` make
 it on demand. A zoo scene keeps the base map's collision, navigation and baked lighting.
 

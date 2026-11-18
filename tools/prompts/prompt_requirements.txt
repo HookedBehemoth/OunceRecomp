@@ -1,4 +1,4 @@
-# (hookshot) What nx2/prompt_assets.py draws the button prompts with, at build time only: the icon font (fontTools), the
+# (hookshot) What tools/prompts/prompt_assets.py draws the button prompts with, at build time only: the icon font (fontTools), the
 # controller pictures and leader lines (Pillow), and the textures' ASTC blocks (astc-encoder-py, texture2ddecoder). Without
 # them the game is built all the same and shows the Switch's icons (requirements.txt includes this file).
 fonttools==4.68.0

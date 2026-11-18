@@ -21,8 +21,8 @@ A builder is a thin front end over the developer path ([Development guide](devel
 4. **Prepare assets.** `hookshot-builder build ... --dump` writes the game folder's `prepared/tex` (or
    `hookshot-builder textures` alone), the direct back end's texture store ([the converters](direct/converters.md)). Without it every asset texture is a
    placeholder.
-5. **Make button prompts.** `nx2/prompt_assets.py --romfs <romfs> --out <game>/prompts` (needs the packages in
-   `nx2/prompt_requirements.txt`). Without them the game keeps the Switch's icons.
+5. **Make button prompts.** `tools/prompts/prompt_assets.py --romfs <romfs> --out <game>/prompts` (needs the packages in
+   `tools/prompts/prompt_requirements.txt`). Without them the game keeps the Switch's icons.
 6. **Assemble the game folder:** `hookshot-builder build --dump` makes it (the executable, `hookshot_direct.so`,
    `image.bin`, `romfs/`, `prepared/` and `user/` for the saves, [the plan](builder-plan.md)); add the SDL library
    and the prompts.

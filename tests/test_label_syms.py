@@ -1,5 +1,5 @@
 """The game's label file (games/oot/labels.txt) is well formed (every address and label once, the label's alphabet) and
-nx2/label_syms.py renames a real symbol table: a tiny C program's f_<address> functions get <label>.f_<address>,
+tools/re/labels.py renames a real symbol table: a tiny C program's f_<address> functions get <label>.f_<address>,
 an unlisted one keeps its name, a listed address with no function is reported, and a second run changes nothing.
 No game data. Skipped parts without a C compiler or objcopy.
 python -I -B tests/test_label_syms.py
@@ -11,8 +11,8 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
-import label_syms  # noqa: E402
+sys.path.insert(0, str(ROOT / "tools/re"))
+import labels as label_syms  # noqa: E402
 
 
 def main():

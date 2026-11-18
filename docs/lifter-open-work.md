@@ -43,8 +43,8 @@ Sources:
 - [rev.ng](https://docs.rev.ng/references/pipeline/) (`enforce-abi`, `promote-csvs`; documentation only): every
   register promoted once the full prototype is known.
 
-Soundness: a wrong summary breaks these changes. The verification build checks preserved registers and noreturn
-functions at every exit of a full-summary function.
+Soundness: a wrong summary breaks these changes. The verification build (parked: [parked patches](parked-patches.md#the-summary-verification-build)) checked preserved registers and noreturn
+functions at every exit of a full-summary function; it has to come back before these land.
 
 ## Indirect calls
 

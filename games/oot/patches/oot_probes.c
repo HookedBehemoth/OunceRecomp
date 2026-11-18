@@ -56,7 +56,7 @@ uint32_t hos_movie_frames(uint64_t player);
 
 /* The guest objects these patches touch, the fields they use at their guest offsets (both sides little-endian LP64 with
    the same alignments). The lifted code reaches the same memory through other types and the host's C is built with
-   strict aliasing (nx2/build.py host_fl, unlike the lifted code's -fno-strict-aliasing): the structs are may_alias. */
+   strict aliasing (ounce/builder host_fl, unlike the lifted code's -fno-strict-aliasing): the structs are may_alias. */
 #define GUEST(type, addr) ((type *)A64_PTR(addr))
 
 /* scene_resolution_update's object (f_831f3200: the scene's update; runtime/nn_vi.c logs its scale) */

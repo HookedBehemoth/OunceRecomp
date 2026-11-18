@@ -15,7 +15,6 @@ media/hos_sdl.c
 hos_setjmp.c
 hos_svc.c
 hos_thread.c
-lift2_verify.c
 mods.c
 nn_answers.c
 nn_applet.c

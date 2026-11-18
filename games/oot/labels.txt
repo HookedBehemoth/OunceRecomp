@@ -1,4 +1,4 @@
-# Labels for the lifted game's functions (nx2/label_syms.py): <guest address> <label> [# where it is documented: what]
+# Labels for the lifted game's functions (tools/re/labels.py): <guest address> <label> [# where it is documented: what]
 # Descriptions of ours, not the game's names. Lower case, digits, underscores; every address and label once.
 # An entry is a function's entry address in this lift (of the build games/oot/game.toml names). Add what an analysis
 # finds, with its note
@@ -646,200 +646,200 @@
 834ac0b0 zstd_xxh64_reset                 # work/assets/zstd.md: inferred
 834ac110 zstd_xxh64_update                # work/assets/zstd.md: inferred
 
-# --- SDK and main exports by name (nx2/image.py exports; a bounded pass: libc, math, heap, locks, opus, profile-hot)
-8504ae60 async_execution_scheduler_dequeue_and_call # nx2/image.py exports (sdk): nn::async::detail::ExecutionScheduler::DequeueAndCall
-8504a540 async_execution_scheduler_try_dequeue_monitored_work_item # nx2/image.py exports (sdk): nn::async::detail::ExecutionScheduler::TryDequeueMonitoredWorkItem
-8504a9f0 async_execution_scheduler_wait_for_signal # nx2/image.py exports (sdk): nn::async::detail::ExecutionScheduler::WaitForSignal
-85049bd0 async_execution_scheduler_work_item_multi_wait_try_wait_any # nx2/image.py exports (sdk): nn::async::detail::ExecutionScheduler::WorkItemMultiWait::TryWaitAny
-85049ad0 async_execution_scheduler_work_item_multi_wait_wait_any # nx2/image.py exports (sdk): nn::async::detail::ExecutionScheduler::WorkItemMultiWait::WaitAny
-8504bdc0 async_group_wait_link_group_wait_holder # nx2/image.py exports (sdk): nn::async::detail::GroupWait::LinkGroupWaitHolder
-8504bf00 async_group_wait_wait            # nx2/image.py exports (sdk): nn::async::detail::GroupWait::Wait
-8504e400 async_queuing_executor_loop_execution # nx2/image.py exports (sdk): nn::async::QueuingExecutor::LoopExecution
-85269210 audio_codec_decode_adpcm         # nx2/image.py exports (sdk): nn::codec::DecodeAdpcm
-85313220 audio_codec_fd_ksqrt             # nx2/image.py exports (sdk): nn::codec::FDKsqrt
-8538d230 audio_codec_get_required_mem_ram_sbr_freq_band_table_lo # nx2/image.py exports (sdk): nn::codec::GetRequiredMemRam_Sbr_freqBandTableLO
-852c77a0 audio_codec_opus_decode_opus_interleaved_impl # nx2/image.py exports (sdk): nn::codec::opus::DecodeOpusInterleavedImpl
-852c7f20 audio_codec_opus_decode_opus_multi_stream_interleaved_impl # nx2/image.py exports (sdk): nn::codec::opus::DecodeOpusMultiStreamInterleavedImpl
-852c7700 audio_codec_opus_initialize_opus_decoder_impl # nx2/image.py exports (sdk): nn::codec::opus::InitializeOpusDecoderImpl
-852c7e50 audio_codec_opus_initialize_opus_multi_stream_decoder_impl # nx2/image.py exports (sdk): nn::codec::opus::InitializeOpusMultiStreamDecoderImpl
-852c7900 audio_codec_opus_reset_opus_decoder_impl # nx2/image.py exports (sdk): nn::codec::opus::ResetOpusDecoderImpl
-852c8070 audio_codec_opus_reset_opus_multi_stream_decoder_impl # nx2/image.py exports (sdk): nn::codec::opus::ResetOpusMultiStreamDecoderImpl
-84f27cc0 audio_opus_decode                # nx2/image.py exports (subsdk0): opus_decode
-84f27d00 audio_opus_decode_float          # nx2/image.py exports (subsdk0): opus_decode_float
-84f26a20 audio_opus_decoder_create        # nx2/image.py exports (subsdk0): opus_decoder_create
-84f27f60 audio_opus_decoder_ctl           # nx2/image.py exports (subsdk0): opus_decoder_ctl
-84f28320 audio_opus_decoder_destroy       # nx2/image.py exports (subsdk0): opus_decoder_destroy
-84f26870 audio_opus_decoder_init          # nx2/image.py exports (subsdk0): opus_decoder_init
-84f35b20 audio_opus_multistream_decode    # nx2/image.py exports (subsdk0): opus_multistream_decode
-84f35d40 audio_opus_multistream_decode_float # nx2/image.py exports (subsdk0): opus_multistream_decode_float
-84f35500 audio_opus_multistream_decoder_create # nx2/image.py exports (subsdk0): opus_multistream_decoder_create
-84f35ab0 audio_opus_multistream_decoder_ctl # nx2/image.py exports (subsdk0): opus_multistream_decoder_ctl
-84f363f0 audio_opus_multistream_decoder_destroy # nx2/image.py exports (subsdk0): opus_multistream_decoder_destroy
-84f352e0 audio_opus_multistream_decoder_init # nx2/image.py exports (subsdk0): opus_multistream_decoder_init
-84f267d0 audio_opus_packet_parse          # nx2/image.py exports (subsdk0): opus_packet_parse
-8005eca0 heap_aligned_alloc               # nx2/image.py exports (main): aligned_alloc
-814e6ce0 heap_calloc                      # nx2/image.py exports (main): calloc
-80709580 heap_free                        # nx2/image.py exports (main): free
-814e6c90 heap_malloc                      # nx2/image.py exports (main): malloc
-83488de0 heap_operator_delete             # nx2/image.py exports (main): operator delete
-83488e10 heap_operator_delete_aligned     # nx2/image.py exports (main): operator delete
-83488e30 heap_operator_delete_aligned_nothrow # nx2/image.py exports (main): operator delete
-8021f7c0 heap_operator_delete_array       # nx2/image.py exports (main): operator delete[]
-83488e20 heap_operator_delete_array_aligned # nx2/image.py exports (main): operator delete[]
-83488e40 heap_operator_delete_array_aligned_nothrow # nx2/image.py exports (main): operator delete[]
-83488e00 heap_operator_delete_array_nothrow # nx2/image.py exports (main): operator delete[]
-83488e50 heap_operator_delete_array_size  # nx2/image.py exports (main): operator delete[]
-83488e70 heap_operator_delete_array_size_aligned # nx2/image.py exports (main): operator delete[]
-83488df0 heap_operator_delete_nothrow     # nx2/image.py exports (main): operator delete
-8021dea0 heap_operator_delete_size        # nx2/image.py exports (main): operator delete
-83488e60 heap_operator_delete_size_aligned # nx2/image.py exports (main): operator delete
-80f404a0 heap_operator_new_array_size     # nx2/image.py exports (main): operator new[]
-83488cc0 heap_operator_new_array_size_aligned # nx2/image.py exports (main): operator new[]
-83488d00 heap_operator_new_array_size_aligned_nothrow # nx2/image.py exports (main): operator new[]
-83488c60 heap_operator_new_array_size_nothrow # nx2/image.py exports (main): operator new[]
-80f471c0 heap_operator_new_size           # nx2/image.py exports (main): operator new
-83488c80 heap_operator_new_size_aligned   # nx2/image.py exports (main): operator new
-83488ce0 heap_operator_new_size_aligned_nothrow # nx2/image.py exports (main): operator new
-83488c40 heap_operator_new_size_nothrow   # nx2/image.py exports (main): operator new
-814e6d50 heap_realloc                     # nx2/image.py exports (main): realloc
-856dcbe0 hid_imf_hid_state_set_get_nmouse_state # nx2/image.py exports (sdk): nn::imf::HidStateSet::GetNmouseState
-85674340 hid_nmouse_transfer_memory_accessor_is_initialized # nx2/image.py exports (sdk): nn::hid::detail::NmouseTransferMemoryAccessor::IsInitialized
-8566db00 hid_vibration_mixer_on_next_sample_required # nx2/image.py exports (sdk): nn::hid::VibrationMixer::OnNextSampleRequired
-8566e3c0 hid_vibration_node_connection_get_modulation # nx2/image.py exports (sdk): nn::hid::VibrationNodeConnection::GetModulation
-8566e1c0 hid_vibration_node_connection_get_source # nx2/image.py exports (sdk): nn::hid::VibrationNodeConnection::GetSource
-8566e480 hid_vibration_node_sync_sample_number # nx2/image.py exports (sdk): nn::hid::VibrationNode::SyncSampleNumber
-8566e560 hid_vibration_node_update        # nx2/image.py exports (sdk): nn::hid::VibrationNode::Update
-8566f360 hid_vibration_target_on_next_sample_required # nx2/image.py exports (sdk): nn::hid::VibrationTarget::OnNextSampleRequired
-85745220 libc_atof                        # nx2/image.py exports (sdk): atof
-85745240 libc_atoi                        # nx2/image.py exports (sdk): atoi
-85745300 libc_atol                        # nx2/image.py exports (sdk): atol
-85745480 libc_bsearch                     # nx2/image.py exports (sdk): bsearch
-8504ed50 libc_longjmp                     # nx2/image.py exports (sdk): longjmp
-8572e9a0 libc_memchr                      # nx2/image.py exports (sdk): memchr
-8575d280 libc_memcmp                      # nx2/image.py exports (sdk): memcmp # ? wn/engine-frame.md, wn/engine-jobs.md call it the job poll; its code is memcmp (nx2/disasm.py)
-8572f020 libc_memcpy                      # nx2/image.py exports (sdk): memcpy
-8575cdc0 libc_memcpy_aarch64              # nx2/image.py exports (sdk): __memcpy_aarch64
-8572f040 libc_memmove                     # nx2/image.py exports (sdk): memmove
-8572f300 libc_memset                      # nx2/image.py exports (sdk): memset
-85598740 libc_nvos_memcpy                 # nx2/image.py exports (sdk): NvOsMemcpy
-85745ff0 libc_qsort                       # nx2/image.py exports (sdk): qsort
-8504ec40 libc_setjmp                      # nx2/image.py exports (sdk): setjmp
-857438e0 libc_snprintf                    # nx2/image.py exports (sdk): snprintf
-85743950 libc_sprintf                     # nx2/image.py exports (sdk): sprintf
-857439c0 libc_sscanf                      # nx2/image.py exports (sdk): sscanf
-85747480 libc_strcasecmp                  # nx2/image.py exports (sdk): strcasecmp
-85747640 libc_strcat                      # nx2/image.py exports (sdk): strcat
-85747680 libc_strchr                      # nx2/image.py exports (sdk): strchr
-8575d380 libc_strcmp                      # nx2/image.py exports (sdk): strcmp
-85747860 libc_strcpy                      # nx2/image.py exports (sdk): strcpy
-85747d40 libc_strlen                      # nx2/image.py exports (sdk): strlen
-85747e60 libc_strncasecmp                 # nx2/image.py exports (sdk): strncasecmp
-85747fe0 libc_strncat                     # nx2/image.py exports (sdk): strncat
-8575d480 libc_strncmp                     # nx2/image.py exports (sdk): strncmp
-85748040 libc_strncpy                     # nx2/image.py exports (sdk): strncpy
-85748070 libc_strnlen                     # nx2/image.py exports (sdk): strnlen
-857480f0 libc_strrchr                     # nx2/image.py exports (sdk): strrchr
-85748240 libc_strstr                      # nx2/image.py exports (sdk): strstr
-8572e250 libc_strtod                      # nx2/image.py exports (sdk): strtod
-8572e190 libc_strtof                      # nx2/image.py exports (sdk): strtof
-857461c0 libc_strtol                      # nx2/image.py exports (sdk): strtol
-857460a0 libc_strtoll                     # nx2/image.py exports (sdk): strtoll
-85746130 libc_strtoul                     # nx2/image.py exports (sdk): strtoul
-85746010 libc_strtoull                    # nx2/image.py exports (sdk): strtoull
-85739090 libc_tolower                     # nx2/image.py exports (sdk): tolower
-857390d0 libc_toupper                     # nx2/image.py exports (sdk): toupper
-85744ae0 libc_vsnprintf                   # nx2/image.py exports (sdk): vsnprintf
-85744c80 libc_vsprintf                    # nx2/image.py exports (sdk): vsprintf
-85744cc0 libc_vsscanf                     # nx2/image.py exports (sdk): vsscanf
-85748d40 libc_wcslen                      # nx2/image.py exports (sdk): wcslen
-8574aad0 math_acos                        # nx2/image.py exports (sdk): acos
-8574adb0 math_acosf                       # nx2/image.py exports (sdk): acosf
-8574afd0 math_asin                        # nx2/image.py exports (sdk): asin
-85755180 math_asinf                       # nx2/image.py exports (sdk): asinf
-857557d0 math_atan                        # nx2/image.py exports (sdk): atan
-857559e0 math_atan2                       # nx2/image.py exports (sdk): atan2
-85755bc0 math_atan2f                      # nx2/image.py exports (sdk): atan2f
-85756090 math_atanf                       # nx2/image.py exports (sdk): atanf
-857569c0 math_cbrt                        # nx2/image.py exports (sdk): cbrt
-85756ad0 math_cbrtf                       # nx2/image.py exports (sdk): cbrtf
-85754bc0 math_ceil                        # nx2/image.py exports (sdk): ceil
-85754bd0 math_ceilf                       # nx2/image.py exports (sdk): ceilf
-85756f80 math_cos                         # nx2/image.py exports (sdk): cos
-8574b240 math_cosf                        # nx2/image.py exports (sdk): cosf
-8574bc40 math_exp                         # nx2/image.py exports (sdk): exp
-8574bfa0 math_exp2                        # nx2/image.py exports (sdk): exp2
-85757ca0 math_exp2f                       # nx2/image.py exports (sdk): exp2f
-8574c1b0 math_expf                        # nx2/image.py exports (sdk): expf
-85754be0 math_fabs                        # nx2/image.py exports (sdk): fabs
-85754bf0 math_fabsf                       # nx2/image.py exports (sdk): fabsf
-85754c00 math_floor                       # nx2/image.py exports (sdk): floor
-85754c10 math_floorf                      # nx2/image.py exports (sdk): floorf
-85758b20 math_fmod                        # nx2/image.py exports (sdk): fmod
-85758cc0 math_fmodf                       # nx2/image.py exports (sdk): fmodf
-857590d0 math_frexp                       # nx2/image.py exports (sdk): frexp
-85759150 math_frexpf                      # nx2/image.py exports (sdk): frexpf
-857592a0 math_hypot                       # nx2/image.py exports (sdk): hypot
-857593d0 math_hypotf                      # nx2/image.py exports (sdk): hypotf
-857597e0 math_ldexp                       # nx2/image.py exports (sdk): ldexp
-857597f0 math_ldexpf                      # nx2/image.py exports (sdk): ldexpf
-85750430 math_log                         # nx2/image.py exports (sdk): log
-85759960 math_log10                       # nx2/image.py exports (sdk): log10
-85759b10 math_log10f                      # nx2/image.py exports (sdk): log10f
-85750610 math_log2                        # nx2/image.py exports (sdk): log2
-85750830 math_log2f                       # nx2/image.py exports (sdk): log2f
-85750910 math_logf                        # nx2/image.py exports (sdk): logf
-8575a240 math_modf                        # nx2/image.py exports (sdk): modf
-8575a2c0 math_modff                       # nx2/image.py exports (sdk): modff
-85750ad0 math_pow                         # nx2/image.py exports (sdk): pow
-85751000 math_powf                        # nx2/image.py exports (sdk): powf
-85754d40 math_round                       # nx2/image.py exports (sdk): round
-85754d50 math_roundf                      # nx2/image.py exports (sdk): roundf
-8575bc60 math_sin                         # nx2/image.py exports (sdk): sin
-8575bd70 math_sincos                      # nx2/image.py exports (sdk): sincos
-857513e0 math_sincosf                     # nx2/image.py exports (sdk): sincosf
-85751760 math_sinf                        # nx2/image.py exports (sdk): sinf
-85754d60 math_sqrt                        # nx2/image.py exports (sdk): sqrt
-85754d70 math_sqrtf                       # nx2/image.py exports (sdk): sqrtf
-8575c750 math_tan                         # nx2/image.py exports (sdk): tan
-8575c7f0 math_tanf                        # nx2/image.py exports (sdk): tanf
-85754d80 math_trunc                       # nx2/image.py exports (sdk): trunc
-85754d90 math_truncf                      # nx2/image.py exports (sdk): truncf
-854fa9f0 movie_mkv_audio_track_get_bit_depth # nx2/image.py exports (sdk): mkvparser::AudioTrack::GetBitDepth
-854fa2b0 movie_mkv_video_track_get_width  # nx2/image.py exports (sdk): mkvparser::VideoTrack::GetWidth
+# --- SDK and main exports by name (tools/re/image.py exports; a bounded pass: libc, math, heap, locks, opus, profile-hot)
+8504ae60 async_execution_scheduler_dequeue_and_call # tools/re/image.py exports (sdk): nn::async::detail::ExecutionScheduler::DequeueAndCall
+8504a540 async_execution_scheduler_try_dequeue_monitored_work_item # tools/re/image.py exports (sdk): nn::async::detail::ExecutionScheduler::TryDequeueMonitoredWorkItem
+8504a9f0 async_execution_scheduler_wait_for_signal # tools/re/image.py exports (sdk): nn::async::detail::ExecutionScheduler::WaitForSignal
+85049bd0 async_execution_scheduler_work_item_multi_wait_try_wait_any # tools/re/image.py exports (sdk): nn::async::detail::ExecutionScheduler::WorkItemMultiWait::TryWaitAny
+85049ad0 async_execution_scheduler_work_item_multi_wait_wait_any # tools/re/image.py exports (sdk): nn::async::detail::ExecutionScheduler::WorkItemMultiWait::WaitAny
+8504bdc0 async_group_wait_link_group_wait_holder # tools/re/image.py exports (sdk): nn::async::detail::GroupWait::LinkGroupWaitHolder
+8504bf00 async_group_wait_wait            # tools/re/image.py exports (sdk): nn::async::detail::GroupWait::Wait
+8504e400 async_queuing_executor_loop_execution # tools/re/image.py exports (sdk): nn::async::QueuingExecutor::LoopExecution
+85269210 audio_codec_decode_adpcm         # tools/re/image.py exports (sdk): nn::codec::DecodeAdpcm
+85313220 audio_codec_fd_ksqrt             # tools/re/image.py exports (sdk): nn::codec::FDKsqrt
+8538d230 audio_codec_get_required_mem_ram_sbr_freq_band_table_lo # tools/re/image.py exports (sdk): nn::codec::GetRequiredMemRam_Sbr_freqBandTableLO
+852c77a0 audio_codec_opus_decode_opus_interleaved_impl # tools/re/image.py exports (sdk): nn::codec::opus::DecodeOpusInterleavedImpl
+852c7f20 audio_codec_opus_decode_opus_multi_stream_interleaved_impl # tools/re/image.py exports (sdk): nn::codec::opus::DecodeOpusMultiStreamInterleavedImpl
+852c7700 audio_codec_opus_initialize_opus_decoder_impl # tools/re/image.py exports (sdk): nn::codec::opus::InitializeOpusDecoderImpl
+852c7e50 audio_codec_opus_initialize_opus_multi_stream_decoder_impl # tools/re/image.py exports (sdk): nn::codec::opus::InitializeOpusMultiStreamDecoderImpl
+852c7900 audio_codec_opus_reset_opus_decoder_impl # tools/re/image.py exports (sdk): nn::codec::opus::ResetOpusDecoderImpl
+852c8070 audio_codec_opus_reset_opus_multi_stream_decoder_impl # tools/re/image.py exports (sdk): nn::codec::opus::ResetOpusMultiStreamDecoderImpl
+84f27cc0 audio_opus_decode                # tools/re/image.py exports (subsdk0): opus_decode
+84f27d00 audio_opus_decode_float          # tools/re/image.py exports (subsdk0): opus_decode_float
+84f26a20 audio_opus_decoder_create        # tools/re/image.py exports (subsdk0): opus_decoder_create
+84f27f60 audio_opus_decoder_ctl           # tools/re/image.py exports (subsdk0): opus_decoder_ctl
+84f28320 audio_opus_decoder_destroy       # tools/re/image.py exports (subsdk0): opus_decoder_destroy
+84f26870 audio_opus_decoder_init          # tools/re/image.py exports (subsdk0): opus_decoder_init
+84f35b20 audio_opus_multistream_decode    # tools/re/image.py exports (subsdk0): opus_multistream_decode
+84f35d40 audio_opus_multistream_decode_float # tools/re/image.py exports (subsdk0): opus_multistream_decode_float
+84f35500 audio_opus_multistream_decoder_create # tools/re/image.py exports (subsdk0): opus_multistream_decoder_create
+84f35ab0 audio_opus_multistream_decoder_ctl # tools/re/image.py exports (subsdk0): opus_multistream_decoder_ctl
+84f363f0 audio_opus_multistream_decoder_destroy # tools/re/image.py exports (subsdk0): opus_multistream_decoder_destroy
+84f352e0 audio_opus_multistream_decoder_init # tools/re/image.py exports (subsdk0): opus_multistream_decoder_init
+84f267d0 audio_opus_packet_parse          # tools/re/image.py exports (subsdk0): opus_packet_parse
+8005eca0 heap_aligned_alloc               # tools/re/image.py exports (main): aligned_alloc
+814e6ce0 heap_calloc                      # tools/re/image.py exports (main): calloc
+80709580 heap_free                        # tools/re/image.py exports (main): free
+814e6c90 heap_malloc                      # tools/re/image.py exports (main): malloc
+83488de0 heap_operator_delete             # tools/re/image.py exports (main): operator delete
+83488e10 heap_operator_delete_aligned     # tools/re/image.py exports (main): operator delete
+83488e30 heap_operator_delete_aligned_nothrow # tools/re/image.py exports (main): operator delete
+8021f7c0 heap_operator_delete_array       # tools/re/image.py exports (main): operator delete[]
+83488e20 heap_operator_delete_array_aligned # tools/re/image.py exports (main): operator delete[]
+83488e40 heap_operator_delete_array_aligned_nothrow # tools/re/image.py exports (main): operator delete[]
+83488e00 heap_operator_delete_array_nothrow # tools/re/image.py exports (main): operator delete[]
+83488e50 heap_operator_delete_array_size  # tools/re/image.py exports (main): operator delete[]
+83488e70 heap_operator_delete_array_size_aligned # tools/re/image.py exports (main): operator delete[]
+83488df0 heap_operator_delete_nothrow     # tools/re/image.py exports (main): operator delete
+8021dea0 heap_operator_delete_size        # tools/re/image.py exports (main): operator delete
+83488e60 heap_operator_delete_size_aligned # tools/re/image.py exports (main): operator delete
+80f404a0 heap_operator_new_array_size     # tools/re/image.py exports (main): operator new[]
+83488cc0 heap_operator_new_array_size_aligned # tools/re/image.py exports (main): operator new[]
+83488d00 heap_operator_new_array_size_aligned_nothrow # tools/re/image.py exports (main): operator new[]
+83488c60 heap_operator_new_array_size_nothrow # tools/re/image.py exports (main): operator new[]
+80f471c0 heap_operator_new_size           # tools/re/image.py exports (main): operator new
+83488c80 heap_operator_new_size_aligned   # tools/re/image.py exports (main): operator new
+83488ce0 heap_operator_new_size_aligned_nothrow # tools/re/image.py exports (main): operator new
+83488c40 heap_operator_new_size_nothrow   # tools/re/image.py exports (main): operator new
+814e6d50 heap_realloc                     # tools/re/image.py exports (main): realloc
+856dcbe0 hid_imf_hid_state_set_get_nmouse_state # tools/re/image.py exports (sdk): nn::imf::HidStateSet::GetNmouseState
+85674340 hid_nmouse_transfer_memory_accessor_is_initialized # tools/re/image.py exports (sdk): nn::hid::detail::NmouseTransferMemoryAccessor::IsInitialized
+8566db00 hid_vibration_mixer_on_next_sample_required # tools/re/image.py exports (sdk): nn::hid::VibrationMixer::OnNextSampleRequired
+8566e3c0 hid_vibration_node_connection_get_modulation # tools/re/image.py exports (sdk): nn::hid::VibrationNodeConnection::GetModulation
+8566e1c0 hid_vibration_node_connection_get_source # tools/re/image.py exports (sdk): nn::hid::VibrationNodeConnection::GetSource
+8566e480 hid_vibration_node_sync_sample_number # tools/re/image.py exports (sdk): nn::hid::VibrationNode::SyncSampleNumber
+8566e560 hid_vibration_node_update        # tools/re/image.py exports (sdk): nn::hid::VibrationNode::Update
+8566f360 hid_vibration_target_on_next_sample_required # tools/re/image.py exports (sdk): nn::hid::VibrationTarget::OnNextSampleRequired
+85745220 libc_atof                        # tools/re/image.py exports (sdk): atof
+85745240 libc_atoi                        # tools/re/image.py exports (sdk): atoi
+85745300 libc_atol                        # tools/re/image.py exports (sdk): atol
+85745480 libc_bsearch                     # tools/re/image.py exports (sdk): bsearch
+8504ed50 libc_longjmp                     # tools/re/image.py exports (sdk): longjmp
+8572e9a0 libc_memchr                      # tools/re/image.py exports (sdk): memchr
+8575d280 libc_memcmp                      # tools/re/image.py exports (sdk): memcmp # ? wn/engine-frame.md, wn/engine-jobs.md call it the job poll; its code is memcmp (tools/re/image_disasm.py)
+8572f020 libc_memcpy                      # tools/re/image.py exports (sdk): memcpy
+8575cdc0 libc_memcpy_aarch64              # tools/re/image.py exports (sdk): __memcpy_aarch64
+8572f040 libc_memmove                     # tools/re/image.py exports (sdk): memmove
+8572f300 libc_memset                      # tools/re/image.py exports (sdk): memset
+85598740 libc_nvos_memcpy                 # tools/re/image.py exports (sdk): NvOsMemcpy
+85745ff0 libc_qsort                       # tools/re/image.py exports (sdk): qsort
+8504ec40 libc_setjmp                      # tools/re/image.py exports (sdk): setjmp
+857438e0 libc_snprintf                    # tools/re/image.py exports (sdk): snprintf
+85743950 libc_sprintf                     # tools/re/image.py exports (sdk): sprintf
+857439c0 libc_sscanf                      # tools/re/image.py exports (sdk): sscanf
+85747480 libc_strcasecmp                  # tools/re/image.py exports (sdk): strcasecmp
+85747640 libc_strcat                      # tools/re/image.py exports (sdk): strcat
+85747680 libc_strchr                      # tools/re/image.py exports (sdk): strchr
+8575d380 libc_strcmp                      # tools/re/image.py exports (sdk): strcmp
+85747860 libc_strcpy                      # tools/re/image.py exports (sdk): strcpy
+85747d40 libc_strlen                      # tools/re/image.py exports (sdk): strlen
+85747e60 libc_strncasecmp                 # tools/re/image.py exports (sdk): strncasecmp
+85747fe0 libc_strncat                     # tools/re/image.py exports (sdk): strncat
+8575d480 libc_strncmp                     # tools/re/image.py exports (sdk): strncmp
+85748040 libc_strncpy                     # tools/re/image.py exports (sdk): strncpy
+85748070 libc_strnlen                     # tools/re/image.py exports (sdk): strnlen
+857480f0 libc_strrchr                     # tools/re/image.py exports (sdk): strrchr
+85748240 libc_strstr                      # tools/re/image.py exports (sdk): strstr
+8572e250 libc_strtod                      # tools/re/image.py exports (sdk): strtod
+8572e190 libc_strtof                      # tools/re/image.py exports (sdk): strtof
+857461c0 libc_strtol                      # tools/re/image.py exports (sdk): strtol
+857460a0 libc_strtoll                     # tools/re/image.py exports (sdk): strtoll
+85746130 libc_strtoul                     # tools/re/image.py exports (sdk): strtoul
+85746010 libc_strtoull                    # tools/re/image.py exports (sdk): strtoull
+85739090 libc_tolower                     # tools/re/image.py exports (sdk): tolower
+857390d0 libc_toupper                     # tools/re/image.py exports (sdk): toupper
+85744ae0 libc_vsnprintf                   # tools/re/image.py exports (sdk): vsnprintf
+85744c80 libc_vsprintf                    # tools/re/image.py exports (sdk): vsprintf
+85744cc0 libc_vsscanf                     # tools/re/image.py exports (sdk): vsscanf
+85748d40 libc_wcslen                      # tools/re/image.py exports (sdk): wcslen
+8574aad0 math_acos                        # tools/re/image.py exports (sdk): acos
+8574adb0 math_acosf                       # tools/re/image.py exports (sdk): acosf
+8574afd0 math_asin                        # tools/re/image.py exports (sdk): asin
+85755180 math_asinf                       # tools/re/image.py exports (sdk): asinf
+857557d0 math_atan                        # tools/re/image.py exports (sdk): atan
+857559e0 math_atan2                       # tools/re/image.py exports (sdk): atan2
+85755bc0 math_atan2f                      # tools/re/image.py exports (sdk): atan2f
+85756090 math_atanf                       # tools/re/image.py exports (sdk): atanf
+857569c0 math_cbrt                        # tools/re/image.py exports (sdk): cbrt
+85756ad0 math_cbrtf                       # tools/re/image.py exports (sdk): cbrtf
+85754bc0 math_ceil                        # tools/re/image.py exports (sdk): ceil
+85754bd0 math_ceilf                       # tools/re/image.py exports (sdk): ceilf
+85756f80 math_cos                         # tools/re/image.py exports (sdk): cos
+8574b240 math_cosf                        # tools/re/image.py exports (sdk): cosf
+8574bc40 math_exp                         # tools/re/image.py exports (sdk): exp
+8574bfa0 math_exp2                        # tools/re/image.py exports (sdk): exp2
+85757ca0 math_exp2f                       # tools/re/image.py exports (sdk): exp2f
+8574c1b0 math_expf                        # tools/re/image.py exports (sdk): expf
+85754be0 math_fabs                        # tools/re/image.py exports (sdk): fabs
+85754bf0 math_fabsf                       # tools/re/image.py exports (sdk): fabsf
+85754c00 math_floor                       # tools/re/image.py exports (sdk): floor
+85754c10 math_floorf                      # tools/re/image.py exports (sdk): floorf
+85758b20 math_fmod                        # tools/re/image.py exports (sdk): fmod
+85758cc0 math_fmodf                       # tools/re/image.py exports (sdk): fmodf
+857590d0 math_frexp                       # tools/re/image.py exports (sdk): frexp
+85759150 math_frexpf                      # tools/re/image.py exports (sdk): frexpf
+857592a0 math_hypot                       # tools/re/image.py exports (sdk): hypot
+857593d0 math_hypotf                      # tools/re/image.py exports (sdk): hypotf
+857597e0 math_ldexp                       # tools/re/image.py exports (sdk): ldexp
+857597f0 math_ldexpf                      # tools/re/image.py exports (sdk): ldexpf
+85750430 math_log                         # tools/re/image.py exports (sdk): log
+85759960 math_log10                       # tools/re/image.py exports (sdk): log10
+85759b10 math_log10f                      # tools/re/image.py exports (sdk): log10f
+85750610 math_log2                        # tools/re/image.py exports (sdk): log2
+85750830 math_log2f                       # tools/re/image.py exports (sdk): log2f
+85750910 math_logf                        # tools/re/image.py exports (sdk): logf
+8575a240 math_modf                        # tools/re/image.py exports (sdk): modf
+8575a2c0 math_modff                       # tools/re/image.py exports (sdk): modff
+85750ad0 math_pow                         # tools/re/image.py exports (sdk): pow
+85751000 math_powf                        # tools/re/image.py exports (sdk): powf
+85754d40 math_round                       # tools/re/image.py exports (sdk): round
+85754d50 math_roundf                      # tools/re/image.py exports (sdk): roundf
+8575bc60 math_sin                         # tools/re/image.py exports (sdk): sin
+8575bd70 math_sincos                      # tools/re/image.py exports (sdk): sincos
+857513e0 math_sincosf                     # tools/re/image.py exports (sdk): sincosf
+85751760 math_sinf                        # tools/re/image.py exports (sdk): sinf
+85754d60 math_sqrt                        # tools/re/image.py exports (sdk): sqrt
+85754d70 math_sqrtf                       # tools/re/image.py exports (sdk): sqrtf
+8575c750 math_tan                         # tools/re/image.py exports (sdk): tan
+8575c7f0 math_tanf                        # tools/re/image.py exports (sdk): tanf
+85754d80 math_trunc                       # tools/re/image.py exports (sdk): trunc
+85754d90 math_truncf                      # tools/re/image.py exports (sdk): truncf
+854fa9f0 movie_mkv_audio_track_get_bit_depth # tools/re/image.py exports (sdk): mkvparser::AudioTrack::GetBitDepth
+854fa2b0 movie_mkv_video_track_get_width  # tools/re/image.py exports (sdk): mkvparser::VideoTrack::GetWidth
 851047f0 os_lock_mutex                    # runtime/nn_os_sync.c (HLE import stub): nn::os::LockMutex; f_80364080 calls it once per instance slot
 851048a0 os_unlock_mutex                  # runtime/nn_os_sync.c (HLE import stub): nn::os::UnlockMutex
 851063b0 os_convert_to_time_span          # work/sa/gen/a64_hooks.c (HLE import stub): nn::os::ConvertToTimeSpan
 85106220 os_sleep_thread                  # work/sa/gen/a64_hooks.c (HLE import stub): nn::os::SleepThread
 851095f0 os_get_tls_value                 # work/sa/gen/a64_hooks.c (HLE import stub): nn::os::GetTlsValue
-85101180 os_broadcast_condition_variable  # nx2/image.py exports (sdk): nn::os::BroadcastConditionVariable
-851052f0 os_broadcast_slim_condition_variable # nx2/image.py exports (sdk): nn::os::BroadcastSlimConditionVariable
-8510ce10 os_broadcast_to_address          # nx2/image.py exports (sdk): nn::os::BroadcastToAddress
-85101d20 os_clear_timer_event             # nx2/image.py exports (sdk): nn::os::ClearTimerEvent
-85106380 os_get_system_tick_ordered       # nx2/image.py exports (sdk): nn::os::GetSystemTickOrdered
-85100f60 os_lock_busy_mutex               # nx2/image.py exports (sdk): nn::os::LockBusyMutex
-85105470 os_lock_slim_mutex               # nx2/image.py exports (sdk): nn::os::LockSlimMutex
-85104ea0 os_sdk_recursive_mutex_type_lock # nx2/image.py exports (sdk): nn::os::SdkRecursiveMutexType::Lock
-85104f50 os_sdk_recursive_mutex_type_unlock # nx2/image.py exports (sdk): nn::os::SdkRecursiveMutexType::Unlock
-851052e0 os_signal_slim_condition_variable # nx2/image.py exports (sdk): nn::os::SignalSlimConditionVariable
-85101c60 os_signal_timer_event            # nx2/image.py exports (sdk): nn::os::SignalTimerEvent
-8510cdd0 os_signal_to_address             # nx2/image.py exports (sdk): nn::os::SignalToAddress
-85105330 os_timed_wait_slim_condition_variable # nx2/image.py exports (sdk): nn::os::TimedWaitSlimConditionVariable
-85101010 os_try_lock_busy_mutex           # nx2/image.py exports (sdk): nn::os::TryLockBusyMutex
-85105490 os_try_lock_slim_mutex           # nx2/image.py exports (sdk): nn::os::TryLockSlimMutex
-85101080 os_unlock_busy_mutex             # nx2/image.py exports (sdk): nn::os::UnlockBusyMutex
-851054d0 os_unlock_slim_mutex             # nx2/image.py exports (sdk): nn::os::UnlockSlimMutex
-8510cd80 os_wait_for_address              # nx2/image.py exports (sdk): nn::os::WaitForAddress
-85105300 os_wait_slim_condition_variable  # nx2/image.py exports (sdk): nn::os::WaitSlimConditionVariable
-85774310 std_chrono_steady_clock_now      # nx2/image.py exports (sdk): std::__1::chrono::steady_clock::now
-85786920 std_cxx_atomic_notify_all        # nx2/image.py exports (sdk): std::__1::__cxx_atomic_notify_all
-857774a0 std_hash_memory                  # nx2/image.py exports (sdk): std::__1::__hash_memory
-85786980 std_libcpp_atomic_monitor        # nx2/image.py exports (sdk): std::__1::__libcpp_atomic_monitor
+85101180 os_broadcast_condition_variable  # tools/re/image.py exports (sdk): nn::os::BroadcastConditionVariable
+851052f0 os_broadcast_slim_condition_variable # tools/re/image.py exports (sdk): nn::os::BroadcastSlimConditionVariable
+8510ce10 os_broadcast_to_address          # tools/re/image.py exports (sdk): nn::os::BroadcastToAddress
+85101d20 os_clear_timer_event             # tools/re/image.py exports (sdk): nn::os::ClearTimerEvent
+85106380 os_get_system_tick_ordered       # tools/re/image.py exports (sdk): nn::os::GetSystemTickOrdered
+85100f60 os_lock_busy_mutex               # tools/re/image.py exports (sdk): nn::os::LockBusyMutex
+85105470 os_lock_slim_mutex               # tools/re/image.py exports (sdk): nn::os::LockSlimMutex
+85104ea0 os_sdk_recursive_mutex_type_lock # tools/re/image.py exports (sdk): nn::os::SdkRecursiveMutexType::Lock
+85104f50 os_sdk_recursive_mutex_type_unlock # tools/re/image.py exports (sdk): nn::os::SdkRecursiveMutexType::Unlock
+851052e0 os_signal_slim_condition_variable # tools/re/image.py exports (sdk): nn::os::SignalSlimConditionVariable
+85101c60 os_signal_timer_event            # tools/re/image.py exports (sdk): nn::os::SignalTimerEvent
+8510cdd0 os_signal_to_address             # tools/re/image.py exports (sdk): nn::os::SignalToAddress
+85105330 os_timed_wait_slim_condition_variable # tools/re/image.py exports (sdk): nn::os::TimedWaitSlimConditionVariable
+85101010 os_try_lock_busy_mutex           # tools/re/image.py exports (sdk): nn::os::TryLockBusyMutex
+85105490 os_try_lock_slim_mutex           # tools/re/image.py exports (sdk): nn::os::TryLockSlimMutex
+85101080 os_unlock_busy_mutex             # tools/re/image.py exports (sdk): nn::os::UnlockBusyMutex
+851054d0 os_unlock_slim_mutex             # tools/re/image.py exports (sdk): nn::os::UnlockSlimMutex
+8510cd80 os_wait_for_address              # tools/re/image.py exports (sdk): nn::os::WaitForAddress
+85105300 os_wait_slim_condition_variable  # tools/re/image.py exports (sdk): nn::os::WaitSlimConditionVariable
+85774310 std_chrono_steady_clock_now      # tools/re/image.py exports (sdk): std::__1::chrono::steady_clock::now
+85786920 std_cxx_atomic_notify_all        # tools/re/image.py exports (sdk): std::__1::__cxx_atomic_notify_all
+857774a0 std_hash_memory                  # tools/re/image.py exports (sdk): std::__1::__hash_memory
+85786980 std_libcpp_atomic_monitor        # tools/re/image.py exports (sdk): std::__1::__libcpp_atomic_monitor
 857ec268 std_cxa_guard_acquire            # the heavy-functions analysis (agent/heavy-funcs): the PLT f_83c61ca0's target, called after an LDAPRB of a guard byte; its non-zero result runs the static's init (role)
 857ec2f0 std_cxa_guard_release            # the heavy-functions analysis (agent/heavy-funcs): the PLT f_83c61cb0's target, called after that init (role)
-81222cd0 sys_nn_main                      # nx2/image.py exports (main): nnMain
-8262bb10 sys_nninit_startup               # nx2/image.py exports (main): nninitStartup
-850438b0 util_tiny_mt_generate_random_u32 # nx2/image.py exports (sdk): nn::util::TinyMt::GenerateRandomU32
-85046480 util_vsn_printf                  # nx2/image.py exports (sdk): nn::util::VSNPrintf
+81222cd0 sys_nn_main                      # tools/re/image.py exports (main): nnMain
+8262bb10 sys_nninit_startup               # tools/re/image.py exports (main): nninitStartup
+850438b0 util_tiny_mt_generate_random_u32 # tools/re/image.py exports (sdk): nn::util::TinyMt::GenerateRandomU32
+85046480 util_vsn_printf                  # tools/re/image.py exports (sdk): nn::util::VSNPrintf
 
 # --- boot and the main loop (docs/direct/boot-to-main-loop.md)
 809db6a0 sead_framework_init_systems      # heap mgr, thread mgr, resource mgr, file device mgr (romfs mount)

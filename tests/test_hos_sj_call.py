@@ -1,4 +1,4 @@
-"""runtime/hos_setjmp.c's hos_sj_call without the game: the lifted code's call of a setjmp owner (nx2/lift2/game.py sjcall_<owner>).
+"""runtime/hos_setjmp.c's hos_sj_call without the game: the lifted code's call of a setjmp owner (ounce/lift sjcall_<owner>).
 Synthetic owners: one that returns, one whose callee longjmps back to the owner's setjmp (the host comes back to
 hos_sj_call, which runs the code at the return address through a64_icall), and nested owners where the inner one's
 callee longjmps to the outer owner (the inner slot dropped) or to its own.

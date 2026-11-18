@@ -20,7 +20,7 @@ case "$scene" in
   kokiri) overlay=$root/work/overlay/chisel_kokiri ;;
   hf) overlay=$root/work/overlay/chisel_hf ;;
   market) overlay=$root/work/overlay/chisel_hf_market ;;
-  zoo_*) overlay=$("$here/zoo-overlay.sh" "$scene") ;;   # (an actor-zoo scene, zoo/<scene>.toml, made on demand)
+  zoo_*) overlay=$("$here/zoo-overlay.sh" "$scene") ;;   # (an actor-zoo scene, games/oot/zoo/<scene>.toml, made on demand)
   *) overlay=$root/work/overlay/$scene; [ -d "$overlay" ] || { echo "no overlay $overlay"; exit 2; } ;;
 esac
 exec 7>"$root/work/run.gate"; flock -x 7

@@ -103,6 +103,21 @@ function that calls `phys_cct_change_position` through `guest(...)` and `guest_c
 stack; the Cheats page's actions need the same kind of guest calls. `scripts/direct_scene_cycle.sh` still sends the
 live commands.
 
+## The summary verification build
+
+**What it did.** With `HOOKSHOT_LIFT_VERIFY=1` the Python lifter wrapped every function with a full summary in
+checks (`host/lift2_verify.c`): registers the summary says are not read were poisoned at entry; a returning noreturn
+function, a changed preserved register or a write the summary does not allow was reported at exit; context fields the
+lifter decided no one reads were poisoned before each call; calls of replaced SDK functions went through a stub that
+reported a callee-saved register the host changed. Violations went to the game log and `lift2_violations.txt`.
+
+**Why parked.** `ounce-lift` never emitted the wrappers (its export's `verify` is always off), so the runtime file was
+linked and never called.
+
+**To rebuild.** The wrappers in the lifter's emit (`lift2_check_enter` / `lift2_check_exit` around each summarised
+body, and the poisoning before calls), and the checking functions in a runtime file; the deleted file is in git
+history before this record.
+
 ## Temporal upscalers' camera jitter
 
 **What it did.** It added a sub-pixel jitter to the scene's projection for a temporal upscaler (DLSS, FSR) by editing

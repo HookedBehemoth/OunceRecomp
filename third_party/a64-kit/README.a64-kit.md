@@ -1,4 +1,4 @@
-> **In Hookshot** only `rt/` (the guest model and runtime), `hos/nx_image.py`, `tools/nso.py`, `tools/toolchain.py`
+> **In Hookshot** only `rt/` (the guest model and runtime), `hos/nx_image.py`, `tools/nso.py`
 > and `tools/survey.py` are kept. The lifter (`lift/`, with suyu's translator) and `tests/insn_test.py` were removed when
 > Hookshot's own lifter replaced them (`docs/lifter.md`); the text below is upstream's and describes them as they were.
 

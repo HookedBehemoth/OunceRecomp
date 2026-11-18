@@ -10,7 +10,7 @@
    FPSR: the lifted code keeps no cumulative flags per instruction; MRS FPSR (a64_fpsr_read) is the context's FPSR with MXCSR's
    sticky bits folded in, MSR FPSR (a64_fpsr_write) clears them.
 
-   FRECPE and FRSQRTE are inline in the lifted code (nx2/lift2/fp_estimate.py); they read FZ and RMode from the
+   FRECPE and FRSQRTE are inline in the lifted code (ounce/lift); they read FZ and RMode from the
    context's FPCR, which this file keeps MXCSR equal to. */
 #ifndef HOS_FP_TEST
 #include "a64.h"
