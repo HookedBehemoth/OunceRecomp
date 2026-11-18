@@ -54,13 +54,21 @@ fn inside(entries: &HashSet<u64>, entry: u64, body: &[u64], t: u64) -> bool {
     body.binary_search(&t).is_ok() && (t == entry || !entries.contains(&t))
 }
 
-/// None if the function can be lifted, else why not (build_ir.scope with the plan's Program)
-fn scope(d: &Discovery, entry: u64, pcs: &[u64], img: &Image) -> Option<String> {
+/// the word a body lifts at pc: an undecodable one becomes UDF with the word's low half, as both raise the
+/// undefined-instruction exception where they stand (a compiler's trap after a failed check, such as 0xe7ffdefe)
+fn lifted_word(img: &Image, pc: u64) -> u32 {
+    let w = img.word(pc);
+    if decode(w).is_some() { w } else { w & 0xffff }
+}
+
+/// None if the function can be lifted, else why not (build_ir.scope with the plan's Program); udf: an undecodable
+/// word is lifted as UDF (lifted_word) instead of refused
+fn scope(d: &Discovery, entry: u64, pcs: &[u64], img: &Image, udf: bool) -> Option<String> {
     if d.plt.contains_key(&entry) {
         return None;
     }
     for &pc in pcs {
-        let w = img.word(pc);
+        let w = if udf { lifted_word(img, pc) } else { img.word(pc) };
         let i = match decode(w) {
             Some(i) => i,
             None => return Some(format!("word {w:08x} at {pc:#x} not decoded")),
@@ -163,10 +171,11 @@ impl Plan {
                 let raw = &d.funcs[&e].order;
                 let mut pcs = raw.clone();
                 pcs.sort_unstable();
-                let mut r = scope(d, e, &pcs, img);
+                let mut r = scope(d, e, &pcs, img, false);
                 if r.as_deref().is_some_and(|r| r.contains("not decoded")) {
+                    // (words the entry cannot reach are data; one it reaches is a trap)
                     let live = reachable(e, &pcs, img, jt);
-                    if live.len() < pcs.len() && scope(d, e, &live, img).is_none() {
+                    if scope(d, e, &live, img, true).is_none() {
                         pcs = live;
                         r = None;
                     }
@@ -182,7 +191,7 @@ impl Plan {
                     let why = if decode(img.word(e)).is_none() { None } else { Some(why_key(&r)) };
                     return (PBody { entry: e, pcs: vec![e], words: vec![0] }, Some(raw_sorted), why);
                 }
-                let words = pcs.iter().map(|&p| img.word(p)).collect();
+                let words = pcs.iter().map(|&p| lifted_word(img, p)).collect();
                 let over = (pcs != raw_sorted).then_some(raw_sorted);
                 (PBody { entry: e, pcs, words }, over, None)
             }))
