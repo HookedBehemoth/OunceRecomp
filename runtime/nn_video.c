@@ -12,6 +12,13 @@
    Here the decoder's own thread (worker_main) decodes the submissions a few pictures ahead; a decoded picture waits
    in a queue until an Acquire puts it in the first free registered buffer (host memory: the pool's guest memory is
    not used), or fills a buffer handed out before it (its fence). The decoder takes as much input as a hardware one has room for (MAX_IN_FLIGHT).
+
+   The stream's end, as the SDK's codec client (the same in SDK 20 and 22) and both movie players read it: each output is
+   one record (a picture, or the end), filled into the buffers in the order they were handed out. The submission marked
+   last gives, after the pictures still in the codec, one end record: a buffer with no picture, its last flag set (the
+   players show no picture of it and stop or loop when they give it back). After it a buffer waits on its fence until
+   pictures come again (after a Flush and new input); Flush drops what is not handed out, and buffers waiting keep
+   waiting. Acquire itself only pops a free buffer: it fails (RESULT_NO_BUFFER) only when every one is out.
    The video service itself (nn::gsv) is not emulated: nn::codec::video::Initialize does nothing. */
 #include "hos.h"
 #include "hos_ledger.h"
@@ -22,7 +29,7 @@
 #include <libavcodec/avcodec.h>
 #include <libswscale/swscale.h>
 
-#define RESULT_NO_OUTPUT 0x2a1ca   /* (a failure: "no picture yet"; the library polls again) */
+#define RESULT_NO_BUFFER 0x1c286f  /* Acquire with every registered buffer out (the SDK's own; the players abort on it) */
 #define POOL_MAGIC 0x4c4f4f50u     /* 'POOL' */
 #define DEC_MAGIC 0x43454456u      /* 'VDEC' */
 #define PREF_MAGIC 0x46455250u     /* 'PREF' */
@@ -56,8 +63,9 @@ typedef struct {
 /* the preference MakeDecodeImagePreference returns (the caller's buffer is larger: only these fields are ours) */
 typedef struct { uint32_t magic; uint16_t w, h; uint32_t format, tiling; } Pref;
 
-/* (rgba NULL: a picture decoded as NV12 is kept as that alone; its pool makes the RGBA if a reader wants it) */
-typedef struct { uint8_t *rgba, *nv12; int w, h; int64_t pts; int last; } Picture;
+/* (rgba NULL: a picture decoded as NV12 is kept as that alone; its pool makes the RGBA if a reader wants it; end: the
+   stream's end record, no picture) */
+typedef struct { uint8_t *rgba, *nv12; int w, h; int64_t pts; int end; } Picture;
 /* a submission waiting to be decoded (pkt NULL: the stream's end) */
 typedef struct Pending { AVPacket *pkt; struct Pending *next; } Pending;
 
@@ -70,10 +78,9 @@ typedef struct {
     uint64_t slots[MAX_SLOTS];       /* registered pools (guest pointers), by buffer index */
     int busy[MAX_SLOTS];             /* acquired, not released */
     int64_t slot_pts[MAX_SLOTS];
-    int slot_last[MAX_SLOTS];        /* the stream's last picture (the submission marked last, all decoded) */
+    int slot_last[MAX_SLOTS];        /* holds the stream's end record */
     Picture queue[MAX_QUEUE];
     int qhead, qn;
-    int eos;                         /* the last submission is in and decoded: an empty queue is the end */
     Pending *phead, *ptail;          /* submissions not decoded yet, oldest first */
     int npending;                    /* (of them, with data: the stream's end takes no room) */
     uint64_t ready;                  /* the submission-ready event: signalled while the decoder has room */
@@ -405,13 +412,19 @@ static void decode_one(Dec *d, AVPacket *pkt) {
 }
 /* The decoder's own thread, as the hardware's engine: it decodes the oldest submissions while fewer than DECODE_AHEAD
    pictures wait, with the lock released, so no guest thread runs the codec. A large frame takes several display
-   intervals to decode; done on the movie library's input thread, the game's frame waited for that thread. The stream's
-   end is taken as soon as it is next, pictures queued or not: the last picture decoded must carry the last flag, as the
-   hardware's does. The rest of the queue is room for the pictures the
-   codec still holds (dav1d's frame delay) */
+   intervals to decode; done on the movie library's input thread, the game's frame waited for that thread. The rest of
+   the queue is room for the pictures the codec still holds (dav1d's frame delay) and the end record */
 #define DECODE_AHEAD (MAX_QUEUE / 2)
 static void dec_fill(Dec *d);
 static void ready_update(Dec *d);
+static void queue_push(Dec *d, Picture p) {   /* (d->lock held) */
+    if (d->qn == MAX_QUEUE) {   /* (not reached: DECODE_AHEAD leaves room) */
+        picture_free(&d->queue[d->qhead]);
+        d->qhead = (d->qhead + 1) % MAX_QUEUE, d->qn--;
+    }
+    d->queue[(d->qhead + d->qn) % MAX_QUEUE] = p;
+    d->qn++;
+}
 static void worker_main(void *arg) {
     Dec *d = (Dec *)arg;
     os_mutex_lock(&d->lock);
@@ -428,22 +441,13 @@ static void worker_main(void *arg) {
         decode_one(d, n->pkt);
         os_mutex_lock(&d->lock);
         d->decoding = 0;
-        for (int i = 0; i < d->ngot; i++) {
-            if (gen != d->gen) { picture_free(&d->got[i]); continue; }
-            if (d->qn == MAX_QUEUE) {   /* (not reached: DECODE_AHEAD leaves room) */
-                picture_free(&d->queue[d->qhead]);
-                d->qhead = (d->qhead + 1) % MAX_QUEUE, d->qn--;
-            }
-            d->queue[(d->qhead + d->qn) % MAX_QUEUE] = d->got[i];
-            d->qn++;
-        }
+        for (int i = 0; i < d->ngot; i++)
+            if (gen != d->gen) picture_free(&d->got[i]);
+            else queue_push(d, d->got[i]);
         d->ngot = 0;
-        if (gen == d->gen) {
-            d->eos = !n->pkt;
-            if (!n->pkt) {   /* (the end: the last picture marked) */
-                d->log_submits = 8;   /* (data after the end: a restart, worth seeing) */
-                if (d->qn) d->queue[(d->qhead + d->qn - 1) % MAX_QUEUE].last = 1;
-            }
+        if (gen == d->gen && !n->pkt) {
+            d->log_submits = 8;   /* (data after the end: a restart, worth seeing) */
+            queue_push(d, (Picture){.end = 1});
         }
         av_packet_free(&n->pkt);
         free(n);
@@ -546,7 +550,7 @@ static uint64_t submitted(void) { return (uint64_t)os_atomic_inc(&submissions); 
 /* the picture at the queue's head into buffer slot (d->lock held) */
 static void deliver(Dec *d, int slot) {
     Picture *p = &d->queue[d->qhead];
-    Pool *o = (Pool *)host_of(d->slots[slot], POOL_MAGIC);
+    Pool *o = p->end ? NULL : (Pool *)host_of(d->slots[slot], POOL_MAGIC);
     if (o) {
         /* (the picture at the pool's size: rows and columns past either are left out) */
         const int ok = o->nv12 != NULL && p->nv12 != NULL;   /* (an allocation that failed: nothing copied; issue 342) */
@@ -574,9 +578,11 @@ static void deliver(Dec *d, int slot) {
             }
         }
     }
-    d->slot_pts[slot] = d->last_pts = p->pts;
-    d->slot_last[slot] = p->last;
-    if (video_log() && (d->acquires <= 8 || p->last || d->acquires % 300 == 0)) {
+    if (!p->end) d->last_pts = p->pts;
+    d->slot_pts[slot] = d->last_pts;   /* (the end record: the last picture's time) */
+    d->slot_last[slot] = p->end;
+    if (video_log() && p->end) hos_log("video: acquire %lld: the end, buffer %d", (long long)d->acquires, slot);
+    else if (video_log() && (d->acquires <= 8 || d->acquires % 300 == 0)) {
         uint64_t sum = 0, n = 0;   /* (the picture's mean luma and RGB, sampled: a black or garbage decode shows) */
         uint64_t rgb[3] = {0, 0, 0};
         for (int y = 0; y < p->h; y += 37)
@@ -584,22 +590,20 @@ static void deliver(Dec *d, int slot) {
                 sum += p->nv12[(size_t)y * p->w + x];
                 for (int k = 0; k < 3 && p->rgba; k++) rgb[k] += p->rgba[((size_t)y * p->w + x) * 4 + k];
             }
-        hos_log("video: acquire %lld: %dx%d pts %lld%s into buffer %d (mean Y %llu, RGB %llu %llu %llu)",
-                (long long)d->acquires, p->w, p->h, (long long)p->pts, p->last ? " (last)" : "", slot,
+        hos_log("video: acquire %lld: %dx%d pts %lld into buffer %d (mean Y %llu, RGB %llu %llu %llu)",
+                (long long)d->acquires, p->w, p->h, (long long)p->pts, slot,
                 (unsigned long long)(n ? sum / n : 0), (unsigned long long)(n ? rgb[0] / n : 0),
                 (unsigned long long)(n ? rgb[1] / n : 0), (unsigned long long)(n ? rgb[2] / n : 0));
     }
     picture_free(p);
     d->qhead = (d->qhead + 1) % MAX_QUEUE, d->qn--;
 }
-/* the buffers handed out before their pictures, filled in order as pictures are decoded; at the stream's end, with nothing
-   left, the rest are the end (the last picture's time, marked last). Their fences reached (d->lock held) */
+/* the buffers handed out before their pictures, filled in order as pictures (or the end) come; their fences reached
+   (d->lock held) */
 static void dec_fill(Dec *d) {
-    while (d->nwaiting) {
+    while (d->nwaiting && d->qn) {
         const int slot = d->waiting[0];
-        if (d->qn) deliver(d, slot);
-        else if (d->eos && !d->phead) d->slot_last[slot] = 1, d->slot_pts[slot] = d->last_pts;
-        else break;
+        deliver(d, slot);
         fence_reach(d->waiting_fence[0]);
         d->nwaiting--;
         memmove(d->waiting, d->waiting + 1, d->nwaiting * sizeof d->waiting[0]);
@@ -666,7 +670,7 @@ static void dec_flush(Ctx *c, const char *what) {
         os_mutex_lock(&d->lock);
         if (video_log())
             hos_log("video: %s after %lld submits and %lld acquires (%d queued, %s, lr %#llx)", what, (long long)d->submits,
-                    (long long)d->acquires, d->qn, d->eos ? "at the end" : d->phead ? "submissions left" : "none left",
+                    (long long)d->acquires, d->qn, d->phead ? "submissions left" : "none left",
                     (unsigned long long)c->x[30]);
         d->log_submits = 8;
         while (d->decoding) os_cond_wait(&d->wake, &d->lock, OS_FOREVER);   /* (the codec is the worker's) */
@@ -675,7 +679,6 @@ static void dec_flush(Ctx *c, const char *what) {
         pending_free(d);
         for (int i = 0; i < d->qn; i++) picture_free(&d->queue[(d->qhead + i) % MAX_QUEUE]);
         d->qhead = d->qn = 0;
-        d->eos = 0;
         for (int i = 0; i < MAX_SLOTS; i++) d->slot_last[i] = 0;
         ready_update(d);
         os_mutex_unlock(&d->lock);
@@ -693,12 +696,12 @@ static void dec_unregister(Ctx *c) {
     if (d && (uint32_t)ARG(1) < MAX_SLOTS) d->slots[(uint32_t)ARG(1)] = 0;
     RET(0);
 }
-/* AcquireXDecoderOutputBuffer(u32* index, NativeSyncHandle*, decoder): a free buffer, with the oldest picture in it, or
-   with a fence it waits on for the next picture (dec_fill); after the stream's end, the end */
+/* AcquireXDecoderOutputBuffer(u32* index, NativeSyncHandle*, decoder): a free buffer, with the oldest output in it, or
+   with a fence it waits on for the next one (dec_fill) */
 static void dec_acquire(Ctx *c) {
     Dec *d = (Dec *)host_of(ARG(2), DEC_MAGIC);
     if (ARG(1)) G64(ARG(1)) = 0;
-    if (!d) { RET(RESULT_NO_OUTPUT); return; }
+    if (!d) { RET(RESULT_NO_BUFFER); return; }
     os_mutex_lock(&d->lock);
     dec_fill(d);
     int slot = -1;
@@ -707,16 +710,13 @@ static void dec_acquire(Ctx *c) {
     if (slot < 0) {
         ready_update(d);
         os_mutex_unlock(&d->lock);
-        RET(RESULT_NO_OUTPUT);
+        RET(RESULT_NO_BUFFER);
         return;
     }
     d->acquires++;
     d->busy[slot] = 1;
     if (!d->nwaiting && d->qn) {
         deliver(d, slot);
-    } else if (!d->nwaiting && d->eos && !d->phead) {   /* (the end at the last picture's time) */
-        d->slot_last[slot] = 1, d->slot_pts[slot] = d->last_pts;
-        if (video_log()) hos_log("video: acquire %lld: the end, buffer %d", (long long)d->acquires, slot);
     } else {
         const uint64_t f = fence_give();
         d->waiting[d->nwaiting] = slot, d->waiting_fence[d->nwaiting++] = f;
@@ -752,10 +752,10 @@ static void dec_properties(Ctx *c) {
     if (ARG(3)) *(uint16_t *)GP(ARG(3)) = h;
     if (ARG(4)) G64(ARG(4)) = d && i < MAX_SLOTS ? (uint64_t)d->slot_pts[i] : 0;
     if (ARG(5)) *(uint8_t *)GP(ARG(5)) = d && i < MAX_SLOTS ? (uint8_t)d->slot_last[i] : 0;
-    {   /* (HOS_VIDEO_LOG) the first times the game is told a picture is the last */
+    {   /* (HOS_VIDEO_LOG) the first times the game is told of the end */
         static volatile int32_t n;
         if (video_log() && d && i < MAX_SLOTS && d->slot_last[i] && os_atomic_inc(&n) <= 8)
-            hos_log("video: properties of buffer %u: the last picture, pts %lld (lr %#llx)", i, (long long)d->slot_pts[i],
+            hos_log("video: properties of buffer %u: the end, pts %lld (lr %#llx)", i, (long long)d->slot_pts[i],
                     (unsigned long long)c->x[30]);
     }
     RET(0);

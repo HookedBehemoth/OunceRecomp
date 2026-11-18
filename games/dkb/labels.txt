@@ -37,3 +37,16 @@
 81abf978 job_set_done                     # runtime/nn_os_sync.c BroadcastConditionVariable: sets a job's done flag (+0x40) and broadcasts its +0x20, +0x28 and +0x30 condition variables
 8037f3bc job_resume                       # runtime/nn_os_sync.c BroadcastConditionVariable: clears a job's paused flag (+0x43) and broadcasts its +0x28 condition variable
 80e3ada0 movie_frame_release              # runtime/nn_video.c: gives a frame back: finds it in the in-use list (+0xc30) by its output (+0x30) and aborts when it is not there (lr 0x80e3ae94: DKB's stop after GuidePunch.webm loops)
+80e3a580 movie_dec_flush_frames           # runtime/nn_video.c the stream's end: the movie library's decoder Flush (as OoT subsdk0 movie::VideoDecoder::Flush): Flush, then gives back (movie_frame_recycle) the pending frames whose fences are reached, the decoded ring (+0xbd8) and every frame in the in-use list (+0xc30)
+80e3a840 movie_frames_register            # runtime/nn_video.c: makes the picture frames: a pool each (movie_pool_init), registered by index and acquired at once onto the pending ring (+0xb80)
+80e3ad60 movie_frame_take_locked          # runtime/nn_video.c: movie_frame_take's caller (the player's queue fill, movie_player_queue_fill)
+80e3ad8c movie_frame_release_caller       # runtime/nn_video.c: calls movie_frame_release
+80e3ae9c movie_frame_fence_done           # runtime/nn_video.c: the VideoDecoderThread's fence callback: the pending head (movie_frame_pending_pop) to the decoded ring (+0xbd8) after its properties, or straight back (movie_frame_recycle) when not playing (+0xf88 != 3)
+80e3affc movie_frame_pending_pop          # runtime/nn_video.c: pops the pending ring's head (+0xb80) when TryWaitNativeSync says its fence is reached, and arms the wait on the next
+80e3b0dc movie_frame_recycle              # runtime/nn_video.c: Release(the frame's buffer, its sync), then Acquire at once (the index it returns is not read: the frame keeps its buffer) onto the pending ring
+80e3b994 movie_frame_set_eos              # runtime/nn_video.c: a frame output's end-of-stream flag (+0x88), from the properties' last flag (OoT subsdk0 movie::VideoFrame::SetEndOfStreamState)
+80e3ba00 movie_frame_get_eos              # runtime/nn_video.c: reads a frame output's end-of-stream flag (+0x88) (OoT subsdk0 movie::VideoFrame::GetEndOfStreamState)
+8189b668 movie_player_queue_fill          # runtime/nn_video.c: takes decoded frames (movie_frame_take_locked) into the player's queue (+0x1a8, count +0x1a0, room +0x1a4) while it has room (as OoT movie_frame_queue_fill)
+8189b89c movie_player_release_shown       # runtime/nn_video.c: gives back the shown frames (+0x1b8, count +0x1b0) and, when the current one (+0x1c8) is the end (movie_frame_get_eos), sets the end bit (+0x40 bit 1) and calls the end callback (+0xd8) (as OoT f_83b82050)
+8189b964 movie_player_release_queue       # runtime/nn_video.c: gives back every frame still in the player's queue (+0x1a8) (as OoT f_83b82150)
+81898bf0 movie_player_flush               # runtime/nn_video.c: on the MovieOperateThread (where the GuidePunch.webm loop flushes): movie_player_release_queue, then movie_dec_flush_frames (lr 0x81898ca4, 0x81898e40)
