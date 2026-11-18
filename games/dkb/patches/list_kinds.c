@@ -38,6 +38,7 @@ PATCH_AT_SITE(0x803fa464, word(0x97fb2fa7), before, none, list_kind, k(7));
 PATCH_AT_SITE(0x801e6900, word(0x940002a0), before, none, list_kind, k(7));
 PATCH_AT_SITE(0x801e6ca8, word(0x940001b6), before, none, list_kind, k(7));
 PATCH_AT_SITE(0x801e6e9c, word(0x94000139), before, none, list_kind, k(7));
+PATCH_AT_SITE(0x8008162c, word(0xf9400108), after, none, list_kind, k(16));
 PATCH_AT_SITE(0x803406ac, word(0xf9400108), after, none, list_kind, k(17));
 PATCH_AT_SITE(0x80224068, word(0xf94002e8), after, none, list_kind, k(18));
 PATCH_AT_SITE(0x8030f0a0, word(0x97fb60b8), before, none, list_kind, k(21));
