@@ -10,7 +10,7 @@ namespace Shader::Ampere {
 class ProgramCaptureState {
 public:
     enum class Result { Continue, Complete, InvalidTarget };
-    static constexpr u32 MaximumInstructions = 65536;
+    static constexpr u32 MaximumInstructions = 1u << 20; // (OoT compute stage 14873 has 66672)
 
     Result Observe(const Instruction& instruction, u32 index) {
         const u32 opcode = instruction.Bits(0, 12);
