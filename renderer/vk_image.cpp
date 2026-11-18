@@ -103,7 +103,7 @@ std::once_flag placeholder_once;
 uint32_t next_id = 1;
 
 // (counts: made, destroyed and placeholders since the last line; per reason since the start)
-std::atomic<int64_t> st_made{0}, st_destroyed{0}, st_revived{0}, st_ph{0}, st_ph_astc{0}, st_ph_format{0},
+std::atomic<int64_t> st_made{0}, st_destroyed{0}, st_revived{0}, st_ph{0}, st_ph_format{0},
     st_ph_refused{0}, st_buffer_tex{0}, st_registered_new{0}, st_texels{0}, st_texels_skipped{0}, st_bytes{0},
     st_made_total{0}, st_asset_images{0}, st_asset_bytes{0}, st_asset_shared{0}, st_asset_fill_waits{0}, st_asset_fail{0},
     st_ph_norec{0};
@@ -132,7 +132,7 @@ int key_of(const nvn_tex* t, Key& k, FormatInfo& fi, int& bw, int& bh, int& bpb,
         AssetDesc d;
         if (!a.rec || !assets_desc(a.rec, d)) return K_ASSET_MISS;
         asset_key(d, k);
-        fi = FormatInfo{d.format, false, (int)d.bw, (int)d.bh};
+        fi = FormatInfo{d.format, (int)d.bw, (int)d.bh};
         bw = (int)d.bw, bh = (int)d.bh, bpb = (int)d.bpb;
         if (ad) *ad = d;
         return K_ASSET;
@@ -337,7 +337,6 @@ void drop_held_over(uint64_t lo, uint64_t hi) {
 Image* make(const nvn_tex* t, const Key& k, const FormatInfo& fi, int bw, int bh, int bpb) {
     std::call_once(placeholder_once, make_placeholder);
     if (fi.format == VK_FORMAT_UNDEFINED || bpb <= 0) return name_placeholder(t, "no Vulkan format", st_ph_format), &placeholder;
-    if (fi.astc) return name_placeholder(t, "ASTC, which this GPU does not sample", st_ph_astc), &placeholder;
     auto x = std::make_unique<Image>();
     Image& im = *x;
     const nvn_texdesc& d = t->d;
@@ -386,6 +385,10 @@ Image* make_asset(const nvn_tex* t, const Key& k, const AssetDesc& d, uint32_t r
     im.gpu = t->gpu, im.nvn_format = t->d.format, im.bpb = (int)d.bpb, im.bw = (int)d.bw, im.bh = (int)d.bh;
     im.width = d.width, im.height = d.height, im.levels = d.mips, im.layers = d.layers;
     im.asset = rec, im.asset_view = d.view;
+    if (nvn_astc(t->d.format) && linear_twin(d.format) != linear_twin(vk_format(t->d.format).format))
+        strict_event("a prepared ASTC texture not in the store's format for ASTC", "texture %#llx %ux%u NVN format %#x: record %u is vk "
+                     "%d (a store made before ASTC was BC7 throughout)", (unsigned long long)t->gpu, d.width, d.height, t->d.format,
+                     rec - 1, (int)d.format);
     std::memcpy(im.chan_map, d.map, 4);
     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ci.flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;   // (sRGB and UNORM views)
@@ -563,7 +566,7 @@ uint64_t image_need(const nvn_texdesc* d, uint64_t* align) {
     if (align) *align = 0;
     if (!d || !dev.device || d->target == NVN_TEXTURE_TARGET_BUFFER) return 0;
     const FormatInfo fi = vk_format(d->format);
-    if (fi.format == VK_FORMAT_UNDEFINED || fi.astc) return 0;
+    if (fi.format == VK_FORMAT_UNDEFINED) return 0;
     Image im;
     VkImageCreateInfo ci{};
     if (shape(*d, fi, im, ci)) return 0;
@@ -702,7 +705,7 @@ Image* image_find(const nvn_tex* t) {
     std::shared_lock lk(images_mu);
     auto it = images.find(k);
     if (it != images.end()) return it->second.get();
-    if (fi.format == VK_FORMAT_UNDEFINED || fi.astc || bpb <= 0) return &placeholder;
+    if (fi.format == VK_FORMAT_UNDEFINED || bpb <= 0) return &placeholder;
     return nullptr;
 }
 
@@ -794,6 +797,11 @@ bool image_upload_region(const nvn_tex* t, unsigned level, unsigned layer0, cons
     bool wide = false;
     widened(vk_format(t->d.format).format, &wide);
     if (!r || !src || wide || !image_sub(t, &v, *r, s)) return false;
+    if (nvn_astc(s.im->nvn_format)) {   // (the game's bytes are ASTC blocks, the image BC7)
+        strict_event("texels written into an ASTC texture", "texture %#llx %ux%u NVN format %#x level %u: its image is the store's "
+                     "BC7", (unsigned long long)t->gpu, s.w, s.h, s.im->nvn_format, level);
+        return false;
+    }
     const uint64_t wb = (s.w + s.bw - 1) / s.bw * (uint64_t)s.bpb, hb = (s.h + s.bh - 1) / s.bh;
     if (!row) row = wb;
     if (!img) img = row * hb;
@@ -966,14 +974,14 @@ void image_stats(char* out, size_t cap) {
                   "live (%lld colour, %lld depth, %lld compressed; by their first source: %lld rendered, %lld copied or cleared, %lld "
                   "from the store, %lld terrain uploads, %lld glyph uploads, %lld texel writes, %lld never written), %.0f MB (assets: "
                   "%lld images, %.0f MB, %lld not filled; %lld textures found their content's image made, %lld waited for its fill, "
-                  "%lld fills failed); placeholders %lld (no prepared record %lld, ASTC %lld, no format %lld, refused %lld; texels "
+                  "%lld fills failed); placeholders %lld (no prepared record %lld, no format %lld, refused %lld; texels "
                   "not given %lld), buffer textures %lld; made at registration %lld; texel writes %lld (%lld skipped)",
                   (long long)st_made.exchange(0), (long long)st_made_total.load(), (long long)st_destroyed.exchange(0),
                   (long long)st_revived.exchange(0), (long long)live, (long long)color, (long long)depth, (long long)bc,
                   (long long)rendered, (long long)copied, (long long)store, (long long)terrain, (long long)glyph, (long long)texels,
                   (long long)untouched, st_bytes.load() / 1048576.0, (long long)assets, st_asset_bytes.load() / 1048576.0,
                   (long long)unfilled, (long long)st_asset_shared.load(), (long long)st_asset_fill_waits.load(),
-                  (long long)st_asset_fail.load(), (long long)st_ph.load(), (long long)st_ph_norec.load(), (long long)st_ph_astc.load(),
+                  (long long)st_asset_fail.load(), (long long)st_ph.load(), (long long)st_ph_norec.load(),
                   (long long)st_ph_format.load(), (long long)st_ph_refused.load(), (long long)no_content, (long long)st_buffer_tex.load(),
                   (long long)st_registered_new.load(), (long long)st_texels.load(), (long long)st_texels_skipped.load());
     const size_t n = std::strlen(out);

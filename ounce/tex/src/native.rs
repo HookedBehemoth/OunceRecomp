@@ -18,7 +18,6 @@ fn code(e: Enc) -> (i32, usize) {
         Enc::Bc4 => (4, 8),
         Enc::Bc5 => (5, 16),
         Enc::Bc7 => (7, 16),
-        Enc::Raw => unreachable!("raw has no encoder"),
     }
 }
 

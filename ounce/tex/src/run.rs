@@ -111,8 +111,8 @@ pub fn walk(romfs: &Path, skip: &[String], only: &[String]) -> Result<Vec<(Strin
 /// The configuration hash in the index header: the store's bytes follow from these.
 pub fn config_hash(s: &Settings) -> u64 {
     let text = format!(
-        "ounce-tex 1 bc7 {} radius {} zstd {} floor {} frame {} ispc sse2,sse4,avx,avx2",
-        s.bc7_level, s.bc45_radius, s.zstd_level, s.min_psnr, s.frame_kb
+        "ounce-tex 2 astc bc7 {} zstd {} frame {} ispc sse2,sse4,avx,avx2",
+        s.bc7_level, s.zstd_level, s.frame_kb
     );
     hash64(&[text.as_bytes()])
 }

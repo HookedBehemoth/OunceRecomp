@@ -3,8 +3,9 @@
 // initializes again every frame over the same storage (the transient targets, games/oot/patches/rt_slots.c) keeps its image.
 // An image lives while a texture is initialized over it, and 8 presents more. The transient targets' images are bound
 // in one device allocation at their storage offsets (the transient pool) and are kept as objects up to a bound.
-// Every image lives in VK_IMAGE_LAYOUT_GENERAL. A texture with no image this GPU can hold (ASTC, a format with no Vulkan
-// twin, a size the driver refuses) gets the placeholder, counted and named; a buffer texture gets nothing.
+// Every image lives in VK_IMAGE_LAYOUT_GENERAL. An ASTC texture's image is in the texture store's format for it (BC7), loaded
+// or made by the game. A texture with no image this GPU can hold (a format with no Vulkan twin, a size the driver refuses)
+// gets the placeholder, counted and named; a buffer texture gets nothing.
 #pragma once
 
 #include <atomic>
@@ -16,13 +17,13 @@
 
 namespace hsd {
 
-// ---- formats (vk_formats.cpp, a copy of gpu/legacy/vk/vk_formats.cpp) ----
+// ---- formats (vk_formats.cpp) ----
 struct FormatInfo {
     VkFormat format;
-    bool astc;   // (ASTC on a GPU that does not sample it: the placeholder)
     int block_w, block_h;
 };
 FormatInfo vk_format(int nvn_format);
+bool nvn_astc(int nvn_format);   // (its image is BC7, the game's bytes ASTC: they never go into it)
 bool is_depth_format(VkFormat f);
 bool has_stencil(VkFormat f);
 int nvn_block_size(int format, int* bw, int* bh);

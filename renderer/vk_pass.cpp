@@ -429,6 +429,12 @@ void copy_bt(List* l, const nvn_p_copy_bt& p, bool to_image) {
     }
     if (!ok || (to_image && s.im->aspect == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)))
         return count(S_COPY_SKIPPED);
+    if (nvn_astc(s.im->nvn_format)) {   // (the buffer's bytes are ASTC blocks, the image BC7)
+        strict_event("a buffer copy of an ASTC texture", "texture %#llx %ux%u NVN format %#x %s buffer %#llx: its image is the "
+                     "store's BC7", (unsigned long long)p.tex->gpu, s.w, s.h, s.im->nvn_format, to_image ? "from" : "to",
+                     (unsigned long long)p.buf);
+        return count(S_COPY_SKIPPED);
+    }
     const uint64_t wb = (s.w + s.bw - 1) / s.bw, hb = (s.h + s.bh - 1) / s.bh;
     const uint64_t row = l->pass.copy_stride > 0 ? (uint64_t)l->pass.copy_stride : wb * s.bpb;
     if (row % s.bpb || row < wb * s.bpb) return count(S_COPY_SKIPPED);
@@ -456,6 +462,10 @@ void copy_bt(List* l, const nvn_p_copy_bt& p, bool to_image) {
 /// a texture copy left out, named (the first 24): which images, why
 void copy_skipped(const char* why, const nvn_p_copy_tt& p, const Sub& s, const Sub& d) {
     count(S_COPY_SKIPPED);
+    if ((p.src && nvn_astc(p.src->d.format)) || (p.dst && nvn_astc(p.dst->d.format)))
+        strict_event("a texture copy of an ASTC texture left out", "%s: %#llx NVN format %#x vk %d -> %#llx NVN format %#x vk %d", why,
+                     (unsigned long long)(p.src ? p.src->gpu : 0), p.src ? p.src->d.format : 0, s.im ? (int)s.im->format : -1,
+                     (unsigned long long)(p.dst ? p.dst->gpu : 0), p.dst ? p.dst->d.format : 0, d.im ? (int)d.im->format : -1);
     static std::atomic<int> told{0};
     if (told++ >= 24) return;
     logf("direct: texture copy left out (%s): %#llx %ux%ux%u vk %d level %u layer %u (region %dx%dx%d) -> %#llx %ux%ux%u vk %d level %u "
@@ -472,6 +482,16 @@ void copy_tt(List* l, const nvn_p_copy_tt& p) {
     if (s.im == d.im && s.level == d.level && s.layer == d.layer) return copy_skipped("onto itself", p, s, d);
     const bool colour = s.aspect == VK_IMAGE_ASPECT_COLOR_BIT && d.aspect == VK_IMAGE_ASPECT_COLOR_BIT;
     if (!colour && s.im->format != d.im->format) return copy_skipped("depth of another format", p, s, d);
+    auto bc7 = [](VkFormat f) { return f == VK_FORMAT_BC7_UNORM_BLOCK || f == VK_FORMAT_BC7_SRGB_BLOCK; };
+    if ((nvn_astc(s.im->nvn_format) || nvn_astc(d.im->nvn_format)) && !(bc7(s.im->format) && bc7(d.im->format)))
+        return copy_skipped("an ASTC texture's BC7 and another format", p, s, d);
+    if (bc7(d.im->format)) {   // (Vulkan's rule for compressed copies: block-aligned offsets, whole blocks or up to the edge)
+        auto fits = [](const Sub& u) {
+            const uint32_t lw = std::max(1u, u.im->width >> u.level), lh = std::max(1u, u.im->height >> u.level);
+            return u.x % 4 == 0 && u.y % 4 == 0 && (u.w % 4 == 0 || (uint32_t)u.x + u.w == lw) && (u.h % 4 == 0 || (uint32_t)u.y + u.h == lh);
+        };
+        if (!fits(s) || !fits(d)) return copy_skipped("off BC7's 4x4 blocks", p, s, d);
+    }
     s.layers = d.layers = std::min(s.layers, d.layers);
     const bool same = s.w == d.w && s.h == d.h && s.d == d.d;
     const VkImageSubresourceLayers sl{s.aspect, s.level, s.layer, s.layers}, dl{d.aspect, d.level, d.layer, d.layers};

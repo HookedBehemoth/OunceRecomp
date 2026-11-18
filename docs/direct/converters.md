@@ -12,7 +12,7 @@ patches make their texels linear when the game loads them (see [terrain tiles an
 - It reads the romfs in place (default: `work/dump/romfs`) and writes only into the folder you name. What it writes
   is made from the game: it never leaves the PC and is never committed.
 - It runs in `ounce-builder` on every CPU and starts a file only when the memory gate has room for it.
-- It is not incremental: each run replaces the whole output (about 4 minutes on 16 threads, 18 with `--quality high`).
+- It is not incremental: each run replaces the whole output (about 4 minutes for OoT on 16 threads).
 
 ## Run the converter
 
@@ -22,7 +22,7 @@ patches make their texels linear when the game loads them (see [terrain tiles an
    ounce-builder textures work/prepared/tex
    ```
 
-   `--quality high` uses slower encoder settings (four times the time; packs about 4 % smaller).
+   `--quality high` uses slower encoder settings (several times the time; smaller packs, higher PSNR).
    `--only <romfs prefix>` writes a store of those files alone, for a quick check.
 
 2. Or do it in a game build: `ounce-builder build <out> ... --dump <dump>` writes `<out>/prepared/tex`, and
@@ -44,13 +44,16 @@ and the texture's index. `ounce/tex/src/store.rs` describes the format.
 | Source | Prepared as |
 |---|---|
 | BC1-BC7, uncompressed formats | kept, deswizzled |
-| ASTC, one channel used | BC4 |
-| ASTC, two channels used (normal maps) | BC5 |
-| other ASTC | BC7 |
-| any of the above below 35 dB PSNR | BC7 of the channels read; if still below, uncompressed and exact |
+| ASTC (every block size), linear | BC7 |
+| ASTC (every block size), sRGB | BC7 sRGB |
 
-No texture is refused. Each record keeps a channel map, which the back end applies on top of the game's own swizzle.
-The host finds a texture's record when the game loads it; see [texture streaming](texture-streaming.md).
+The prepared format follows from the NVN format alone, never from the content. The back end makes a texture that the
+game creates in an ASTC format in the same format, so the game's copies from loaded textures into it fit texel for
+texel. BC7 is the one BC format with ASTC's four 8-bit channels; NVN has no HDR ASTC formats. A copy, buffer copy or
+texel write that would mix ASTC data with another format, or a copy off BC7's 4x4 blocks (possible with 5-, 6- and
+10-texel ASTC blocks), is a strict event.
+
+No texture is refused, and every texture keeps its channels where the source has them. The host finds a texture's record when the game loads it; see [texture streaming](texture-streaming.md).
 
 ## Point the game at the output
 

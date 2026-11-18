@@ -26,7 +26,7 @@ The target is 15 minutes on a 16-thread PC. Measured on a Ryzen 7 5800X3D (16 th
 | Lift and compile | `ounce-lift` as a library (`ounce/lift/src/pipeline.rs`), each partition and generated module compiled as it is made (`ounce/builder/src/lift.rs`), byte for byte the objects of `opt \| clang` with the same flags | 164 s at 16 jobs |
 | Host C | `runtime/*.c`, libopus and the runtime by clang in this process (`ounce/builder/src/host.rs`) | 4 s |
 | Link | lld in this process (`ounce/builder/src/link.rs`), against the prebuilt host and the sysroot; then the labels | 1 s |
-| Textures | `ounce/tex`: every BNTX texture deswizzled, ASTC re-encoded to BCn, packed (`ounce-builder textures`); the romfs copy's texture files written with their texels zeroed | 258 s (fast, the default); 1055 s with `--quality high` (16,000 CPU-s, 2.6 GB peak) |
+| Textures | `ounce/tex`: every BNTX texture deswizzled, ASTC re-encoded to BC7, packed (`ounce-builder textures`); the romfs copy's texture files written with their texels zeroed | 258 s (fast, the default); 1055 s with `--quality high` (16,000 CPU-s, 2.6 GB peak) |
 | Shaders | optional: the game translates its programs ahead of time into the folder's caches | not written |
 
 ## The prepared assets
@@ -37,15 +37,14 @@ it; `ounce/tex/src/store.rs` the format.
 - `ounce-builder textures <out>` writes the store; `build --prepared <dir>` writes `<dir>/tex` after the link.
 - The game description's `[assets]` names what is the game's: the romfs file of its zstd dictionaries and the folders
   the texture step skips.
-- The encoders are bc7enc_rdo's, built into the builder: bc7e (ISPC) for BC7, and for BC4 and BC5 an AVX2 search that
-  gives rgbcx's blocks. The sources are `third_party/bc7enc_rdo`; ISPC, a tool, comes from `work/deps/ispc`
-  (`OUNCE_BC7ENC`, `OUNCE_ISPC`).
+- The encoder is bc7enc_rdo's bc7e (ISPC), built into the builder: every ASTC texture becomes BC7. The sources are
+  `third_party/bc7enc_rdo`; ISPC, a tool, comes from `work/deps/ispc` (`OUNCE_BC7ENC`, `OUNCE_ISPC`).
 - zstd is `ounce/dump`'s (1.5.7, its symbols local). A frame's bytes depend on the zstd version, so a store made with
   another version differs in its packs but not in its content.
 - Files are converted in parallel, largest first, each admitted by the memory gate; the textures, images and bands of
   block rows inside a file run on the same threads.
-- The default settings (fast) are BC7 level 1, BC4 and BC5 radius 1 and zstd 3; `--quality high` is BC7 level 4,
-  radius 5 and zstd 19, with packs 4 % smaller in four times the time.
+- The default settings (fast) are BC7 level 0 (ultrafast) and zstd 3; `--quality high` is BC7 level 4 and zstd 19,
+  with smaller packs and higher PSNR in several times the time.
 - ASTC is always re-encoded: desktop GPUs do not sample it, so the builder does not look for a GPU that does. The records and frames depend on nothing but the settings and the romfs;
   where a frame lies in the packs follows the order files finish. `ounce-builder textures --compare <a> <b>` checks
   two stores field by field and frame by frame.

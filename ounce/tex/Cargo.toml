@@ -2,7 +2,7 @@
 name = "ounce-tex"
 version = "0.1.0"
 edition = "2021"
-description = "The prepared texture store: every BNTX texture of a romfs deswizzled, ASTC re-encoded to BCn, packed"
+description = "The prepared texture store: every BNTX texture of a romfs deswizzled, ASTC re-encoded to BC7, packed"
 publish = false
 
 [dependencies]

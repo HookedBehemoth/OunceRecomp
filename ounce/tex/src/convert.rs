@@ -2,7 +2,7 @@
 
 use crate::bntx::{self, fmt, surface_layout, Tex};
 use crate::native;
-use crate::plan::{choose_target, compared_channels, frames_of, prepare_input, psnr_of, Enc, Kind, Plan, SW_A, SW_B, SW_G, SW_R};
+use crate::plan::{choose_target, compared_channels, frames_of, prepare_input, psnr_of, Kind, Plan, SW_A, SW_B, SW_G, SW_R};
 use rayon::prelude::*;
 
 pub const FLAG_BH1: u16 = 1;
@@ -25,19 +25,15 @@ pub enum Status {
 pub struct Settings {
     /// bc7e level, 0 ultrafast .. 6 slowest
     pub bc7_level: i32,
-    /// BC4/BC5 endpoint search radius
-    pub bc45_radius: i32,
     pub zstd_level: i32,
-    /// below this PSNR (dB) the next rule is tried
-    pub min_psnr: f64,
     pub frame_kb: u64,
 }
 
 impl Settings {
     /// The store's quality.
-    pub const QUALITY: Settings = Settings { bc7_level: 4, bc45_radius: 5, zstd_level: 19, min_psnr: 35.0, frame_kb: 1024 };
-    /// A quick build: a quarter of the time, 4 % larger packs.
-    pub const FAST: Settings = Settings { bc7_level: 1, bc45_radius: 1, zstd_level: 3, min_psnr: 35.0, frame_kb: 1024 };
+    pub const QUALITY: Settings = Settings { bc7_level: 4, zstd_level: 19, frame_kb: 1024 };
+    /// A quick build: bc7e ultrafast (about 4.5 minutes for OoT on 16 threads).
+    pub const FAST: Settings = Settings { bc7_level: 0, zstd_level: 3, frame_kb: 1024 };
 }
 
 /// A texture record of the index, less where its mips and frames are.
@@ -244,14 +240,9 @@ fn encode_plan(b: &[u8], t: &Tex, plan: &Plan, s: &Settings, rec_flags: u16) -> 
             bntx::astc_scan(&lin, &mut hdr);
             let mut rgba = native::astc_decode(&lin, w, h, bw, bhp)?;
             let vals = w as u64 * h as u64 * pairs.len() as u64;
-            if enc == Enc::Raw {
-                prepare_input(&mut rgba, plan);
-                let data = rgba.chunks_exact(4).flat_map(|px| plan.pack.iter().map(move |&c| px[c])).collect();
-                return Ok(Image { data, se: 0.0, vals, worst: None, hdr });
-            }
             let src_rgba = rgba.clone();
             prepare_input(&mut rgba, plan);
-            let blk = native::encode(enc, w, h, &rgba, plan.c0, plan.c1, s.bc7_level, s.bc45_radius);
+            let blk = native::encode(enc, w, h, &rgba, 0, 1, s.bc7_level, 0);
             let dec = native::decode(enc, w, h, &blk);
             let mut se = 0.0;
             for &(sc, dc) in &pairs {
@@ -306,44 +297,17 @@ fn convert_texture(b: &[u8], t: &Tex, index: u32, s: &Settings) -> Result<TexOut
     if stride * t.layers as u64 != t.image_size as u64 || end > b.len() as u64 {
         return Ok(out);
     }
-    let Ok(mut plan) = choose_target(t.format, t.comp_sel, 0) else { return Ok(out) };
-    let mut rules = vec![0u8];
-    if matches!(plan.enc, Some(Enc::Bc4 | Enc::Bc5 | Enc::Bc1)) {
-        rules.push(1);
-    }
-    if plan.enc.is_some() {
-        rules.push(2);
-    }
-    let mut first_psnr = None;
-    let mut res = None;
-    let mut rule = 0;
-    for &r in &rules {
-        rule = r;
-        if r != 0 {
-            plan = choose_target(t.format, t.comp_sel, r)?;
-        }
-        let e = encode_plan(b, t, &plan, s, rec.flags)?;
-        first_psnr.get_or_insert(e.psnr);
-        let done = e.psnr >= s.min_psnr || r == *rules.last().unwrap();
-        res = Some(e);
-        if done {
-            break;
-        }
-    }
-    let e = res.unwrap();
+    let Ok(plan) = choose_target(t.format, t.comp_sel) else { return Ok(out) };
+    let e = encode_plan(b, t, &plan, s, rec.flags)?;
     rec.kind = plan.kind;
     rec.vk_format = plan.vk;
     rec.map = plan.map;
     rec.dropped = plan.dropped;
-    rec.rule = rule;
     rec.flags = e.flags;
     rec.raw_size = e.raw.len() as u64;
     rec.psnr = e.psnr as f32;
     rec.psnr_min = e.psnr_min as f32;
     rec.hdr_blocks = (e.hdr[0] + e.hdr[1]).min(u32::MAX as u64) as u32;
-    if rule != 0 {
-        rec.psnr_first = first_psnr.unwrap() as f32;
-    }
     rec.status = Status::Ok;
     let mut ranges = Vec::with_capacity(e.mips.len());
     for (i, &(o, _)) in e.mips.iter().enumerate() {

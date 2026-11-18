@@ -1,6 +1,6 @@
 //! The converter on synthetic textures, no game data: the block-linear layout against an independent reading of the GOB
 //! rule, the ASTC block scan, the targets by channel swizzle, the frame split, a whole run over a made-up romfs read
-//! back, the fallback to exact texels, and BC7 keeping clear texels clear.
+//! back, and BC7 keeping clear texels clear.
 
 use crate::bntx::{self, block_linear_size, mip_block_height, surface_layout, to_block_linear, to_linear, Tex};
 use crate::convert::{Settings, Status, FLAG_DEDUP};
@@ -96,20 +96,18 @@ fn astc_scan() {
 #[test]
 fn targets() {
     let (astc55u, astc85s) = ((0x2f << 8) | 1, (0x32 << 8) | 6);
-    let t = choose_target(astc55u, [2, 5, 0, 1], 0).unwrap(); // normal map: R and A
-    assert_eq!((t.kind, t.vk, t.c0, t.c1, t.map, t.dropped), (Kind::Bc5, 141, 0, 3, [SW_R, SW_R, SW_R, SW_G], 0b0110));
-    let t = choose_target(astc55u, [2, 2, 2, 2], 0).unwrap();
-    assert_eq!((t.kind, t.vk, t.c0, t.map), (Kind::Bc4, 139, 0, [SW_R; 4]));
-    assert_eq!(choose_target(astc55u, [5, 5, 5, 5], 0).unwrap().c0, 3);
-    let t = choose_target(astc85s, [2, 3, 4, 5], 0).unwrap();
+    let t = choose_target(astc85s, [2, 3, 4, 5]).unwrap();
     assert_eq!((t.kind, t.vk, t.force_alpha, t.map), (Kind::Bc7, 146, false, [SW_R, SW_G, SW_B, SW_A]));
-    let t = choose_target(astc55u, [2, 3, 4, 1], 0).unwrap(); // alpha unused
+    let t = choose_target(astc55u, [2, 3, 4, 1]).unwrap(); // alpha unused
     assert_eq!((t.kind, t.vk, t.force_alpha, t.dropped), (Kind::Bc7, 145, true, 8));
-    let t = choose_target(astc85s, [2, 2, 2, 5], 0).unwrap(); // sRGB luminance-alpha: BC7
+    let t = choose_target(astc85s, [2, 2, 2, 5]).unwrap(); // sRGB luminance-alpha
     assert_eq!((t.kind, t.vk, t.fill), (Kind::Bc7, 146, Some(0)));
     let mut px = [10u8, 20, 30, 40];
     prepare_input(&mut px, &t);
     assert_eq!(px, [10, 10, 10, 40]);
+    let t = choose_target(astc55u, [2, 5, 0, 1]).unwrap(); // normal map: R and A
+    assert_eq!((t.kind, t.vk, t.map, t.used.clone(), t.dropped), (Kind::Bc7, 145, [SW_R, SW_G, SW_B, SW_A], vec![0, 3], 0b0110));
+    assert_eq!(compared_channels(&t), [(0, 0), (3, 3)]);
     for (f, kind, vk) in [
         ((0x1a << 8) | 6, Kind::CopyBc, 134),
         ((0x1f << 8) | 0xa, Kind::CopyBc, 143),
@@ -118,31 +116,27 @@ fn targets() {
         ((0x15 << 8) | 5, Kind::Copy, 97),
         ((0x0f << 8) | 5, Kind::Copy, 122),
     ] {
-        let t = choose_target(f, [2, 3, 4, 5], 0).unwrap();
+        let t = choose_target(f, [2, 3, 4, 5]).unwrap();
         assert_eq!((t.kind, t.vk), (kind, vk), "{f:#x}");
     }
-    assert!(choose_target(0x7701, [2, 3, 4, 5], 0).is_err());
-    let t = choose_target(astc55u, [2, 5, 0, 1], 1).unwrap();
-    assert_eq!((t.kind, t.vk, t.map, t.used.clone()), (Kind::Bc7, 145, [SW_R, SW_G, SW_B, SW_A], vec![0, 3]));
-    let rgba = [SW_R, SW_G, SW_B, SW_A];
-    for (sel, srgb, vk, pack, m) in [
-        ([2, 5, 0, 1], false, 16, vec![0, 3], [SW_R, SW_R, SW_R, SW_G]),
-        ([2, 2, 2, 2], false, 9, vec![0], [SW_R; 4]),
-        ([5, 5, 5, 5], false, 9, vec![3], [SW_R; 4]),
-        ([3, 3, 3, 3], false, 9, vec![1], [SW_R; 4]),
-        ([2, 3, 4, 1], false, 37, vec![0, 1, 2, 3], rgba),
-        ([2, 3, 4, 5], false, 37, vec![0, 1, 2, 3], rgba),
-        ([2, 2, 2, 2], true, 15, vec![0], [SW_R; 4]),
-        ([5, 5, 5, 5], true, 9, vec![3], [SW_R; 4]),
-        ([2, 3, 4, 5], true, 43, vec![0, 1, 2, 3], rgba),
-        ([2, 5, 0, 1], true, 43, vec![0, 1, 2, 3], rgba),
-    ] {
-        let t = choose_target((0x2f << 8) | if srgb { 6 } else { 1 }, sel, 2).unwrap();
-        assert_eq!((t.kind, t.vk, t.pack.clone(), t.map), (Kind::Raw, vk, pack, m), "{sel:?} {srgb}");
-    }
-    assert_eq!(choose_target(astc55u, [2, 5, 0, 1], 2).unwrap().dropped, 0b0110);
-    assert_eq!(choose_target((0x1a << 8) | 1, [2, 3, 4, 5], 2).unwrap().kind, Kind::CopyBc); // (rules only touch ASTC)
+    assert!(choose_target(0x7701, [2, 3, 4, 5]).is_err());
     assert_ne!(SW_ONE, SW_R);
+}
+
+/// Every ASTC format is one VkFormat whatever the texture's channels (BC7, sRGB for sRGB), so a texture the game makes
+/// of that format can hold copies of loaded ones; the swizzle only decides what the encoder may change.
+#[test]
+fn astc_one_format_per_nvn_format() {
+    let sels = [[2, 3, 4, 5], [2, 2, 2, 2], [5, 5, 5, 5], [2, 5, 0, 1], [3, 3, 3, 3], [2, 3, 4, 1], [0, 0, 0, 1]];
+    for hi in 0x2d..=0x3a {
+        for (var, vk) in [(1, 145), (6, 146)] {
+            for sel in sels {
+                let t = choose_target(hi << 8 | var, sel).unwrap();
+                assert_eq!((t.kind, t.vk, t.enc, t.map), (Kind::Bc7, vk, Some(Enc::Bc7), [SW_R, SW_G, SW_B, SW_A]), "{hi:#x} {var} {sel:?}");
+                assert_eq!(t.vk, crate::plan::astc_target(var == 6));
+            }
+        }
+    }
 }
 
 #[test]
@@ -313,14 +307,14 @@ fn write_romfs(romfs: &Path, files: &[(&str, &[Spec])]) {
     }
 }
 
-fn run_store(romfs: &Path, out: &Path, min_psnr: f64) -> crate::run::Stats {
+fn run_store(romfs: &Path, out: &Path) -> crate::run::Stats {
     let admit = |_mb: u64| -> Box<dyn crate::run::Held> { Box::new(()) };
     let progress = |_: &str| {};
     let o = Options {
         romfs: romfs.to_path_buf(),
         out: out.to_path_buf(),
         game: GameFiles { zstd_dictionaries: None, skip_dirs: vec!["Sound".into()] },
-        settings: Settings { bc7_level: 1, bc45_radius: 2, zstd_level: 3, min_psnr, frame_kb: 64 },
+        settings: Settings { bc7_level: 1, zstd_level: 3, frame_kb: 64 },
         jobs: 4,
         pack_limit: 1 << 20,
         only: Vec::new(),
@@ -375,7 +369,7 @@ fn whole_run() {
     write_romfs(&romfs, &files);
     std::fs::create_dir_all(romfs.join("Other")).unwrap();
     std::fs::write(romfs.join("Other/not_a_texture.bin"), b"nothing here".repeat(100)).unwrap();
-    let st = run_store(&romfs, &out, 35.0);
+    let st = run_store(&romfs, &out);
     assert!(st.errors.is_empty() && st.files == 6 && st.bntx_files == 5, "{st:?}");
     let idx = read_index(&out.join("index.bin")).unwrap();
     assert!(idx.n_packs >= 2, "packs roll over at 1 MiB: {}", idx.n_packs);
@@ -393,7 +387,7 @@ fn whole_run() {
             assert_eq!((t.rec.name.as_str(), t.rec.status), (s.name.as_str(), Status::Ok));
             let raw = raw_of(&out, t);
             let (_, bw, bhp, _) = bntx::fmt(s.fmt >> 8).unwrap();
-            let plan = choose_target(s.fmt, s.sel, 0).unwrap();
+            let plan = choose_target(s.fmt, s.sel).unwrap();
             for m in 0..s.mips as usize {
                 let (mo, lb) = t.mips[m];
                 assert_eq!(mo % 4, 0);
@@ -414,60 +408,18 @@ fn whole_run() {
                 }
             }
             if plan.enc.is_some() {
-                assert!(t.rec.psnr >= 35.0 && [139, 141, 146].contains(&t.rec.vk_format), "{:?}", t.rec);
+                assert!(t.rec.psnr >= 35.0 && [145, 146].contains(&t.rec.vk_format), "{:?}", t.rec);
             }
             assert!(t.frames.iter().all(|f| f.raw_size <= 64 << 10));
         }
     }
     let rec = |n: &str| idx.entries.iter().flat_map(|e| &e.textures).find(|t| t.rec.name == n).unwrap();
-    assert_eq!((rec("Nrm").rec.kind, rec("Alb").rec.kind, rec("AO").rec.kind), (Kind::Bc5, Kind::Bc7, Kind::Bc4));
+    assert_eq!((rec("Nrm").rec.kind, rec("Alb").rec.kind, rec("AO").rec.kind), (Kind::Bc7, Kind::Bc7, Kind::Bc7));
     assert_eq!(rec("AO").frames, rec("AO_Copy").frames);
     // (the first in index order holds the frames; the other is flagged)
     assert_eq!((rec("AO_Copy").rec.flags & FLAG_DEDUP, rec("AO").rec.flags & FLAG_DEDUP), (0, FLAG_DEDUP));
     let same = crate::compare::compare(&out, &out).unwrap();
     assert!(same.equal() && same.textures == 8, "{same:?}");
-    let _ = std::fs::remove_dir_all(&d);
-}
-
-#[test]
-fn fallback_to_exact() {
-    let d = tmp("fallback");
-    let (romfs, out) = (d.join("romfs"), d.join("store"));
-    let mut rng = Rng(9);
-    let mut noise = |n: usize| (0..n / 16).flat_map(|_| void_extent([rng.next() as u8, rng.next() as u8, rng.next() as u8, rng.next() as u8], false)).collect();
-    let specs = [
-        spec("NrmHard", (0x2f << 8) | 1, (40, 35, 1, 3, 0), [2, 5, 0, 1], 1, &mut noise),
-        spec("OneHard", (0x2d << 8) | 1, (32, 32, 1, 2, 0), [2, 2, 2, 2], 1, &mut noise),
-        spec("AlbHard", (0x2d << 8) | 6, (32, 20, 2, 2, 0), [2, 3, 4, 1], 5, &mut noise),
-    ];
-    write_romfs(&romfs, &[("Tex/Hard.bntx.zs", &specs[..])]);
-    // (no lossy target reaches 99.5 dB: every one ends exact)
-    let st = run_store(&romfs, &out, 99.5);
-    assert!(st.errors.is_empty());
-    let idx = read_index(&out.join("index.bin")).unwrap();
-    let want = [(16, vec![0, 3]), (9, vec![0]), (43, vec![0, 1, 2, 3])];
-    for ((s, t), (vk, pack)) in specs.iter().zip(&idx.entries[0].textures).zip(want) {
-        assert_eq!((t.rec.status, t.rec.kind, t.rec.rule, t.rec.vk_format), (Status::Ok, Kind::Raw, 2, vk), "{}", s.name);
-        assert!(t.rec.psnr == 99.0 && t.rec.psnr_first < 99.5);
-        let raw = raw_of(&out, t);
-        let (_, bw, bhp, _) = bntx::fmt(s.fmt >> 8).unwrap();
-        for m in 0..s.mips as usize {
-            let (mo, lb) = t.mips[m];
-            let (w, h) = ((s.w >> m).max(1), (s.h >> m).max(1));
-            for l in 0..s.layers as usize {
-                let mut src = native::astc_decode(&s.lin[m * s.layers as usize + l], w, h, bw, bhp).unwrap();
-                let want: Vec<u8> = if s.name == "AlbHard" {
-                    // (the swizzle reads R, G, B: the unused alpha is forced to 255)
-                    src.chunks_exact_mut(4).for_each(|p| p[3] = 255);
-                    src
-                } else {
-                    src.chunks_exact(4).flat_map(|p| pack.iter().map(move |&c| p[c])).collect()
-                };
-                assert_eq!(lb as usize, want.len());
-                assert!(raw[(mo + l as u64 * lb as u64) as usize..][..lb as usize] == want[..], "{} mip {m} layer {l}", s.name);
-            }
-        }
-    }
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -485,7 +437,7 @@ fn bc7_keeps_clear_texels_clear() {
         .collect();
     for (name, rgba) in [("noise", noise), ("stripes", stripes)] {
         let q = Settings::QUALITY;
-        let dec = native::decode(Enc::Bc7, 64, 64, &native::encode(Enc::Bc7, 64, 64, &rgba, 0, 1, q.bc7_level, q.bc45_radius));
+        let dec = native::decode(Enc::Bc7, 64, 64, &native::encode(Enc::Bc7, 64, 64, &rgba, 0, 1, q.bc7_level, 0));
         let left = dec.chunks_exact(4).filter(|p| p[3] != 0).count();
         assert_eq!(left, 0, "BC7, {name} under alpha 0: {left} texels decode with an alpha above 0");
     }
