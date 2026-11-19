@@ -84,9 +84,12 @@ a light wants before its size class, up to 4096. Both change live. The static su
 
 ## Upscaling
 
-Both games keep agl's NDSR stage with its ratio tables (`games/oot/patches/ndsr.c`, `games/dkb/patches/ndsr.c`). Each
-of OoT's networks lists the output-to-input ratios it supports (1.0 and 1.2 up to 3.0), and the stage picks the ratio
-nearest the 3D scale. After the scene, lighting, fog and post effects:
+Both games keep agl's NDSR stage with its ratio tables (`games/oot/patches/ndsr.c`, `games/dkb/patches/ndsr.c`). agl
+ships three networks: `agl_ndsr.pck` (fixed ratios), `agl_ndsr_vr.pck` and `agl_ndsr_vr_light.pck`. "vr" means a
+variable ratio, not a stereo view. OoT's stage always runs `agl_ndsr_vr_light.pck`, because the game's graphics set-up
+asks for that kind of network in every mode, so the patch builds only that network. It takes the render size from the
+3D scale at any ratio, so every scale up to 1.0 has the game's network. After the scene, lighting, fog and post
+effects:
 
 1. The lit colour is copied for anti-aliasing (`color(AA)`) at the render size.
 2. When the render size is the output's, SMAA resolves straight into the frame, and no upscaler runs.
@@ -102,9 +105,9 @@ The upscaler is a choice that can change while the game runs (`runtime/upscale.h
 | bilinear | the host's resample with a tent filter | up to 2.0 |
 | Catmull-Rom | the host's resample with a Catmull-Rom filter, clamped against ringing | up to 2.0 |
 
-The game's network cannot take a frame down, so the settings offer it only at scales up to 1.0. A kind 2 or 3 network
-also runs at ratio 1.0 as the game ships it, a 1:1 pass over SMAA's output; the patch skips it, because it costs about
-1.3 ms a frame at 2560 x 1440.
+The game's network cannot take a frame down, so the settings offer it only at scales up to 1.0. The network also runs
+at ratio 1.0 as the game ships it, a 1:1 pass over SMAA's output; the patch skips it, because it costs about 1.3 ms a
+frame at 2560 x 1440.
 
 Above 1.0, the scene renders at the output size times the 3D scale, and the host's filter takes it down with a kernel
 widened by the ratio, so every rendered pixel counts. The render target pool and the game's memory grow with the

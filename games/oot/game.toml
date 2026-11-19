@@ -37,9 +37,15 @@ main_sha256 = "2591fb99008d0814f8056c3f36b36790048ed857ff0ae2bb3a4c1e37b960a4de"
 [assets]
 zstd_dictionaries = "Pack/ZsDic.pack.zs"
 texture_skip_dirs = ["Sound", "Voice", "TerrainArc"]
-# the kinds of shader archive the patches make unreachable, left out of the shader pack: NDVE, the movies' enhancement
-# network (patches/movie.c plays every movie without it; its 22 compute programs took RADV minutes in the precompile)
-shaders_left_out = ["NDVE"]
+# the kinds of shader archive and the files the patches make unreachable, left out of the shader pack: NDVE, the movies'
+# enhancement network (patches/movie.c plays every movie without it; its 22 compute programs took RADV minutes in the
+# precompile), and agl's NDSR networks but vr_light (patches/ndsr.c builds only the one the game's stage runs; agl_ndsr_vr's
+# four slowest codes took 150-210 s each)
+shaders_left_out = [
+    "NDVE",
+    "Lib/agl/agl_resource.Nin_Ounce_NVN2.release.sarc.zs:agl_ndsr.pck",
+    "Lib/agl/agl_resource.Nin_Ounce_NVN2.release.sarc.zs:agl_ndsr_vr.pck",
+]
 
 # zstd_decompress_sequences' local continuations: `adr x7, <label>` ... `br x7` inside the function, pc: word; the
 # code pointer audit accepts them, ounce/lift/src/plan.rs

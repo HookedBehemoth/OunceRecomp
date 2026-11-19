@@ -42,7 +42,7 @@ The target is 15 minutes on a 16-thread PC. Measured on a Ryzen 7 5800X3D (16 th
 | Host C | `runtime/*.c`, libopus and the runtime by clang in this process (`ounce/builder/src/host.rs`) | 4 s |
 | Link | lld in this process (`ounce/builder/src/link.rs`), against the prebuilt host and the sysroot; then the labels | 1 s |
 | Textures | `ounce/tex`: every BNTX texture deswizzled, ASTC re-encoded to BC7 and BC5, packed (`ounce tool textures`); the romfs copy's texture files written with their texels zeroed | 258 s (fast, the default); 1055 s with `--quality high` (16,000 CPU-s, 2.6 GB peak) |
-| Shaders | the shader pack from the romfs (`ounce/shaders`), then the game's `--precompile`: the renderer translates and compiles every program into the folder's caches ([shaders](#shaders)) | pack 4 s; precompile 280 to 370 s at 16 threads, cold (0.1 s when current) |
+| Shaders | the shader pack from the romfs (`ounce/shaders`), then the game's `--precompile`: the renderer translates and compiles every program into the folder's caches ([shaders](#shaders)) | pack 4 s; precompile about 165 s at 16 threads, cold (0.1 s when current) |
 
 ## The prepared assets
 
@@ -386,13 +386,16 @@ The last step of a game folder's build makes its shaders ahead of the game, so t
    at a draw; the pass and the skinning are chosen per draw, so every one of them), and every program of the other
    shader archives is added (agl's, its networks, the movie upscaler's, the particle sets' and layouts'). The pack,
    `shaders.pack` beside the executable, holds each stage's control section and code once, in the seed format the
-   shader tools read. It depends on the romfs alone: OoT 37,596 programs, 485 MB, in 5 s; it is made again when the
+   shader tools read. It depends on the romfs alone: OoT 37,552 programs, 483 MB, in 5 s; it is made again when the
    files it reads change (`shaders.pack.key`).
 
-   A kind of archive that the game's patches make unreachable is left out (`game.toml`'s `[assets].shaders_left_out`).
-   OoT leaves out NDVE, the movies' enhancement network: `games/oot/patches/movie.c` passes no NDVE resource, and the
-   network is built only from that resource. The pack lists the codes it leaves out, and a game that sets one all the
-   same logs an error and raises a strict event. DKB has no NDVE. `shaders.pack.origins`, beside the pack, names each
+   A kind of archive or a romfs file that the game's patches make unreachable is left out (`game.toml`'s
+   `[assets].shaders_left_out`: an archive's magic, or a path, `<file>:<member>` for a member of a SARC). An entry that
+   covers no program stops the build. OoT leaves out NDVE, the movies' enhancement network:
+   `games/oot/patches/movie.c` passes no NDVE resource, and the network is built only from that resource. It also leaves
+   out two of agl's three NDSR networks, `agl_ndsr.pck` and `agl_ndsr_vr.pck`: the game's stage only ever runs
+   `agl_ndsr_vr_light.pck`, and `games/oot/patches/ndsr.c` builds only that one. The pack lists the codes it leaves
+   out, and a game that sets one all the same logs an error and raises a strict event. DKB has no NDVE. `shaders.pack.origins`, beside the pack, names each
    code's archive and file, so a code key from a log can be traced to its source.
 2. **The precompile**: the build runs the game with `--precompile`. Nothing of the game runs: the renderer makes its
    device, then on every core makes each program of the pack as its first draw into float targets or its first
@@ -414,10 +417,11 @@ and the key of its binary, no SPIR-V. A variant whose binary is missing or refus
 Each cache keeps an index beside it (`<file>.idx`: every record's key, offset and size), so a start reads under 2 MB
 instead of the head of every record.
 
-Measured for OoT (Ryzen 7 5800X3D, RX 6950 XT, RADV): 37,596 programs (33,490 graphics, 4,106 compute) made with none
-failed in 280 to 400 s cold. Translation alone takes about 20 s; the rest is RADV, and the wall time is set by the
-networks' compute programs (matrix multiplies in software). Leaving NDVE out removed the slowest one (4 minutes) but
-not the wall time: four of `agl_ndsr_vr.pck`'s programs take 2.5 to 3.5 minutes each while the other cores are busy. The caches are then
+Measured for OoT (Ryzen 7 5800X3D, RX 6950 XT, RADV): 37,552 programs made with none failed in about 165 s cold.
+Translation alone takes about 20 s; the rest is RADV. The networks' compute programs are the slowest (matrix
+multiplies in software): leaving NDVE out removed one of 4 minutes, and leaving out the two NDSR networks the game
+never runs removed `agl_ndsr_vr.pck`'s four of 2.5 to 3 minutes (274 s to 164 s cold). The slowest left,
+`agl_ndsr_vr_light.pck`'s, take under 15 s. The caches are then
 89 MB of programs, 4 MB of compute programs and 385 MB of driver binaries (the program cache was 4.2 GB with SPIR-V). A
 Kokiri boot from such a folder translates no compute program (762 variants of 733 codes from the cache) and 27
 graphics variants (other colour target types).

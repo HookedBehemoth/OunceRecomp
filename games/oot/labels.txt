@@ -395,8 +395,11 @@
 812c4f00 gfx_shader_finalize              # work/assets/native/shader-stream.md: nvnProgramFinalize
 812c42c0 gfx_shader_initialize            # work/assets/native/shader-stream.md, work/assets/native/engine-materials.md: nn::gfx Shader::Initialize (NVN2)
 81503ce0 ndsr_networks_init               # work/assets/native/shader-stream.md: NDSR networks (InitializeFromBuilder)
-80f71360 ndsr_networks_load               # games/oot/patches/ndsr.c: agl's resource set-up looks up agl_ndsr.pck, agl_ndsr_vr.pck, agl_ndsr_vr_light.pck in the agl archive and builds a network from each it finds (-1: left out, its slot null)
+80f71360 ndsr_networks_load               # games/oot/patches/ndsr.c: agl's resource set-up looks up agl_ndsr.pck, agl_ndsr_vr.pck, agl_ndsr_vr_light.pck in the agl archive and builds a network from each it finds into the next free slot (-1: not there, no slot); OoT's patch answers -1 for the first two
 80f718a0 ndsr_network_build               # games/oot/patches/ndsr.c: one network from its .pck (f_80f71a00, then its ratio table: out/in of each layer config, a leading 1.0 for kind 1)
+80f719c0 ndsr_config_ratio                # games/oot/patches/ndsr.c: a network's layer config's (in, out) ratio terms, byte +0x996 of its 0x210 entry: low nibble + 1, high nibble + 1
+80cf8cc0 ndsr_layer_params_init           # games/oot/patches/ndsr.c: the "aglndsr" layer's parameters: enable +0x70, view_enable_mask +0x90, upscale_ratio +0xb0, two_step_upscale_ratio_threshold +0xd0, vr_upscale_ratio "倍率 (dynamic ratio)" +0xf0, vr_enable_dithering +0x110, vr_sharpening_amount +0x130 (read by ndsr_stage_update)
+80b64170 gfx_scene_ext_setup              # games/oot/patches/ndsr.c: gfx_system_init's set-up of the game's scene module from System/GameGraphics/ModelSceneExtensionParam/Default; ends by turning NDSR on (+0x11a9) and writing ratio 12/7 and request 2 (+0x11ac, +0x11b0: the kind 3 network) unconditionally
 80f71a00 ndsr_network_setup               # games/oot/patches/ndsr.c: "SMAA_For_NDSR" library set-up of one network: its pools and the three builder passes (ndsr_networks_init)
 809eafc0 agl_resource_init                # games/oot/patches/ndsr.c: agl's resource archive set-up; the NDSR network holder at +0x88 (ndsr_networks_load)
 811ef5b0 config_create_ndsr_get           # games/oot/patches/ndsr.c: gsys::ModelSceneConfigParam's CreateNdsr (+0x588, set flag +0x618, inherited through +0x10)
@@ -411,8 +414,8 @@
 80675290 ndsr_network_kind                # games/oot/patches/ndsr.c: a network's kind 0..3, byte +0x997 >> 4 through g_83e7fcd8 (OoT's: 1, 2, 3)
 80675040 ndsr_stage_ratio_update          # games/oot/patches/ndsr.c: the current entry's ratio (+0x10), scale (+0x14) and network flag (+0x18: kinds 2, 3 always, kind 1 above ratio 1.0)
 806752c0 ndsr_network_out_size            # the output size a kind 3 network gives for an input size (its layer configs +0x8e8, 0x210 each, count +0x29e8) # ?
-80ea3470 ndsr_stage_settings              # games/oot/patches/ndsr.c, docs/direct/render-targets.md: display_base_resolution's tail: the main scene's stage set from the scene module (+0x11a9 NDSR on, +0x11b0 network request, +0x11ac, +0x11b4); no check that the stage exists
-80ea36f0 ndsr_stage_pick_network          # games/oot/patches/ndsr.c: the stage's network (+0x10) by kind and request (0: kind 1, 1: kind 2, 2: kind 3; -1 none)
+80ea3470 ndsr_stage_settings              # games/oot/patches/ndsr.c, docs/direct/render-targets.md: display_base_resolution's tail: the main scene's stage set from the scene module (+0x11a9 NDSR on, +0x11ac ratio, +0x11b0 network request, +0x11b4 param, +0x11b8 entry flag); no check that the stage exists
+80ea36f0 ndsr_stage_pick_network          # games/oot/patches/ndsr.c: the stage's network (+0x10): the first slot whose kind the request asks for (1: kind 2, 2: kind 3, else kind 1; -1 none)
 80ea3550 ndsr_stage_enable_set            # games/oot/patches/ndsr.c: the stage's byte +0 (no stage check)
 80ea3440 ndsr_stage_entry_flag_set        # games/oot/patches/ndsr.c: the current entry's +8 (no stage check)
 80ea3560 ndsr_stage_entry_param_set       # games/oot/patches/ndsr.c: the current entry's +0xc (no stage check)
@@ -426,9 +429,9 @@
 802711b0 ndsr_layer_draw                  # games/oot/patches/ndsr.c: the layer's frame pass: f_80271420 on its stage
 80271420 ndsr_stage_pass                  # games/oot/patches/ndsr.c: SMAA into the output (pass_smaa_edge), or with the entry's network flag pass_smaa_output (patched: the flag is whether the render size differs from the output's)
 83518ac0 ndsr_stage_pass_scaled           # games/oot/patches/ndsr.c: the same when the entry's scale is not 1.0 (patched as ndsr_stage_pass)
-80271a60 ndsr_network_run_kind2           # games/oot/patches/ndsr.c: a kind 2 network's evaluation: picks a layer config by size, texture and image handles, f_81504020 (or the host's upscaler, by the choice)
-81502210 ndsr_network_run_a               # games/oot/patches/ndsr.c: a network's evaluation (or the host's upscaler, by the choice) # ?
-815022c0 ndsr_network_run_b               # games/oot/patches/ndsr.c: a network's evaluation with the entry's param (or the host's upscaler, by the choice) # ?
+80271a60 ndsr_network_run_kind3           # games/oot/patches/ndsr.c: a kind 3 network's evaluation (pass_smaa_output's call when the picked network is kind 3, OoT's vr_light): picks a layer config by size, texture and image handles, f_81504020 (or the host's upscaler, by the choice)
+81502210 ndsr_network_run_kind1           # games/oot/patches/ndsr.c: a kind 1 network's evaluation (agl_ndsr.pck; left out in OoT): the layer config (0xb0 each from +0x8e8) at the block's ratio index x3 + format class, f_81503e00
+815022c0 ndsr_network_run_kind2           # games/oot/patches/ndsr.c: a kind 2 network's evaluation (agl_ndsr_vr.pck; left out in OoT): the layer config at the block's ratio index x3 + format class, with the entry's dithering byte (+0x48) and sharpening (+0x4c), f_815042b0
 80860c80 res_ainb_node_make               # tools/dump/rstb.py: allocates a 0x68 AINB object from the resource's heap (its size table entry) and writes it unchecked
 821057e0 ndve_output_view                 # work/assets/native/block-linear.md: NDVE_Output view format
 806569a0 shader_program_create            # work/assets/native/shader-stream.md: agl sharcb programs: nvnProgramSetShaders
@@ -461,7 +464,7 @@
 836cf4b0 gfx_graphics_init                # games/oot/patches/oot_probes.c: the graphics init
 80941b20 gfx_memory_pool_finalize_b       # docs/direct/texture-streaming.md: finalizes a Replace request's pool # ? role from the call only
 80792e30 gfx_memory_pool_init             # work/assets/native/shader-stream.md, work/assets/native/asset-loading.md: nn::gfx MemoryPool init (in-place pools: bfsha, BNSH, BFRES)
-80eeb4b0 gfx_module_init_register         # work/assets/native/engine-layers.md: the game's gfx module init: registers pipeline hook listeners
+80eeb4b0 gfx_module_init_register         # work/assets/native/engine-layers.md: the game's gfx module init: registers pipeline hook listeners; the NDSR defaults: request 1, ratio 1.5, param 2.5 (+0x11b0, +0x11ac, +0x11b4; gfx_scene_ext_setup overwrites the first two)
 80792df0 gfx_res_texture_file             # work/assets/native/asset-path.md: the ResTextureFile of a ui2d file
 831dd780 gfx_system_init                  # docs/direct/texture-streaming.md, work/assets/native/engine-layers.md: gfx system init
 831dfe10 gfx_system_update                # docs/direct/texture-streaming.md: calls the texture per-frame update
