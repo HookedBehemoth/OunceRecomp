@@ -171,6 +171,30 @@ jobs:
         with:
           name: lift-${{ matrix.game }}
           path: work/ci
+      # (gh-pages holds the charts and nothing else, in a history of its own: github-action-benchmark makes a missing
+      # branch from the checked-out commit, the whole repository. A branch holding anything but .nojekyll,
+      # lift/data.js and lift/index.html is made again as one commit of those, the charts' data kept; in a new
+      # repository, since a shallow one may not push)
+      - name: gh-pages holds only the charts
+        if: steps.numbers.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          old="$RUNNER_TEMP/pages-old" new="$RUNNER_TEMP/pages"
+          trap 'rm -rf "$old" "$new"' EXIT
+          git init -q "$old" && git init -q -b gh-pages "$new"
+          mkdir -p "$new/lift" && touch "$new/.nojekyll"
+          if git -C "$old" fetch -q --depth 1 "$remote" gh-pages; then
+            if [ "$(git -C "$old" ls-tree -r --name-only FETCH_HEAD | grep -vx -e .nojekyll -e lift/data.js -e lift/index.html)" = "" ]; then exit 0; fi
+            for f in lift/data.js lift/index.html; do
+              git -C "$old" cat-file -e "FETCH_HEAD:$f" 2>/dev/null && git -C "$old" show "FETCH_HEAD:$f" > "$new/$f"
+            done
+          fi
+          git -C "$new" add -A
+          git -C "$new" -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -q -m "the lift profile's charts"
+          git -C "$new" push -q --force "$remote" gh-pages
       - if: steps.numbers.outcome == 'success'
         uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
         with:

@@ -70,6 +70,10 @@ enable GitHub Pages once: **Settings > Pages > Build and deployment**, source **
 `gh-pages`, folder `/ (root)`. The charts are then at `https://<owner>.github.io/<repository>/lift/`. The first push
 to `master` after the setup creates the branch.
 
+Only CI writes `gh-pages`, and the branch holds the charts only: `lift/data.js`, `lift/index.html` and an empty
+`.nojekyll`, in a history of its own that shares no commit with `master`. A missing branch, or one holding anything
+else, is made again by `lift-history` before it adds the numbers, keeping the charts' data it had.
+
 Every lift profile run, a pull request's too, also writes its numbers, and the comparison with the baseline, to the
 job's summary.
 
