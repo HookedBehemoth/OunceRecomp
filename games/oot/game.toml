@@ -24,7 +24,7 @@ patches = [
     "patches/rt_ids.c", "patches/sky_lut.c", "patches/tex_dedup.c", "patches/texdata.c",
     "patches/eng_jobs.c", "patches/mouse_native.c", "patches/nn_zstd.c", "patches/oot_probes.c", "patches/prompts.c",
     "patches/rt_slots.c", "patches/hooks.c",
-    "patches/frame_sleep.c", "patches/frame_counters.c", "patches/frame_rate.c", "patches/settings.c",
+    "patches/frame_sleep.c", "patches/frame_counters.c", "patches/frame_rate.c", "patches/option_rows.c",
 ]
 
 # the main module's build id and the SHA-256 of exefs/main: another dump stops the lift and the build

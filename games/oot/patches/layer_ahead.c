@@ -1,4 +1,4 @@
-/* Game patch (on unless HOS_LAYER_AHEAD=0): the long layer of calc stage C starts with the render-job phase instead of after it
+/* Game patch: the long layer of calc stage C starts with the render-job phase instead of after it
    (docs/direct/jobs.md, docs/direct/frame-loop.md).
 
    Stage C's task graph opens the layer-list phase (six nodes of kind 0x8800) only after every render-job loop (kind
@@ -26,14 +26,6 @@
 
 uint64_t hos_tls_value(uint32_t slot);   /* hos_thread.c */
 
-static int on = -1;
-static int enabled(void) {
-    if (on < 0) {
-        const char *e = getenv("HOS_LAYER_AHEAD");
-        on = !e || atoi(e) != 0;
-    }
-    return on;
-}
 
 static struct { volatile int64_t runs, not_layer, skip_thread, other_caller; } n;
 
@@ -57,7 +49,6 @@ static uint64_t job_lists(uint32_t *nl) {
 
 /* (games/oot/patches/eng_jobs.c) the recorder took the entry whose range is at x5 (entry + 0x18), recorded or not */
 void layer_ahead_job_done(uint64_t range, uint64_t lr) {
-    if (!enabled()) return;
     if (lr != 0x8008154cull) os_atomic_inc(&n.other_caller);   /* (not f_8007fe60's job loop: f_80083960's twin) */
     uint32_t nl;
     const uint64_t arr = job_lists(&nl);
@@ -207,7 +198,6 @@ static uint32_t worker_index(void) {
 /* (an At row in f_8007fe60, the job loop, on the TBZ's fall-through: sp the loop's, s its scheduler record from
    [sp + 0x48]) */
 PATCH_AT(0x800809d0, word(0xb5004ee8), before, none, layer_ahead_run, guest(computed), sp, as(ld(sp, 0x48), s)) {
-    if (!enabled()) return;
     order_jobs();
     if (!s || !hos_guest_range(s + 0xd0, 8)) return;
     const uint64_t w = G64(s + 0xd0);

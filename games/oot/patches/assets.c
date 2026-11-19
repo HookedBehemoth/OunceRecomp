@@ -1,8 +1,8 @@
 /* The host's side of prepared assets for the direct back end (the hooks are
    the ones traced in work/assets/native/asset-path.md 3.4 and 7.3, on branch agent/assets1). Direct mode only
-   (HOS_DBG=noassets turns every patch here off, for a before/after).
+   (debug.noassets turns every patch here off, for a before/after).
 
-   The store: HOS_PREPARED=<folder> (default the game folder's prepared/, which every ounce build makes): <folder>/tex is
+   The store: prepared=<folder> (default the game folder's prepared/, which every ounce build makes): <folder>/tex is
    the texture store the back end maps (gpu_assets_open).
 
    Texture loads (agl::TextureData), each tied to its BNTX record and handed to the back end (gpu_asset_load) before the
@@ -53,18 +53,10 @@ static volatile int64_t n_loads, n_load_skipped, n_load_bytes, n_inplace, n_rebi
     n_tile_kept_given, n_tile_kept_other;
 
 static bl_stats tiles_bl;
-static int dbg_has(const char *name) {
-    const char *d = getenv("HOS_DBG");
-    if (!d) return 0;
-    const size_t n = strlen(name);
-    for (const char *p = d; (p = strstr(p, name)); p += n)
-        if ((p == d || p[-1] == ',') && (p[n] == 0 || p[n] == ',' || p[n] == ':')) return 1;
-    return 0;
-}
 
 static int on_ = -1;
 int assets_on(void) {
-    if (on_ < 0) on_ = rx_direct() && !dbg_has("noassets");
+    if (on_ < 0) on_ = rx_direct() && !setting_bool(SET_DBG_NOASSETS);
     return on_;
 }
 
@@ -74,8 +66,8 @@ static const char *prepared_dir(void) {
     static int done;
     if (done) return prepared[0] ? prepared : NULL;
     done = 1;
-    const char *e = getenv("HOS_PREPARED");
-    if (e && *e) snprintf(prepared, sizeof prepared, "%s", e);
+    const char *e = setting_str(SET_PREPARED);
+    if (*e) snprintf(prepared, sizeof prepared, "%s", e);
     else {   /* (the game folder's prepared/: ounce build makes it) */
         char exe[1024];
         const int n = os_exe_path(exe, sizeof exe);
@@ -85,7 +77,7 @@ static const char *prepared_dir(void) {
     }
     char real[1024];
     if (realpath(prepared, real)) snprintf(prepared, sizeof prepared, "%s", real);
-    hos_log("assets: the prepared store: %s (HOS_PREPARED)", prepared);
+    hos_log("assets: the prepared store: %s (prepared)", prepared);
     return prepared;
 }
 
@@ -121,7 +113,7 @@ static void mem_line(void *arg) {
                 tiles_bl.max_ns / 1e6, (long long)n_tiles_unconv,
                 (long long)n_tile_notex, (long long)n_tile_badsite, (long long)n_tile_held, (long long)n_tile_held_max,
                 (long long)n_tile_dropped, (long long)n_tile_kept_given, (long long)n_tile_kept_other, (long long)n_glyphs, (long long)n_glyph_notex,
-                assets_on() ? "" : " (HOS_DBG=noassets: the patches are off)");
+                assets_on() ? "" : " (debug.noassets= the patches are off)");
         if (assets_on()) {
             char b[512];
             texdata_line(b, sizeof b);
@@ -136,13 +128,13 @@ static int store_ok;
 static void start(void) {
     os_thread_release(os_thread_start(mem_line, NULL, 0, "assets mem"));
     if (!assets_on()) return;
-    assets_tilelog = dbg_has("tilelog");
+    assets_tilelog = setting_bool(SET_DBG_TILELOG);
     const char *d = prepared_dir();
     char tex[1100];
     snprintf(tex, sizeof tex, "%s/tex", d ? d : ".");
     store_ok = rx_direct()->assets_open(tex) > 0;
 }
-static int ready(void) {   /* (the memory line runs, and with the patches on (not HOS_DBG=noassets), the store is open) */
+static int ready(void) {   /* (the memory line runs, and with the patches on (not debug.noassets), the store is open) */
     if (!os_atomic_load(&started)) {   /* (once, and the others wait until it is done) */
         os_mutex_lock(&start_lock);
         if (!started) start(), os_atomic_store(&started, 1);
@@ -196,7 +188,7 @@ static int index_in(uint64_t bntx, uint64_t brti, const char *nm, uint32_t nl, u
 
 /* TextureData::loadImage_(td, ctx, src): the game's load (orig), without src when the back end takes the texels from
    the store */
-void diag_nodata_load(uint64_t td, uint64_t src, uint64_t lr);   /* (M4g: HOS_DBG=nodata, either back end) */
+void diag_nodata_load(uint64_t td, uint64_t src, uint64_t lr);   /* (M4g: debug.nodata, either back end) */
 static int load_image(uint64_t td, uint64_t src);
 PATCH_FUNC(0x80798690, word(0xd503237f), body(0xd3402c5c84ac23f3), aapcs, x0, assets_load_image,
            orig, as(x0, td), as(x1, ctx), as(x2, src), as(x30, lr)) {
@@ -338,7 +330,7 @@ int game_skips_packaged_texels(uint64_t bytes) {
 }
 
 /* The texture data pool (pool 127, 2.4 GB) is made by agl::TextureDataMgr, whose nvnMemoryPoolInitialize returns to
-   0x80f6cb20 (HOS_NVN_LOG_POOLS=1, run m4f_pl_d: the only pool made from there). The direct back end takes every texel of
+   0x80f6cb20 (nvn.log_pools, run m4f_pl_d: the only pool made from there). The direct back end takes every texel of
    it from the store and never reads it, so its layer 0 leaves it unbound: named here, at its creation, before layer 0
    binds pools (vk_pools.cpp layer0_pool_native). The manager makes more than one (Kokiri: 2432 MB at boot, 201 MB and
    2 MB at the scene load): each is named. find_heap still names the asset heap's pool (127) to the asset path, as before. */
@@ -448,7 +440,7 @@ static void tile_upload_as(uint32_t source, const nvn_tex *t, const uint8_t *src
 void assets_texture_init(const void *tex) {
     const nvn_tex *t = (const nvn_tex *)tex;
     if (!t->gpu) return;
-    if (assets_tilelog && t->d.width == 260) {   /* HOS_DBG=tilelog: tile-sized textures initialized */
+    if (assets_tilelog && t->d.width == 260) {   /* debug.tilelog= tile-sized textures initialized */
         extern volatile int64_t hos_present_count;
         hos_log("tilelog: present %lld init %#llx %ux%ux%u format %#x serial %llu", (long long)hos_present_count,
                 (unsigned long long)t->gpu, t->d.width, t->d.height, t->d.depth, t->d.format, (unsigned long long)t->serial);
@@ -482,9 +474,9 @@ PATCH_AT(0x80c17580, word(0x9a8803e1), after, x2, assets_tile, as(x0, dst), as(x
         return size;
     }
     nvn_tex t;
-    {   /* HOS_DBG=tilelog (diagnosis): every tile memcpy, where it went */
+    {   /* debug.tilelog (diagnosis): every tile memcpy, where it went */
         static int tl = -1;
-        if (tl < 0) tl = dbg_has("tilelog");
+        if (tl < 0) tl = setting_bool(SET_DBG_TILELOG);
         if (tl) {
             extern volatile int64_t hos_present_count;
             nvn_tex lt;

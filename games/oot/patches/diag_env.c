@@ -1,10 +1,10 @@
-/* HOS_DBG=envlog (diagnosis only, either back end): what f_80357060 reads and writes, every 300 presents.
+/* debug.envlog (diagnosis only, either back end): what f_80357060 reads and writes, every 300 presents.
 
    f_80357060 (x0 = its object O) reads three values the GPU summed into small buffers ([O+0x48] + [[O+0x40]]+4,
    [O+0x1f0] + [[O+0x1e8]]+4 at +0xc, [O+0x280] + [[O+0x278]]+4), folds each into a running average (O+0x32c, +0x34c,
    +0x36c), and writes the sky / ambient pass's 16-float uniform: the sun direction, and words 11-14 from the environment
    block L = [[[[0x84c9e740]]+0x1e8]+0xc98] (+0x9c0..0x9cc) times [[0x84c9e740]+0x1e8]+0xdac. This logs those inputs, the
-   averages and L's words, so the two back ends can be compared. With HOS_DBG unset nothing
+   averages and L's words, so the two back ends can be compared. Without debug.envlog nothing
    here runs. */
 #include "hos.h"
 #include <stdlib.h>
@@ -16,9 +16,7 @@ extern volatile int64_t hos_present_count;
 static int envlog_on(void) {
     static int on = -1;
     if (on < 0) {
-        const char *d = getenv("HOS_DBG");
-        const char *p = d ? strstr(d, "envlog") : NULL;
-        on = p && (p == d || p[-1] == ',') && (p[6] == 0 || p[6] == ',' || p[6] == ':');
+        on = setting_bool(SET_DBG_ENVLOG);
     }
     return on;
 }
@@ -64,10 +62,10 @@ PATCH_AT(0x80357060, word(0xd503237f), before, none, diag_env, as(x0, o), as(x1,
             gf(l + 0x960), gf(l + 0x980), gf(l + 0x9a0), gf(l + 0xaf0), gf(l + 0x6c0), gf(l + 0x6c4), gf(l + 0x6c8));
 }
 
-/* (HOS_DBG=capture, diagnosis) texdata_serialize_jpg right after its texdata_copy_to_buffer: the read-back's mean byte */
+/* (debug.capture, diagnosis) texdata_serialize_jpg right after its texdata_copy_to_buffer: the read-back's mean byte */
 PATCH_AT(0x80bd1eb0, word(0x71000b7f), after, none, diag_capture, as(x23, buf), as(w27, h)) {
     static int on = -1;
-    if (on < 0) on = hos_dbg_item("capture");
+    if (on < 0) on = setting_bool(SET_DBG_CAPTURE);
     if (!on || !buf || !hos_guest_range(buf, (uint64_t)h * 543 * 4)) return;
     const uint8_t *p = (const uint8_t *)GP(buf);
     uint64_t sum = 0, nz = 0, n = (uint64_t)h * 543 * 4;

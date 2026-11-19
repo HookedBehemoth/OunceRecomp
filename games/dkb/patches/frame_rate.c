@@ -51,7 +51,7 @@ PATCH_AT(0x80224698, word(0x2944266d), after, w9, dkb_fps_top, as(w9, top), as(x
 static double clock_60ths;
 double game_clock(void) { return clock_60ths; }
 
-/* HOS_FPS_LOG=1: the controller's rate and bounds and the game's speed (game time over wall time), every 300 presents */
+/* log.fps: the controller's rate and bounds and the game's speed (game time over wall time), every 300 presents */
 void game_frame_timing(int64_t now) {
     float step;
     memcpy(&step, GP(0x82514b30), 4);
@@ -60,7 +60,7 @@ void game_frame_timing(int64_t now) {
     static long long n;
     static double clock_before;
     static int64_t at_before;
-    if (log_on < 0) log_on = getenv("HOS_FPS_LOG") != NULL;
+    if (log_on < 0) log_on = setting_bool(SET_LOG_FPS);
     if (!log_on || ++n % 300) return;
     const uint64_t c = controller;
     if (at_before && now > at_before) {

@@ -11,7 +11,7 @@
    bytes and the inline key names every recorder key with the same bytes. An inline pass no recorder ever asked for is
    the game's own inline pass, left alone.
 
-   Check that it applies: the 600-present line "direct patch passes" (HOS_DBG=logpatch) and the back end's "jobs a
+   Check that it applies: the 600-present line "direct patch passes" (debug.logpatch) and the back end's "jobs a
    frame" line. */
 #include "patches.h"
 #include <string.h>

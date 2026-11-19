@@ -1,4 +1,4 @@
-/* (patch) Native mouse look (the Insert menu's "Mouse camera", off by default; HOS_MOUSE_NATIVE=1 or 0 overrides it):
+/* (patch) Native mouse look (mouse_camera=native, off by default):
    the captured mouse turns the player camera's own yaw and pitch, in degrees, with no dead zone, no response curve, no
    smoothing and no top speed, in place of the mouse as the right stick (nn_hid.c's mouse_stick).
 
@@ -19,7 +19,7 @@
    right stick is left alone); otherwise (the pause menu, cutscenes with another camera, a build the patch did not find
    its place in) it is the right stick as before.
 
-   The sensitivity is the mouse's (the menu's Mouse sensitivity, - and =): 0.1 degrees a count at 1. HOS_MOUSE_INVERT_Y=1
+   The sensitivity is the mouse's (the menu's Mouse sensitivity, - and =): 0.1 degrees a count at 1. mouse_invert_y
    or the menu's Invert mouse vertical flips up and down. */
 #include "hos.h"
 #include <math.h>
@@ -31,7 +31,6 @@
 
 int hos_mouse_take(int32_t *dx, int32_t *dy);                                   /* runtime/media/display_sdl.c */
 void hos_mouse_give_back(int32_t dx, int32_t dy);                               /* runtime/media/display_sdl.c */
-int rx_option(int id, int otherwise);
 extern double hos_mouse_sens;
 
 /* the player camera, the fields used here (may_alias: the lifted code reaches them through other types, and the host's C
@@ -56,19 +55,10 @@ static volatile int64_t last_camera;
 static long long applied, cameras_seen;
 
 
-/* the menu's Mouse camera (option 6), or HOS_MOUSE_NATIVE */
-static int native_on(void) {
-    static const char *env;
-    static int looked;
-    if (!looked) looked = 1, env = getenv("HOS_MOUSE_NATIVE");
-    return env ? atoi(env) != 0 : rx_option(6, 0);
-}
+/* mouse_camera set to native */
+static int native_on(void) { return setting_int(SET_MOUSE_CAMERA) == 1; }
 
-static int invert_y(void) {
-    static int env = -1;
-    if (env < 0) env = getenv("HOS_MOUSE_INVERT_Y") != NULL;
-    return env || rx_option(8, 0);   /* (the menu's Invert mouse vertical) */
-}
+static int invert_y(void) { return setting_bool(SET_MOUSE_INVERT_Y); }
 
 /* a camera's angles as the game keeps them: limits in order within +-90, angles finite */
 static int looks_like_camera(const OotPlayerCamera *cam) {
@@ -122,7 +112,7 @@ PATCH_AT(0x80644c80, word(0xd503237f), after, none, hos_mouse_camera, as(x0, cam
    its motion (hos_mouse_camera), -1 if no player camera runs now (the right stick takes it) */
 int game_mouse_camera(void) {
     static int said;
-    if (!said) said = 1, hos_log("mouse native: on (the menu's Mouse camera, or HOS_MOUSE_NATIVE)");
+    if (!said) said = 1, hos_log("mouse native: on (the menu's Mouse camera, or mouse_camera=native)");
     if (hos_now_ns() - os_atomic_load(&last_hook_ns) >= LIVE_NS) return -1;
     int32_t dx, dy;
     const int captured = hos_mouse_take(&dx, &dy);   /* (only to know the capture: the motion is the camera's) */

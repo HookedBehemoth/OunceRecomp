@@ -14,10 +14,10 @@ PATCH_AT(0x80a88300, word(0x1e38000c), instead, w12, hos_frame_whole, as(add(x19
     os_mutex_lock(&frame_whole_lock);
     const uint32_t whole = frame_whole(&frame_whole_state, at, amount, __atomic_load_n(&hos_frame_seconds_bits, __ATOMIC_RELAXED) != 0);
     os_mutex_unlock(&frame_whole_lock);
-    {   /* HOS_DBG=whole (diagnostic): the first calls, and a count every 600 (which counters, what they took) */
+    {   /* debug.whole (diagnostic): the first calls, and a count every 600 (which counters, what they took) */
         static int on = -1;
         static volatile long calls;
-        if (on < 0) on = hos_dbg_item("whole");
+        if (on < 0) on = setting_bool(SET_DBG_WHOLE);
         if (on) {
             const long n = __atomic_add_fetch(&calls, 1, __ATOMIC_RELAXED);
             if (n <= 8 || n % 600 == 0)

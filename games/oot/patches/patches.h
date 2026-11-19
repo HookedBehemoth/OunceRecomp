@@ -4,7 +4,7 @@
 #include "renderer.h"
 #include "game_hooks.h"
 
-/* assets.c : the host's asset patches are on (direct mode, and not HOS_DBG=noassets) */
+/* assets.c : the host's asset patches are on (direct mode, and not debug.noassets) */
 int assets_on(void);
 /* assets.c : the game's block-linear storage bytes for a texture (n bytes, its whole storage), level 0 made
    packed rows and uploaded to its image, timed into st. 0: n is not the storage's size or the layout is not one to
@@ -25,7 +25,7 @@ void texdata_line(char *out, size_t cap);
 void game_pool_made(uint64_t gpu, uint64_t size);
 /* nvn_native.c nvnTextureInitialize, after the back end made its image: terrain tiles given for its storage before it */
 extern volatile long assets_tiles_pending;
-extern volatile long assets_tilelog;   /* (M6f: HOS_DBG=tilelog, a diagnosis) */
+extern volatile long assets_tilelog;   /* (M6f: debug.tilelog, a diagnosis) */
 void assets_texture_init(const void *nvn_texture);   /* (an nvn_tex) */
 /* passes.c : the job recorder's entry in direct mode (eng_jobs.c): 1 = take the game's early return */
 int passes_recorder(uint64_t key);

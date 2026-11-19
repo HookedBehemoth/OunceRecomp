@@ -7,7 +7,7 @@
      the path that follows the GPU-time controller; while the resolution is fixed (hos_fixed_resolution) it takes the
      other path, the 3D at full scale. The controller made a new set of render targets at each size, ~11 images a frame
      at times, and held the GPU near its budget.
-   - The fixed path's scale (hos_fixed_scale_bits: the Insert menu's Resolution) reaching the 3D, in the scene's update
+   - The fixed path's scale (hos_fixed_scale_bits, 1.0 until there is a host upscaler) reaching the 3D, in the scene's update
      f_831f3200. It recomputes the 3D's scale (+0xe5c = scale * +0xe58 / +0xe50) only while +0xe2c bit 3 is set. The
      dynamic path sets it on a level change; the fixed path's flag 1 calls f_831f41d0, whose bit 3 the apply block clears
      in the same frame, before any recompute. So the fixed path kept the dynamic path's last scale (0.75 docked: 1536x864
@@ -15,20 +15,20 @@
      hardcoded 0.75 / 0.5 in place of the scale) are not looked at.
    - Native scene resolution (oscarrc91's PR #578 and i900gaming's PR #329): the graphics configuration has a scale table
      apart from the GPU-time controller, (1.0, 0.8, 2/3) for each axis in two profiles, and the game runs in mode 1, so
-     even the fixed path's 100% sized the scene at 0.8 of the picture. With hos_native_scene (HOS_SCENE_NATIVE=1) mode 1's
+     even the fixed path's 100% sized the scene at 0.8 of the picture. With hos_native_scene (scene_native) mode 1's
      0.8 becomes 1.0 and the mode compares unequal once, so the game's own notification remakes the targets. With
-     hos_fix_res (HOS_FIX_RES=1) a cached scale that differs from the one asked for sets the scale-dirty bit (8).
+     hos_fix_res (fix_res) a cached scale that differs from the one asked for sets the scale-dirty bit (8).
    - The frame's real time in place of the nominal rate, for a Frame rate cap above 60 (hos_frame_seconds_bits; 0, as at
      a cap of 60: the game's own divide). The engine's two step divides "base / nominal" (f_80706be0: the frame's step,
      base 60.0 or 30.0, added to the game clock; f_83b6ea90: the global step) become base * seconds, both or neither (one
      timed and the other stepping 1/60 s would run the game's two clocks apart). The engine's own rate is never above 60
      and its controller puts 60 back over a higher one, so above 60 fps every frame stepped 1/60 s and the game ran
      fps / 60 times too fast. hos_step_probe: f_80706be0's x19, which tells the host the hook is in this build and gives
-     it the game clock for its log (HOS_FPS_LOG=1).
+     it the game clock for its log (log.fps).
    - A movie's frame count above a 60 cap (issue 1742): the movie player counts its updates (f_83b7c710, +760 of the
      player), a cutscene places its narration, rumble and end by that count, and the movie itself follows the clock; the
      count grows by the frames' time instead (hos_movie_frames, runtime/nn_vi.c).
-   - Output size (runtime/nn_applet.c hos_output_size: the Insert menu's Output resolution, 2560 x 1440 as shipped): nnMain
+   - Output size (runtime/nn_applet.c hos_output_size: the output_res setting, 2560 x 1440 as shipped): nnMain
      (f_81222ce0) puts the display size in the framework's create arg (the window textures); f_810a7b70 sets up the
      display-size object from a config whose docked size list (+8, first 2560 x 1440) is the frame's base; f_80ea2f30
      takes the 3D's largest size, ResolutionParam's BaseResolution (or 1920 x 1080 as constants), 3/4 of 2560 x 1440, above
@@ -133,7 +133,7 @@ PATCH_AT(0x831f3f08, word(0xf9471288), after, x8, hos_oot_scale_flags, as(x20, m
     return hos_fixed_resolution ? flags & ~0x18ULL : flags;
 }
 
-/* ---- native scene (HOS_SCENE_NATIVE, HOS_FIX_RES) */
+/* ---- native scene (scene_native, fix_res) */
 
 /* f_806702e0 (config: x0), w14 the current mode: mode 1's base scale 0.8 -> 1.0 in a stock table, and the mode made to
    compare unequal once (0xff), so the game's own refresh runs; the same after a window resize (the game then sizes its
@@ -162,7 +162,7 @@ PATCH_AT(0x80670308, word(0x3955280e), after, w14, hos_oot_scene_mode, as(x0, co
     return mode;
 }
 
-/* f_831f3200's head (module: x0): the fixed scale marked dirty when the cached one differs (HOS_FIX_RES) */
+/* f_831f3200's head (module: x0): the fixed scale marked dirty when the cached one differs (fix_res) */
 PATCH_AT(0x831f3200, word(0x39788008), after, none, hos_oot_scene_check, as(x0, module)) {   /* ldrb w8, [x0, #3616] */
     if (!hos_fixed_resolution || !hos_fix_res) return;
     OotSceneResolution *m = GUEST(OotSceneResolution, module);
@@ -191,7 +191,7 @@ PATCH_AT(0x80706cc4, word(0x1e201828), after, s8, hos_oot_frame_step_probe, as(s
 PATCH_AT(0x83b7c7c8, word(0x11000508), after, w8, hos_oot_movie_count, as(w8, count), as(x20, player)) { return count - 1 + hos_movie_frames(player); }
 
 /* f_80b1e140, a text pane's letter animation, on the edge past its hidden / no-text checks: the time (s0) that moves
-   the letters' clock and the pauses' timer, times the Insert menu's Text speed (hos_text_scale, 1.0 as shipped; the
+   the letters' clock and the pauses' timer, times the text_speed setting (hos_text_scale, 1.0 as shipped; the
    auto-advance timer before keeps the game's time) */
 PATCH_AT(0x80b1e1bc, word(0x37201528), before, s0, hos_oot_text_time, as(s0, time)) {   /* tbnz w8, #4 */
     extern volatile float hos_text_scale;
@@ -277,7 +277,7 @@ PATCH_AT(0x80b723a4, word(0x52800024), after, x0, hos_oot_rt_rest, as(x0, size))
     return size > g ? size - g : size;
 }
 
-/* ---- the player's update, for HOS_BENCH's "in play" (runtime/bench.c hos_bench_player): Link updated, no map loading
+/* ---- the player's update, for bench's "in play" (runtime/bench.c hos_bench_player): Link updated, no map loading
    and no event playing. Read by the game's own structures, no guest call */
 
 typedef struct __attribute__((may_alias)) { uint64_t vtable; uint8_t _0[616]; uint64_t components; } OotPlayerActor;
@@ -708,7 +708,7 @@ PATCH_AT(0x802a4824, word(0xf9400108), after, none, hos_oot_wide_save_picture, i
    z-prepass occlusion queries and its samples-passed queries, each by a byte it loads; that byte reads 0, so the game
    makes no occlusion queries and draws every candidate object */
 
-/* the byte that decides whether the game makes its occlusion queries, just loaded: 0 with OUNCE_OCCLUSION_OFF=1 */
+/* the byte that decides whether the game makes its occlusion queries, just loaded: 0 with occlusion_off */
 PATCH_AT(0x811cce68, word(0x39400008), after, w8, hos_oot_occlusion_flag, as(w8, flag)) {
     extern volatile int hos_occlusion_off;
     return hos_occlusion_off ? 0 : flag;

@@ -7,12 +7,12 @@
    0x117899a000, 0x1178b7e000, 0x117982a000, ... in Kokiri) are not reset there:
      - f_80361c80, once a frame, resets the first record of each of them on the CPU: `str xzr, [x19, layout[+4]]` (w0 and
        w1: NVN's count and first) and `str wzr, [x19, layout[+0x10]]` (the appended count). Found by a page watch on
-       0x117a4d6000 (HOS_DBG=memwatch, run m4d_mw_k: lr 0x80362038, every frame, the only CPU writer after the buffer's
+       0x117a4d6000 (debug.memwatch, run m4d_mw_k: lr 0x80362038, every frame, the only CPU writer after the buffer's
        clear at creation). An At row after each of its 64-bit zero stores writes w1 = w2 = 1 after it.
      - f_80361a00, called twice from f_80361c80 (0x80361e08, 0x80361e10: the lists at [x27+0x180], [x27+0x1b8], in
        Kokiri the headers 0x117982a000 and 0x1178b7e000), resets its list's first record the same way (`str xzr, [x22, x8]`
        at 0x80361b3c, x8 = layout[+4]; `str wzr` the appended count). M4d took the w1 = 0 these two kept for a GPU
-       write; a page watch (HOS_DBG=memwatch, run m4e_mw_k: guest lr 0x80361b2c < 0x80361e14, every frame) found this
+       write; a page watch (debug.memwatch, run m4e_mw_k: guest lr 0x80361b2c < 0x80361e14, every frame) found this
        CPU store, and the culling shader 3de6d86e touches the record only by atomicMax(+0) and atomicAdd(+12) (its IR):
        no shader needs replacing. The same row follows it.
      - their other records are reset on the GPU (w0 and w3 only; w1 and w2 are never written by anyone: M4b's sentinel).

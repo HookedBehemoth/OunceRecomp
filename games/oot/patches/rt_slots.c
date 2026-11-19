@@ -26,7 +26,7 @@
    Persistent allocations (f_80062c50, from the top of the free block) do not set the note and are left to the game.
    Any mismatch (arenas not fresh, a pool smaller than the slot range, an arena offset inside it, a second pool record)
    turns the slots off for new allocations: those take the game's offsets again, which lie below the slot range.
-   RX_RT_SLOTS_MB: S, default 320 (of 512; the arenas
+   rt_slots_mb: S, default 320 (of 512; the arenas
    keep 192 MB, the fullest seen used 111). Parking and the shadow size classes: below.
 
    The transient pool (direct mode; docs/direct/transient-pool.md). The slots do not take the pool's top: they lie
@@ -43,7 +43,7 @@
    - each entry the allocator gives out is told to the back end by its own texture object (alloc_gave: the entry's
      descriptor id -> agl's record -> the object), which claims the range for its image if another has had it since.
    The game's free tells the back end nothing: the memory is the pool's, and a freed target's image is only an object.
-   HOS_RT_SLOTS_LOG=1: every slot made, with its name, and why the allocator's first initializations after 1000
+   rt.log: every slot made, with its name, and why the allocator's first initializations after 1000
    presents were not skipped. Addresses and offsets are the build's games/oot/game.toml names;
    the rows' instruction words stop the lift on another build. */
 #include "hos.h"
@@ -85,31 +85,26 @@ static uint64_t game_pool_bytes;   /* (the arenas' size, set before the first sl
 static uint64_t slots_bytes(void) {
     static uint64_t v;
     if (!v) {
-        const char *e = getenv("RX_RT_SLOTS_MB");
+        const int e = (int)setting_int(SET_RT_SLOTS_MB);
         int def = 320;
         if (after_pool()) {
             const uint64_t twice = game_pool_bytes * 2 >> 20;
             def = twice > SLOTS_MB_DIRECT ? (int)twice : SLOTS_MB_DIRECT;
         }
-        const int mb = e ? atoi(e) : def;
+        const int mb = e ? e : def;
         v = (uint64_t)(mb > 0 ? mb : def) << 20;
         if (after_pool() && v > nvn_virtual_pool_tail()) v = nvn_virtual_pool_tail();
     }
     return v;
 }
-/* Parking (HOS_RT_PARK=0: off): a transient entry the game frees is kept whole (entry, TextureData and texture object,
+/* Parking: a transient entry the game frees is kept whole (entry, TextureData and texture object,
    registration, descriptor slot, arena block, memory slot) and handed back by the next alloc with the same caller and
    descriptor, so the game neither re-initializes nor re-registers it. Released for real (the game's own free) when its
-   key goes HOS_RT_PARK_FRAMES presents without an alloc (default 6: passes that run every few frames still find
+   key goes rt.park_frames presents without an alloc (default 6: passes that run every few frames still find
    theirs). */
-static int park_on(void) {
-    static int v = -1;
-    if (v < 0) v = !(getenv("HOS_RT_PARK") && atoi(getenv("HOS_RT_PARK")) == 0);
-    return v;
-}
 static uint64_t park_frames(void) {
     static int v = -1;
-    if (v < 0) v = getenv("HOS_RT_PARK_FRAMES") ? atoi(getenv("HOS_RT_PARK_FRAMES")) : 6;
+    if (v < 0) v = (int)setting_int(SET_RT_PARK_FRAMES);
     return (uint64_t)(v > 0 ? v : 1);
 }
 /* Local-light shadow maps (f_802640a0, the alloc at lr 0x80264130, "local_shadow_depth") are sized by the light's
@@ -119,12 +114,12 @@ static uint64_t park_frames(void) {
    a light keeps one shape for long: parking hands its entry back, and the back end keeps one image for it. Safe
    because the pass takes its viewport and scissor from the texture (f_802640a0 reads entry +0x40 width / +0x42 height,
    not its own size at +0x4e8) and the projection maps the light's frustum to the whole map; only the shadow's texel
-   density rises (by less than the step between two classes, at most 1.5 a side). HOS_RT_QUANT=0: off (the game's sizes);
-   HOS_RT_QUANT=<n>: the rounding before the classes, up to a multiple of n from 512 on with no hysteresis (128 is what
+   density rises (by less than the step between two classes, at most 1.5 a side). rt.quant=0: off (the game's sizes);
+   rt.quant=<n>: the rounding before the classes, up to a multiple of n from 512 on with no hysteresis (128 is what
    the picture checks' references were made with: an A/B) */
 static int shadow_classes_on(void) {
     static int v = -1;
-    if (v < 0) v = getenv("HOS_RT_QUANT") ? atoi(getenv("HOS_RT_QUANT")) : 1;
+    if (v < 0) v = (int)setting_int(SET_RT_QUANT);
     return v;   /* 0 off, 1 the classes, more: multiples of it */
 }
 /* (an At row in f_802640a0 pass_local_shadow_depth just before its bl f_8005ed00 at 0x8026412c) the next alloc on this
@@ -134,7 +129,7 @@ PATCH_AT(0x80264128, word(0xb9003be8), after, none, rt_slots_local_shadow) { tl_
 #define REUSE_AFTER 3   /* presents after a slot's last use before another image may take its memory */
 static int log_slots(void) {
     static int v = -1;
-    if (v < 0) v = getenv("HOS_RT_SLOTS_LOG") != NULL;
+    if (v < 0) v = setting_bool(SET_RT_SLOTS_LOG);
     return v;
 }
 
@@ -252,7 +247,7 @@ static void shrink_arenas(uint64_t dta) {
             (unsigned long long)hi);
 }
 
-static int check_on(void);   /* (HOS_RT_CHECK, below) */
+static int check_on(void);   /* (rt.check, below) */
 static void check_arenas(const char *what, uint64_t lr, uint64_t dta, uint64_t e);
 typedef struct { Cur key; uint64_t entry, block, frame; } Parked;
 static uint64_t steal_q[64];   /* entries whose slots were taken: released at the next sweep (under mu) */
@@ -283,12 +278,12 @@ static uint64_t arena_of(uint64_t dta, uint64_t e) {
    the next large alloc on that lane found no block, and the game's alloc went on with block 0 (0x8005fd14: on the
    console its 512 MB never run out): the later free of that entry linked a node at null into the arena's lists, and
    f_802737a0 looped or crashed in them (work/assets/native/cores.md). So an entry whose arena is fuller than
-   HOS_RT_PARK_FILL percent (default 40) of its end, or has fewer than 16 spare list nodes (+0x98: an alloc that
+   rt.park_fill percent (default 40) of its end, or has fewer than 16 spare list nodes (+0x98: an alloc that
    splits a block with none left writes near null, 0x80061068), is not handed back: it is released, which gives
    its bookkeeping back, and the caller's own lane allocates. */
 static uint32_t park_fill(void) {
     static int v = -1;
-    if (v < 0) v = getenv("HOS_RT_PARK_FILL") ? atoi(getenv("HOS_RT_PARK_FILL")) : 40;
+    if (v < 0) v = (int)setting_int(SET_RT_PARK_FILL);
     return (uint32_t)(v > 0 ? v : 100);
 }
 static int arena_tight(uint64_t ar) {
@@ -316,7 +311,7 @@ static uint64_t unpark(const Cur *k, uint64_t *drain) {
     os_rwlock_unlock(&mu);
     return e;
 }
-/* the game's free for entries parked longer than HOS_RT_PARK_FRAMES presents: once a present, from the first free of
+/* the game's free for entries parked longer than rt.park_frames presents: once a present, from the first free of
    the game's after it (the context the game frees in: a pass's thread at a function entry, so calling guest code
    keeps the guest's ABI; caller-saved registers restored), never while this thread holds one of the DTA's mutexes
    (a free from an alloc hook deadlocked once: sead::MainThread held +0x29e8/+0x2a08 for good, f_hf_new1) */
@@ -381,13 +376,13 @@ static int list_bad(uint64_t sentinel) {
     }
     return 1000;
 }
-/* HOS_RT_CHECK=1 (debugging, off; one static test when off): at every alloc and free hook and after each release, the
+/* rt.check (debugging, off; one static test when off): at every alloc and free hook and after each release, the
    arenas' used, free and spare lists, under the arena mutex (+0x2a08, taken when this thread holds neither DTA mutex),
    the last 256 hook events kept; at the first broken list they and the arenas go to the log, and a free of an entry
    without a block logs that entry's own last events. How the Hyrule Field freeze was found (cores.md). Costly when on */
 static int check_on(void) {
     static int v = -1;
-    if (v < 0) v = getenv("HOS_RT_CHECK") && atoi(getenv("HOS_RT_CHECK")) > 0;
+    if (v < 0) v = setting_bool(SET_RT_CHECK);
     return v;
 }
 typedef struct { int64_t ns; const char *what, *thread; uint64_t e, lr, blk; } Ev;
@@ -503,7 +498,7 @@ static int alloc_pre(GuestCall *g, uint64_t sp, uint64_t lr, uint64_t dta, uint6
     Cur k = {lr, G64(d), dta, G32(d + 8), G32(d + 0xc), G32(d + 0x10), G32(d + 0x14), G32(d + 0x18),
              G32(d + 0x1c), G32(d + 0x30), (uint32_t)flags, {0}, 1, local_shadow};
     memcpy(k.desc, GP(d), sizeof k.desc);
-    if (park_on()) {
+    {
         uint64_t drain = 0;
         const uint64_t e = unpark(&k, &drain);
         if (drain) {   /* its arena is tight: back to the game now (this thread holds neither DTA mutex at an alloc's
@@ -697,7 +692,7 @@ static int pool_ok(uint64_t pool) {   /* a virtual pool that holds the slot rang
 }
 
 /* (an At row in f_8005ed00, after each "block +0x38 = aligned offset"): x8 the pool, x10 the offset, x23 the block, the
-   alignment at [sp + SP_ALIGN] (sp kept for the HOS_RT_SLOTS_LOG lines). Returns x10: the slot's offset. The next lifted
+   alignment at [sp + SP_ALIGN] (sp kept for the rt.log lines). Returns x10: the slot's offset. The next lifted
    line adds the TextureData's base to x10; everything after (entry +0, the registration compare, SetStorage, views
    made later from the entry) reads the offset from x10 or block +0x38. */
 PATCH_AT(0x8005fb74, word(0xf9001eea), after, x10, rt_slots_offset, as(x8, pool), as(x10, game), as(x23, block), sp, as(ld(sp, 192), align_slot)) {
@@ -728,7 +723,7 @@ PATCH_AT(0x8005fb74, word(0xf9001eea), after, x10, rt_slots_offset, as(x8, pool)
         }
     }
     if (!s) n.game_offset++;
-    if (!s && log_slots() && state == 1) {   /* (HOS_RT_SLOTS_LOG: what held the range when a target found no slot) */
+    if (!s && log_slots() && state == 1) {   /* (rt.log: what held the range when a target found no slot) */
         static int told;
         if (told++ < 6) {
             hos_log("rt slots: no slot for %ux%u (%llu KB, lr %#llx) at present %llu; the slots (offset MB, KB, size, state):", k.w, k.h,
@@ -863,14 +858,14 @@ static int free_pre(GuestCall *g, uint64_t sp, uint64_t lr, uint64_t dta, uint64
         __atomic_add_fetch(&n.blockless, 1, __ATOMIC_RELAXED);
         return 1;
     }
-    if (park_on() && !releasing) sweep(g, sp, lr, dta);
+    if (!releasing) sweep(g, sp, lr, dta);
     int park = 0;
     os_rwlock_lock(&mu);
     n.frees++;
     if (block)
         for (int i = 0; i < nslots; i++)
             if (slots[i].block == block) {
-                if (park_on() && !releasing && state == 1 && slots[i].key.valid && slots[i].key.dta == dta &&
+                if (!releasing && state == 1 && slots[i].key.valid && slots[i].key.dta == dta &&
                     !G64(block + 0x88)) {   /* (not a block with an on-free delegate, +0x78..+0x90) */
                     if (nparked < MAX_PARKED) {   /* kept whole: the slot stays with the block */
                         parked[nparked++] = (Parked){slots[i].key, e, block, frame};
@@ -970,7 +965,7 @@ void rt_slots_frame(void) {
             "made, %.1f texture inits (%.1f by the allocator) | all: %llu calls (%llu transient), %llu spliced (%llu made, "
             "%llu evicted, %llu game's; reused %llu same shape, %llu other), %llu splices without a "
             "note (persistent), %llu notes without a splice; %llu frees (%llu of slots, %llu unseen); allocator inits: %llu "
-            "as before, %llu moved, %llu new; parking %s: %d parked, %llu parked in all, %llu handed back, %llu released, "
+            "as before, %llu moved, %llu new; parking: %d parked, %llu parked in all, %llu handed back, %llu released, "
             "%llu over the limit, %llu released for a tight arena; %llu shadow sizes rounded; %llu frees without a block; "
             "%llu slots taken from parked entries",
             state == 1 ? "on" : "off", nslots, busy, (unsigned long long)(used >> 20), (unsigned long long)(peak >> 20),
@@ -982,7 +977,7 @@ void rt_slots_frame(void) {
             (unsigned long long)n.unspliced, (unsigned long long)n.stale, (unsigned long long)n.frees,
             (unsigned long long)n.freed_slot, (unsigned long long)n.unseen_free,
             (unsigned long long)init_same, (unsigned long long)init_moved, (unsigned long long)init_new,
-            park_on() ? "on" : "off", nparked, (unsigned long long)n.parked, (unsigned long long)n.handed_back,
+            nparked, (unsigned long long)n.parked, (unsigned long long)n.handed_back,
             (unsigned long long)n.released, (unsigned long long)n.park_full, (unsigned long long)n.drained,
             (unsigned long long)n.quantized, (unsigned long long)n.blockless, (unsigned long long)n.stolen);
     hos_log("rt slots: transient pool: %llu MB of %llu held at a present at most since the last line (%llu since the start: slots "

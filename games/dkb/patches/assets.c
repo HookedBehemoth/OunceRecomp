@@ -1,7 +1,7 @@
-/* The host's side of prepared assets for the direct back end, direct mode only (HOS_DBG=noassets turns every patch
+/* The host's side of prepared assets for the direct back end, direct mode only (debug.noassets turns every patch
    here off, for a before/after).
 
-   The store: HOS_PREPARED=<folder> (default the game folder's prepared/, which every ounce build makes): <folder>/tex is
+   The store: prepared=<folder> (default the game folder's prepared/, which every ounce build makes): <folder>/tex is
    the texture store the back end maps (gpu_assets_open).
 
    Texture loads (agl::TextureData), each tied to its BNTX record and handed to the back end (gpu_asset_load) before the
@@ -35,26 +35,18 @@ static volatile int64_t n_loads, n_load_skipped, n_load_bytes, n_rebind, n_compa
     n_pkg_bytes, n_inplace, n_inplace_bad, n_glyphs,
     n_glyph_notex;
 
-static int dbg_has(const char *name) {
-    const char *d = getenv("HOS_DBG");
-    if (!d) return 0;
-    const size_t n = strlen(name);
-    for (const char *p = d; (p = strstr(p, name)); p += n)
-        if ((p == d || p[-1] == ',') && (p[n] == 0 || p[n] == ',' || p[n] == ':')) return 1;
-    return 0;
-}
 
 static int on_ = -1;
 int assets_on(void) {
-    if (on_ < 0) on_ = rx_direct() && !dbg_has("noassets");
+    if (on_ < 0) on_ = rx_direct() && !setting_bool(SET_DBG_NOASSETS);
     return on_;
 }
 
 /* ---- the prepared folder ---- */
 static char prepared[1024];
 static const char *prepared_dir(void) {
-    const char *e = getenv("HOS_PREPARED");
-    if (e && *e) snprintf(prepared, sizeof prepared, "%s", e);
+    const char *e = setting_str(SET_PREPARED);
+    if (*e) snprintf(prepared, sizeof prepared, "%s", e);
     else {   /* (the game folder's prepared/: ounce build makes it) */
         char exe[1024];
         const int n = os_exe_path(exe, sizeof exe);
@@ -64,7 +56,7 @@ static const char *prepared_dir(void) {
     }
     char real[1024];
     if (realpath(prepared, real)) snprintf(prepared, sizeof prepared, "%s", real);
-    hos_log("assets: the prepared store: %s (HOS_PREPARED)", prepared);
+    hos_log("assets: the prepared store: %s (prepared)", prepared);
     return prepared;
 }
 
@@ -78,7 +70,7 @@ void assets_log(void) {
             (long long)n_loads, (long long)(n_load_bytes >> 20),
             (long long)n_pkg, (long long)(n_pkg_bytes >> 20), (long long)n_compaction, (long long)n_compaction_cleared,
             (long long)n_rebind, (long long)n_inplace, (long long)n_inplace_bad, (long long)n_glyphs, (long long)n_glyph_notex,
-            assets_on() ? "" : " (HOS_DBG=noassets: the patches are off)", b);
+            assets_on() ? "" : " (debug.noassets= the patches are off)", b);
 }
 
 static volatile int32_t started;

@@ -1,4 +1,4 @@
-/* Game patch: DKB's frame takes the window's shape (or HOS_ASPECT's) at any ratio, and the 3D camera, the HUD
+/* Game patch: DKB's frame takes the window's shape (or aspect's) at any ratio, and the 3D camera, the HUD
    layouts and the vignette take the frame's aspect, while the game runs.
 
    The frame: the game renders a frame inside its picture. Its display settings (f_8032f840, each frame) hold a frame
@@ -22,7 +22,7 @@
 #include <math.h>
 #include <string.h>
 
-extern volatile float hos_wide_ratio;   /* (runtime/hos_main.c: HOS_ASPECT's picture ratio, 0 the window's) */
+extern volatile float hos_wide_ratio;   /* (runtime/hos_main.c: aspect's picture ratio, 0 the window's) */
 
 enum { PICTURE_W = 3840, PICTURE_H = 2160, BASE_W = 2880, BASE_H = 1620 };
 #define BASE_ASPECT (16.0f / 9.0f)
@@ -43,7 +43,7 @@ static uint64_t frame_for(double r) {
     return (uint64_t)round4(h) << 32 | round4(w);
 }
 
-/* the window's size at boot (start 1) and after a settled resize; HOS_ASPECT's shape stays over it */
+/* the window's size at boot (start 1) and after a settled resize; aspect's shape stays over it */
 void game_frame_size(uint32_t w, uint32_t h, int start) {
     if (!start && (w < 64 || h < 64)) return;
     const double r = hos_wide_ratio > 0.0f ? hos_wide_ratio : (double)w / h;
@@ -67,7 +67,7 @@ PATCH_FUNC(0x805df780, word(0x5280ca80), body(0xd70f1578520f618b), aapcs, x0, dk
 /* the display settings' update (f_8032f840, settings in x0), its flags just loaded (w11 = +8): a new frame size to
    +0x1a0 and bit 4 set, which the update writes back and acts on in this same call */
 PATCH_AT(0x8032f85c, word(0x2941200b), after, none, dkb_frame_resize, as(x0, settings), io(w11)) {   /* ldp w11, w8, [x0, #8] */
-    if (!frame_size) game_frame_size(16, 9, 1);   /* (no window shape given: HOS_ASPECT's, else 16:9) */
+    if (!frame_size) game_frame_size(16, 9, 1);   /* (no window shape given: aspect's, else 16:9) */
     if (!__atomic_exchange_n(&frame_pending, 0, __ATOMIC_ACQ_REL)) return;
     const uint64_t f = frame_size;
     *(uint64_t *)A64_PTR(settings + 0x1a0) = f;

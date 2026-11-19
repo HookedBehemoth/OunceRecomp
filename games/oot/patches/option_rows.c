@@ -14,8 +14,11 @@
    pointer it is given). The choice's index (+0x5c) is ours: put in before the row's setup, which then sets its arrows
    by it, and taken whenever the row shows a new one (each step and decide ends in ui_option_choice_row_set_text).
 
+   "Default Settings" (Y) resets the game's own options and leaves ours: they are the host's settings, kept in the options
+   file, not part of the game's option save.
+
    Check that it applies: the line "settings: <n> rows of ours after the game's <m>" when the screen first opens, and
-   "settings: <title> = <choice>" at each change. */
+   "settings: <key> = <choice>, kept in <file>" at each change. */
 #include "patches.h"
 #include <stddef.h>
 #include <string.h>
@@ -57,15 +60,17 @@ typedef struct __attribute__((may_alias)) {
 _Static_assert(offsetof(ChoiceRow, layout) == 0x20 && offsetof(ChoiceRow, type) == 0x58 && offsetof(ChoiceRow, index) == 0x5c,
                "the choice row");
 
+/* The rows: an enum setting each (renderer/api/settings.h), its choices in the setting's order. A render resolution row
+   waits for the host upscaler: below 100% the 3D is drawn into a corner of the frame and nothing scales it up */
 enum { MAX_CHOICES = 6 };
 typedef struct {
+    setting_id id;
     const char *title, *caption;
-    int count, value;
+    int count;
     const char *choice[MAX_CHOICES];
 } Setting;
-static Setting settings[] = {
-    {"Frame rate", "The frame rate cap. VSync follows the display's refresh.", 4, 1, {"30", "60", "120", "VSync"}},
-    {"Render resolution", "The 3D's resolution against the output's.", 4, 3, {"50%", "67%", "75%", "100%"}},
+static const Setting settings[] = {
+    {SET_FRAME_RATE, "Frame Rate", "Sets the frame rate cap.\nVSync matches the display's refresh rate.", 4, {"30", "60", "120", "VSync"}},
 };
 enum { N = sizeof settings / sizeof *settings };
 
@@ -79,12 +84,6 @@ static Text text(const char *s) {
     const uint64_t at = hos_sys_alloc(n + 1, 8);
     memcpy(GP(at), s, n + 1);
     return (Text){at, (uint32_t)n};
-}
-/* (prototype: the values are logged; the host's frame-rate cap, present mode and render size do not follow them yet,
-   and nothing is kept across boots) */
-static void apply(int i) {
-    const Setting *s = &settings[i];
-    hos_log("settings: %s = %s", s->title, s->choice[s->value]);
 }
 
 /* the ours of a row's OptionType, -1 for the game's */
@@ -142,12 +141,13 @@ PATCH_FUNC(0x833ef590, word(0xd503237f), body(0xcd0005f327864f67), aapcs, none, 
            guest(0x80a87d30), sp, as(x0, row), as(x1, entry), as(x2, flag)) {
     ChoiceRow *r = (ChoiceRow *)GP(row);
     const int i = ours(((const OptionRow *)GP(entry))->type);
-    if (i >= 0) r->index = settings[i].value;
+    if (i >= 0) r->index = (int32_t)setting_int(settings[i].id);
     guest_orig(orig, row, entry, flag);
     if (i >= 0) set_text(g, sp, r->layout, STR_T_OPTION, texts[i].title);
 }
 
-/* ui_option_choice_row_set_text(row): ours shows its choice, and a new index is the setting's new value */
+/* ui_option_choice_row_set_text(row): ours shows its choice, and a new index is the setting's new value (written to the
+   options file: runtime/settings.c) */
 PATCH_FUNC(0x833ef7f0, word(0xd503237f), body(0x2e2f49591b6a8d04), aapcs, none, settings_choice_text, orig,
            guest(0x80a87d30), sp, as(x0, row)) {
     const ChoiceRow *r = (const ChoiceRow *)GP(row);
@@ -156,9 +156,9 @@ PATCH_FUNC(0x833ef7f0, word(0xd503237f), body(0x2e2f49591b6a8d04), aapcs, none, 
         guest_orig(orig, row);
         return;
     }
-    Setting *s = &settings[i];
+    const Setting *s = &settings[i];
     if (r->index < 0 || r->index >= s->count) hos_fatal(NULL, "settings: %s's row shows choice %d", s->title, r->index);
-    if (s->value != r->index) s->value = r->index, apply(i);
+    if (setting_int(s->id) != r->index) setting_write_int(s->id, r->index);
     set_text(g, sp, r->layout, STR_T_TEXT, texts[i].choice[r->index]);
 }
 

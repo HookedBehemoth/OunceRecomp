@@ -1,10 +1,10 @@
-/* HOS_DBG=nodata[:<name part>] (diagnosis only, either back end): the textures agl::TextureData
+/* debug.nodata[:<name part>] (diagnosis only, either back end): the textures agl::TextureData
    loadImage_ (f_80798690) makes with no data (src 0: no copy into their slot). Each is logged once with its name, its
    TextureData, its slot in the texture heap ([td+0x18]+0x10, where a load with data copies its bytes) and the guest
    call chain; with a name part, the slots of the textures whose name holds it are page-watched (nvn_native.c's
    hos_watch_guest_writes: the first writes, with their call stacks). Every 300 presents a line per slot (the first 64)
    says how many of its first 64 KB are not zero, so a slot that something fills is seen in either back end
-. With HOS_DBG unset nothing here runs. */
+. Without debug.nodata nothing here runs. */
 #include "hos.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,13 +19,9 @@ static char want[128];
 static int nodata_on(void) {
     static int on = -1;
     if (on < 0) {
-        const char *d = getenv("HOS_DBG");
-        const char *p = d ? strstr(d, "nodata") : NULL;
-        on = p && (p == d || p[-1] == ',') && (p[6] == 0 || p[6] == ',' || p[6] == ':');
-        if (on && p[6] == ':') {
-            const char *v = p + 7, *e = strchr(v, ',');
-            snprintf(want, sizeof want, "%.*s", (int)(e ? (size_t)(e - v) : strlen(v)), v);
-        }
+        const char *v = setting_str(SET_DBG_NODATA);   /* (on, or the name of the loads to watch) */
+        on = *v != 0;
+        if (on && strcmp(v, "1")) snprintf(want, sizeof want, "%s", v);
     }
     return on;
 }

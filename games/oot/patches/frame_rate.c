@@ -1,13 +1,13 @@
 /* OoT's frame timing at each present (runtime/game_hooks.h game_frame_timing): the real-time step through the
    graphics module's nominal rate (+0x2c8) and its frame limiter (+0xfc), the frame's seconds for the step divides
-   (oot_probes.c), a movie's frame count, the fixed resolution's state and the Insert menu's Text speed. */
+   (oot_probes.c), a movie's frame count, the fixed resolution's state and the text_speed setting. */
 #include "hos.h"
 #include "game_hooks.h"
+#include "upscale.h"
 #include "os.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-int rx_option(int id, int otherwise);   /* (runtime/rx_backend.c) */
 int hos_fps_max(void);                  /* (runtime/nn_vi.c) */
 
 /* Game time follows the clock. The engine steps every frame by ratio = 60 / <the graphics module's nominal fps,
@@ -18,29 +18,25 @@ int hos_fps_max(void);                  /* (runtime/nn_vi.c) */
    own limit holds it at 60). HOS_REALTIME_STEP=0: the shipping whole steps. */
 volatile uint64_t hos_gfx_module;   /* (f_8042cd20's graphics module: frame_sleep.c sets it at the frame's end) */
 volatile int hos_fixed_resolution = 0;   /* (the lifted code reads these: games/oot/patches/oot_probes.c) */
-volatile uint32_t hos_fixed_scale_bits = 0x3f800000;   /* (HOS_RES_SCALE: the fixed path's scale) */
+volatile uint32_t hos_fixed_scale_bits = 0x3f800000;   /* (the fixed path's scale: render_scale_now, each frame) */
 volatile int hos_dynres_runs = 0;   /* (the dynamic path's frames: it fills fields the 3D reads, +8 +16 +168) */
 volatile float hos_text_scale = 1.0f;   /* (the letters' clock of a text pane, f_80b1e140: games/oot/patches/oot_probes.c hos_oot_text_time) */
-/* The Insert menu's Text speed (0 Normal, 1 2x, 2 4x, 3 Instant), HOS_TEXT_SPEED=<0..3> over it: what the time of a letter
-   animation's step is multiplied by. Instant: the page at once, as the game's own skip on A */
-static float text_scale(const char *env, int menu) {
-    const int v = env && *env ? atoi(env) : menu;
-    return v == 1 ? 2.0f : v == 2 ? 4.0f : v >= 3 ? 1e6f : 1.0f;
-}
+/* The text_speed setting (normal, 2x, 4x, instant): what the time of a letter animation's step is multiplied by. Instant:
+   the page at once, as the game's own skip on A */
+static float text_scale(int v) { return v == 1 ? 2.0f : v == 2 ? 4.0f : v >= 3 ? 1e6f : 1.0f; }
 volatile uint64_t hos_step_probe = 0;   /* (f_80706be0's object, set by the lifted code's frame-time hook; its
                                             +0xd58 is the game clock in 1/60 s: games/oot/patches/oot_probes.c) */
 volatile uint32_t hos_frame_seconds_bits = 0;   /* (the frame's seconds as a float's bits for that hook, 0: the game's own step) */
 /* A movie's frame count while the frames' time is given (a Frame rate cap above 60): how many 60ths of a second this update of
    that movie player is worth, the rest carried to its next one, so the count the cutscene's cues are placed by keeps the clock
-   as the movie's picture does (issue 1742: the narration ran ahead above 60 fps). 1, the game's own step, otherwise, and with
-   HOS_FPS_MOVIE=0 (for comparisons). Called by the lifted f_83b7c710 (games/oot/patches/oot_probes.c). */
-/* HOS_DBG=movie (diagnostic): every 5 s of wall time while a movie counts, its updates and the frames they counted, per
+   as the movie's picture does (issue 1742: the narration ran ahead above 60 fps). 1, the game's own step, otherwise. Called by the lifted f_83b7c710 (games/oot/patches/oot_probes.c). */
+/* debug.movie (diagnostic): every 5 s of wall time while a movie counts, its updates and the frames they counted, per
    second */
 static uint32_t movie_log(uint32_t n) {
     static int on = -1;
     static int64_t since;
     static uint64_t calls, frames;
-    if (on < 0) on = hos_dbg_item("movie");
+    if (on < 0) on = setting_bool(SET_DBG_MOVIE);
     if (!on) return n;
     const int64_t now = hos_now_ns();
     if (!since) since = now;
@@ -57,7 +53,7 @@ uint32_t hos_movie_frames(uint64_t player) {
     const uint32_t bits = __atomic_load_n(&hos_frame_seconds_bits, __ATOMIC_RELAXED);   /* (game_frame_timing writes it at each present) */
     if (!bits) return movie_log(1);
     static os_mutex lock = OS_MUTEX_INIT;
-    static int timed = -1;   /* (these four under the lock) */
+    /* (these three under the lock) */
     static struct { uint64_t player, used; double part; } carry[PLACES];
     static uint64_t calls;
     static unsigned made;
@@ -65,8 +61,7 @@ uint32_t hos_movie_frames(uint64_t player) {
     uint32_t n = 1;
     memcpy(&secs, &bits, 4);
     os_mutex_lock(&lock);
-    if (timed < 0) timed = !(getenv("HOS_FPS_MOVIE") && !atoi(getenv("HOS_FPS_MOVIE")));
-    if (timed) {
+    {
         int i = 0;
         while (i < PLACES && carry[i].player != player) i++;
         if (i == PLACES) {
@@ -106,42 +101,37 @@ static int realtime_rate(double ratio, int maximum, double *carry) {
     if (*carry < -4.0) *carry = -4.0;
     return fps;
 }
-/* HOS_RES_SCALE, read once into the fixed path's scale: the scale at boot (the render targets' pool is sized for it,
-   games/oot/patches/oot_probes.c), 1.0 without it */
+/* The render_scale setting: the 3D's scale against the output, the game's NDSR ratios (out / in: 2.0, 1.714, 1.5, 1.333,
+   1.25, 1.2, 1.0) and two above the output (the host's filters take those down). The render targets' pool and the game's
+   memory are sized at boot for the scale then (games/oot/patches/oot_probes.c pool_shipped): a scale above both 1.0 and the
+   boot scale waits for the next start, a smaller one applies at once */
+static const float render_scales[] = {0.5f, 7.0f / 12.0f, 2.0f / 3.0f, 0.75f, 0.8f, 5.0f / 6.0f, 1.0f, 1.5f, 2.0f};
+_Static_assert(sizeof render_scales / sizeof *render_scales == 9, "render_scale's choices");
 float hos_res_scale_at_boot(void) {
-    static int read_scale;
-    static float v = 1.0f;
-    if (!read_scale) {
-        read_scale = 1;
-        if (getenv("HOS_RES_SCALE")) v = (float)atof(getenv("HOS_RES_SCALE")), memcpy((void *)&hos_fixed_scale_bits, &v, 4);
-    }
+    static float v;
+    if (!v) v = render_scales[setting_int(SET_RENDER_SCALE)];
     return v;
 }
+/* the scale the 3D takes now (the chosen one, or the boot one while a larger choice waits for a restart) */
+static float render_scale_now(void) {
+    const float want = render_scales[setting_int(SET_RENDER_SCALE)], boot = hos_res_scale_at_boot();
+    return want > 1.0f && want > boot ? boot : want;
+}
 void game_frame_timing(int64_t now) {
-    int rx_option(int id, int otherwise);
     /* The game's dynamic resolution steps the 3D's scale with the GPU time, and each new scale makes a new set of render
-       targets: it is off unless HOS_DYNRES=1, and the 3D stays at the fixed path's scale (hos_fixed_scale_bits). The fixed
-       path skips the dynamic block, whose fields the 3D reads, so it takes over after the dynamic path has run 30 frames */
-    {
-        static int dyn = -1;
-        if (dyn < 0) dyn = getenv("HOS_DYNRES") && atoi(getenv("HOS_DYNRES")) > 0;
-        hos_fixed_resolution = !dyn && hos_dynres_runs >= 30;
-    }
-    {
-        static const char *env;
-        static int looked;
-        if (!looked) looked = 1, env = getenv("HOS_TEXT_SPEED");
-        hos_text_scale = text_scale(env, rx_option(5, 0));
-    }
-    {   /* (the Insert menu's Resolution: the fixed path's scale in 1/10000, live; HOS_RES_SCALE
-           below stays over it) */
-        const int scale = rx_option(3, 0);
-        if (scale > 0 && !getenv("HOS_RES_SCALE")) {
-            const float v = scale / 10000.0f;
-            memcpy((void *)&hos_fixed_scale_bits, &v, 4);
+       targets: the 3D stays at the fixed path's scale (hos_fixed_scale_bits) instead. The fixed path skips the dynamic
+       block, whose fields the 3D reads, so it takes over after the dynamic path has run 30 frames */
+    hos_fixed_resolution = hos_dynres_runs >= 30;
+    hos_text_scale = text_scale((int)setting_int(SET_TEXT_SPEED));   /* (the game's Options screen may change it) */
+    {   /* the 3D's scale and the upscaler, as the settings have them; the game's network only where it upscales
+           (hos_upscaler_allows: the settings never pair it with a frame larger than the output) */
+        const float s = render_scale_now();
+        if (!hos_upscaler_allows(hos_upscaler_get(), s)) {
+            hos_log("upscale: %s does not take a 3D scale of %.3f: bilinear", hos_upscaler_name(hos_upscaler_get()), (double)s);
+            hos_upscaler_set(HOS_UPSCALER_BILINEAR);
         }
+        memcpy((void *)&hos_fixed_scale_bits, &s, 4);
     }
-    (void)hos_res_scale_at_boot();
     {   /* every change of the 3D's scale (+0xe5c), with the sizes it is taken against */
         static uint32_t last;
         static long long presents;
@@ -155,11 +145,11 @@ void game_frame_timing(int64_t now) {
             last = *(uint32_t *)GP(m + 0xe5c);
         }
     }
-    {   /* HOS_RES_LOG=1: the 3D's scale every 300 presents. +0xe20: flags (bit 3: 0.75, bit 4: 0.5 in place of the scale),
+    {   /* log.res: the 3D's scale every 300 presents. +0xe20: flags (bit 3: 0.75, bit 4: 0.5 in place of the scale),
            +0xe2c bit 3: recompute asked, +0xe50/+0xe54/+0xe58: the sizes the scale is taken against, +0xe5c: the scale */
         static int on = -1;
         static long long n;
-        if (on < 0) on = getenv("HOS_RES_LOG") != NULL;
+        if (on < 0) on = setting_bool(SET_LOG_RES);
         const uint64_t m = hos_res_module;
         if (on && m && !(n++ % 300)) {
             float f[4], s;
@@ -171,12 +161,14 @@ void game_frame_timing(int64_t now) {
     }
     const uint64_t mod = hos_gfx_module;
     if (!mod) return;
+    const int cap = hos_fps_max();   /* (the frame_rate setting: it may change while the game runs) */
     {   /* The frame limiter (f_8042cd20 sleeps to 1 / +0xfc). The engine's adaptive controller writes +0xfc when
-           variable refresh is on (+0x231, f_804fc0f0), any rate from 40 up. HOS_FPS_TARGET=<fps>: that rate kept, 0: left alone;
-           HOS_FPS_LOG=1: what the game asks for, every 300 presents */
-        static int target = -1, log_on = -1;
+           variable refresh is on (+0x231, f_804fc0f0), any rate from 40 up. A cap above 60 raises it to the cap. A cap of 30
+           leaves it: the engine writes its 60 back every frame, and the display pacing (runtime/nn_vi.c) holds the frames to
+           30, the game's rate (+0x2c8) following them. log.fps: what the game asks for, every 300 presents */
+        static int log_on = -1;
         static long long n;
-        if (target < 0) target = getenv("HOS_FPS_TARGET") ? atoi(getenv("HOS_FPS_TARGET")) : 0, log_on = getenv("HOS_FPS_LOG") != NULL;
+        if (log_on < 0) log_on = setting_bool(SET_LOG_FPS);
         int *limit = (int *)GP(mod + 0xfc);
         if (log_on && !(n++ % 300))
             hos_log("vi: frame limiter %d, vrr %d %d, nominal %d, controller +0x58.. %d %d %d %d", *limit, *(uint8_t *)GP(mod + 0x231),
@@ -194,12 +186,10 @@ void game_frame_timing(int64_t now) {
             }
             clock_before = game_clock, at_before = now;
         }
-        if (target && *limit > 0 && *limit < target) *limit = target;
-        if (hos_fps_max() > 60 && *limit > 0 && *limit < hos_fps_max()) *limit = hos_fps_max();
+        if (cap > 60 && *limit > 0 && *limit < cap) *limit = cap;
     }
-    /* (the Insert menu's Game speed "per frame": a frame is a 60th of a second of game time. Not past 60 fps: the game would run
-       faster than real time, so a cap above 60 keeps the real-time step whatever that row says) */
-    if ((!rx_option(0, 1) && hos_fps_max() <= 60) || hos_bench_on()) {   /* (HOS_BENCH: per frame at any cap) */
+    /* (a benchmark: a frame is a 60th of a second of game time, at any cap) */
+    if (hos_bench_on()) {
         __atomic_store_n(&hos_frame_seconds_bits, 0, __ATOMIC_RELAXED);
         int *slot = (int *)GP(mod + 0x2c8);
         if (*slot >= 15 && *slot <= 60) *slot = 60;
@@ -212,12 +202,7 @@ void game_frame_timing(int64_t now) {
     const double dt = (now - last) / 1e9;
     last = now;
     if (dt <= 0 || dt > 0.25) { count = next = 0; carry = 0; return; }   /* (a load: the average starts again) */
-    /* (HOS_REALTIME_WINDOW=<1-5>: frames averaged for the step; 1: each step the last frame's own time) */
-    static int window = -1;
-    if (window < 0) {
-        window = getenv("HOS_REALTIME_WINDOW") ? atoi(getenv("HOS_REALTIME_WINDOW")) : 5;
-        window = window < 1 ? 1 : window > 5 ? 5 : window;
-    }
+    enum { window = 5 };   /* (frames averaged for the step) */
     samples[next++ % window] = dt;
     if (count < (unsigned)window) count++;
     double sum = 0;
@@ -226,11 +211,9 @@ void game_frame_timing(int64_t now) {
        higher +0x2c8 before the step is made from it, so every frame still stepped 1/60 s and the game ran fps / 60 times too fast.
        The step is then the frames' own time at the two places the engine makes it (games/oot/patches/oot_probes.c, hos_frame_seconds_bits):
        this same average, at most 1/15 s as below and at least 1/240 s, and the rate under it stays the engine's, 60 at most.
-       HOS_FPS_STEP=0 (for comparisons): the rate up to the cap. The lift stops when the hook's divides are not there
-       (their PATCH_AT declarations, games/oot/patches/oot_probes.c), so every build has it */
-    static int timed_step = -1;
-    if (timed_step < 0) timed_step = !(getenv("HOS_FPS_STEP") && !atoi(getenv("HOS_FPS_STEP")));
-    const int timed = hos_fps_max() > 60 && timed_step;
+       The lift stops when the hook's divides are not there (their PATCH_AT declarations, games/oot/patches/oot_probes.c),
+       so every build has it */
+    const int timed = cap > 60;
     if (timed) {
         const double secs = sum / count;
         const float f = (float)(secs > 4.0 / 60.0 ? 4.0 / 60.0 : secs < 1.0 / 240.0 ? 1.0 / 240.0 : secs);
@@ -240,10 +223,10 @@ void game_frame_timing(int64_t now) {
     } else {
         __atomic_store_n(&hos_frame_seconds_bits, 0, __ATOMIC_RELAXED);
     }
-    const int top = timed ? 60 : hos_fps_max();
+    const int top = timed ? 60 : cap;
     const double ratio = sum / count * 60.0;
     int *slot = (int *)GP(mod + 0x2c8);
-    if (*slot < 15 || *slot > hos_fps_max()) {
+    if (*slot < 15 || *slot > (cap > 60 ? cap : 60)) {   /* (the game's own 60, or what was written here for the cap) */
         static int logged;
         if (!logged++) hos_log("vi: the graphics module's frame rate reads %d: no real-time step", *slot);
         return;

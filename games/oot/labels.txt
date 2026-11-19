@@ -1096,36 +1096,36 @@
 80674ca0 view_render_size_update          # games/oot/patches/ndsr.c: calls ndsr_view_render_size for a view # ?
 81503720 smaa_ndsr_blend_dispatch         # games/oot/patches/ndsr.c: SMAA_For_NDSR's blending pass: sizes, a quantization mask by the output's format, binds, the program; its output holds the colour's square root for the network # ?
 
-# --- the Options screen (UISystemOptionScreen): its option table, rows, texts and values; games/oot/patches/settings.c adds rows of ours
-834211c0 ui_option_screen_build_rows      # games/oot/patches/settings.c (hooked): vtable 0x84c0f108 +0x2f0: a row per shown table entry, template parts cloned by ButtonType
+# --- the Options screen (UISystemOptionScreen): its option table, rows, texts and values; games/oot/patches/option_rows.c adds rows of ours
+834211c0 ui_option_screen_build_rows      # games/oot/patches/option_rows.c (hooked): vtable 0x84c0f108 +0x2f0: a row per shown table entry, template parts cloned by ButtonType
 83422960 ui_option_screen_place_rows      # agent/gameui game-ui.md, not re-read: vtable +0x2e8: binds the rows' animations, the slide area, the scroll bar, the rows' spacing
-83422f20 ui_option_screen_load_values     # games/oot/patches/settings.c: vtable +0x310: every row set up from the table and OptionData, the first focus, the help line
-834231d0 ui_option_screen_set_caption     # games/oot/patches/settings.c (hooked): (screen, OptionType): T_Caption_00 from <name>_Caption
+83422f20 ui_option_screen_load_values     # games/oot/patches/option_rows.c: vtable +0x310: every row set up from the table and OptionData, the first focus, the help line
+834231d0 ui_option_screen_set_caption     # games/oot/patches/option_rows.c (hooked): (screen, OptionType): T_Caption_00 from <name>_Caption
 83423390 ui_option_screen_set_guide_icon  # agent/gameui game-ui.md, not re-read: (screen, index, key): a footer prompt's icon
 83423420 ui_option_screen_refocus         # agent/gameui game-ui.md, not re-read: vtable +0x320: the focus back on the kept row # ?
 83423570 ui_option_screen_apply_on_close  # agent/gameui game-ui.md, not re-read: vtable +0x330: amiibo off and DisplayMode applied from OptionData # ?
 834236a0 ui_option_screen_input           # agent/gameui game-ui.md, not re-read: vtable +0x300: left/right on the focused choice or toggle row, then the list's scroll
 83423f00 ui_option_screen_on_focus        # agent/gameui game-ui.md, not re-read: vtable +0x170: (screen, button): rows' focus animations, the help line
-83424190 ui_option_screen_on_decide       # games/oot/patches/settings.c: vtable +0x190: (screen, button): the row's own decide, the selected OptionType at +0x370
+83424190 ui_option_screen_on_decide       # games/oot/patches/option_rows.c: vtable +0x190: (screen, button): the row's own decide, the selected OptionType at +0x370
 834243c0 ui_option_screen_clip_rect       # agent/gameui game-ui.md, not re-read: vtable +0x40: a rectangle kept inside the slide area # ?
 834210e0 ui_option_screen_dtor            # agent/gameui game-ui.md, not re-read
 83424720 ui_option_screen_class_name      # agent/gameui game-ui.md, not re-read: "UISystemOptionScreen"
 83422880 ui_option_screen_sync_amiibo     # agent/gameui game-ui.md, not re-read: OptionData flags before the rows are read # ?
-833bc5a0 ui_option_table_shown_count      # games/oot/patches/settings.c: rows whose CheckGameData is unset or true
-833bc630 ui_option_table_shown_row        # games/oot/patches/settings.c: (table, n): the n-th shown row (0x28 bytes)
-833bc790 ui_option_table_row_of_type      # games/oot/patches/settings.c: (table, OptionType)
-833b98f0 ui_option_set_read_members       # games/oot/patches/settings.c: the OptionSet reader: OptionType, ButtonType, IsCheckDisplayGameData, CheckGameData
+833bc5a0 ui_option_table_shown_count      # games/oot/patches/option_rows.c: rows whose CheckGameData is unset or true
+833bc630 ui_option_table_shown_row        # games/oot/patches/option_rows.c: (table, n): the n-th shown row (0x28 bytes)
+833bc790 ui_option_table_row_of_type      # games/oot/patches/option_rows.c: (table, OptionType)
+833b98f0 ui_option_set_read_members       # games/oot/patches/option_rows.c: the OptionSet reader: OptionType, ButtonType, IsCheckDisplayGameData, CheckGameData
 833eed10 ui_option_button_row_setup       # agent/gameui game-ui.md, not re-read: (row, table entry, flag)
 833ef080 ui_option_button_row_refresh     # agent/gameui game-ui.md, not re-read: the state text again
 833ef2a0 ui_option_button_row_decide      # agent/gameui game-ui.md, not re-read: A on a Button row
 833ef050 ui_option_button_row_focus       # agent/gameui game-ui.md, not re-read: (row, focused)
 833eec50 ui_option_button_row_bind        # agent/gameui game-ui.md, not re-read: its animations IsChanged, Type, CursorLoop
 833eef10 ui_option_amiibo_usable          # agent/gameui game-ui.md, not re-read # ?
-833ef590 ui_option_choice_row_setup       # games/oot/patches/settings.c (hooked): (row, table entry, flag): title, the stored choice's index, arrows
-833ef7f0 ui_option_choice_row_set_text    # games/oot/patches/settings.c (hooked): T_Text_00 from <name>_<index>
-833efbd0 ui_option_choice_row_step        # games/oot/patches/settings.c: (row, left): the index moved, the choice's hash written to OptionData
+833ef590 ui_option_choice_row_setup       # games/oot/patches/option_rows.c (hooked): (row, table entry, flag): title, the stored choice's index, arrows
+833ef7f0 ui_option_choice_row_set_text    # games/oot/patches/option_rows.c (hooked): T_Text_00 from <name>_<index>
+833efbd0 ui_option_choice_row_step        # games/oot/patches/option_rows.c: (row, left): the index moved, the choice's hash written to OptionData
 833ef950 ui_option_choice_row_focus       # agent/gameui game-ui.md, not re-read
-833ef990 ui_option_choice_row_decide      # games/oot/patches/settings.c
+833ef990 ui_option_choice_row_decide      # games/oot/patches/option_rows.c
 833ef430 ui_option_choice_row_bind        # agent/gameui game-ui.md, not re-read
 833eff50 ui_option_toggle_row_setup       # agent/gameui game-ui.md, not re-read: (row, table entry, flag, first)
 833eff40 ui_option_toggle_row_button      # agent/gameui game-ui.md, not re-read: the row's button object
@@ -1159,7 +1159,7 @@
 80199f70 gamedata_struct_get_bool         # agent/gameui game-ui.md, not re-read: (mgr, &out, &handle, member hash)
 8019bf90 gamedata_struct_get_enum         # agent/gameui game-ui.md, not re-read: the enum value's name hash
 80628a10 gamedata_struct_set_bool         # agent/gameui game-ui.md, not re-read
-809d3ba0 gamedata_struct_set_enum         # games/oot/patches/settings.c: (mgr, value hash, &handle, member hash): refuses member 0
+809d3ba0 gamedata_struct_set_enum         # games/oot/patches/option_rows.c: (mgr, value hash, &handle, member hash): refuses member 0
 802eec30 gamedata_get_bool_c              # agent/gameui game-ui.md, not re-read: (mgr, &out, hash of the full name)
-80424760 gamedata_struct_get_enum_b       # games/oot/patches/settings.c: (mgr, &out hash, &handle, member hash): refuses member 0 # ?
-833195c0 seq_query_selected_option_type # games/oot/patches/settings.c: SeqQueryGetSelectedOptionType: the Options screen's +0x370 (through f_802f1340) as a float
+80424760 gamedata_struct_get_enum_b       # games/oot/patches/option_rows.c: (mgr, &out hash, &handle, member hash): refuses member 0 # ?
+833195c0 seq_query_selected_option_type # games/oot/patches/option_rows.c: SeqQueryGetSelectedOptionType: the Options screen's +0x370 (through f_802f1340) as a float

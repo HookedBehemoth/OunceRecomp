@@ -3,17 +3,18 @@
 #include "hos.h"
 #include "renderer.h"
 
-static volatile int choice = HOS_UPSCALER_GAME;   /* (the compiled default; the settings store sets it) */
+/* the choice is the upscaler setting (renderer/api/settings.h), its choices in hos_upscaler's order */
+_Static_assert(HOS_UPSCALER_GAME == 0 && HOS_UPSCALER_BILINEAR == 1 && HOS_UPSCALER_CATMULL_ROM == 2, "the upscaler setting's choices");
 
 static const char *const names[HOS_UPSCALER_KINDS] = {"game", "bilinear", "catmull-rom", "fsr3", "xess", "dlss"};
 const char *hos_upscaler_name(hos_upscaler kind) { return (unsigned)kind < HOS_UPSCALER_KINDS ? names[kind] : "?"; }
 
 int hos_upscaler_set(hos_upscaler kind) {
     if (kind != HOS_UPSCALER_GAME && kind != HOS_UPSCALER_BILINEAR && kind != HOS_UPSCALER_CATMULL_ROM) return 0;
-    if (__atomic_exchange_n(&choice, (int)kind, __ATOMIC_RELAXED) != (int)kind) hos_log("upscale: %s", names[kind]);
+    if (hos_upscaler_get() != kind) setting_write_int(SET_UPSCALER, kind);   /* (kept in the options file) */
     return 1;
 }
-hos_upscaler hos_upscaler_get(void) { return (hos_upscaler)__atomic_load_n(&choice, __ATOMIC_RELAXED); }
+hos_upscaler hos_upscaler_get(void) { return (hos_upscaler)setting_int(SET_UPSCALER); }
 
 int hos_upscaler_allows(hos_upscaler kind, float scale) {
     return kind == HOS_UPSCALER_BILINEAR || kind == HOS_UPSCALER_CATMULL_ROM || (kind == HOS_UPSCALER_GAME && scale <= 1.0f);

@@ -9,9 +9,9 @@ default = "kokiri"
 [tests.kokiri]
 seconds = 40
 smoke_skip = 900
-set = ["HOS_FS_OVERLAY={golden}/overlay"]
+set = ["fs.overlay={golden}/overlay"]
 
 [tests.market]
 seconds = 40
 smoke_skip = 1500
-set = ["HOS_FS_OVERLAY={golden}/overlay"]
+set = ["fs.overlay={golden}/overlay"]

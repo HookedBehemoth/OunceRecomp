@@ -19,6 +19,8 @@ extern "C" {
 #define OUNCE_SETTINGS(B, I, F, E, S)                                                                                          \
     /* ---- the picture and the frame rate */                                                                                  \
     E(FRAME_RATE, "frame_rate", USER, 1, "30|60|120|vsync", "frame rate cap; vsync: the display's refresh rate, presented in step with it") \
+    E(RENDER_SCALE, "render_scale", USER, 6, "50%|58%|67%|75%|80%|83%|100%|150%|200%", "the 3D's resolution against the output's; above the boot value it applies at the next start") \
+    E(UPSCALER, "upscaler", USER, 0, "game|bilinear|catmull-rom", "what takes the 3D to the output: the game's network (only up to 100%), or a host filter") \
     E(OUTPUT_RES, "output_res", USER, 0, "2048x1152|2560x1440|3840x2160|1920x1080|5120x1440", "the game's output size (docked); applies at the next start") \
     B(HANDHELD, "handheld_profile", USER, 0, "the handheld profile: 1080p output and the game's handheld resolutions") \
     B(FULLSCREEN, "fullscreen", USER, 0, "start in fullscreen")                                                                \

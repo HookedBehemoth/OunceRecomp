@@ -4,7 +4,7 @@
    the pad input bound to it (runtime/nn_hid.c's controls, the menu's Layout preset and Controls page). So the icons say which
    button to press on this pad, custom controls too.
 
-   The face: ounce_options.ini's button_prompts (the menu's Button prompts row): 0 Auto, from the first controller's name
+   The face: the button_prompts setting: 0 Auto, from the first controller's name
    (SDL), else 1 Switch, 2 Xbox, 3 PlayStation 4, 4 PlayStation 5, 5 Steam Deck. The game reads the font once, at its start:
    a new face or new controls show at the next start.
 
@@ -58,15 +58,8 @@ static int contains(const char *text, const char *word) {   /* (any case) */
 
 /* HOS_PROMPT_* (faces[]) */
 static int choose_face(const char *dir) {
-    char path[OS_PATH_MAX], line[80];
-    int choice = 0;
-    snprintf(path, sizeof path, "%sounce_options.ini", dir);
-    FILE *f = fopen(path, "r");
-    if (f) {
-        while (fgets(line, sizeof line, f))
-            if (!strncmp(line, "button_prompts=", 15)) choice = atoi(line + 15);
-        fclose(f);
-    }
+    (void)dir;
+    const int choice = (int)setting_int(SET_BUTTON_PROMPTS);   /* (0 auto, then faces[]'s order) */
     if (choice >= 1 && choice <= HOS_PROMPT_N) return choice - 1;
     /* Auto: the first controller SDL opens (it scans every second: up to 1.5 s for one, at the game's start) */
     char name[128] = "";

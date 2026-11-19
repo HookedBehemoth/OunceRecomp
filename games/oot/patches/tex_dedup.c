@@ -12,7 +12,7 @@
    while it has aliases). M4g guessed the target as "the last load with data at the same slot"; walking in Hyrule Field
    that guess named textures the game had finalized and initialized again for other loads (M6f: 19 aliases as plain
    images, ASTC placeholders among them). A load with no data that is no alias (no chain) stays
-   as before: a plain image, named by the back end. A log line for the first few, and every 100th. With HOS_DBG=noassets nothing here runs. */
+   as before: a plain image, named by the back end. A log line for the first few, and every 100th. With debug.noassets nothing here runs. */
 #include "hos.h"
 #include "patches.h"
 #include <stdio.h>
