@@ -28,7 +28,7 @@ The AppImage's layout is the one `ounce` looks for:
 No game data is in it. Vulkan is the system's loader (`libvulkan.so.1`), loaded at run time. SDL is the release's
 own: `prebuilt/sdl/libSDL3.so.0`, which `ounce build` puts beside the game, where the game loads it before the
 system's ([SDL](#sdl)). The button prompts of other
-controllers are not made by a player's build ([button prompts](#button-prompts)).
+controllers are not made by any build ([button prompts](#button-prompts)).
 
 ## The steps and their budget
 
@@ -237,12 +237,34 @@ takes the system's SDL as before.
 
 ## Button prompts
 
-The button prompts of other controllers (`tools/prompts/prompt_assets.py`, the game's icon font and textures redrawn per
-controller face) are not made by any build, a developer's or a player's: the tool is run by hand into a game folder's `prompts/`
-([builder notes](builder-notes.md)). Without that folder the game draws its own font and textures, the Switch's
-icons, and nothing is missing. Porting it into `ounce` needs an OpenType font editor (fontTools: glyphs drawn into
-the font's CFF outlines, its cmap segments), font rendering and Lanczos scaling (Pillow), and an ASTC encoder and
-decoder for the textures, which `ounce` does not have; it is its own task.
+Parked. The button prompts of other controllers are not made by any build. `tools/prompts/prompt_assets.py`, run by
+hand into a game folder's `prompts/` ([builder notes](builder-notes.md)), makes them for OoT; DKB has none. Without
+that folder the game shows its own icons, the Switch's, and nothing is missing. A port into `ounce` was looked at
+and deferred because it is not small.
+
+What a port needs (the parts the game shows):
+
+1. The font. The game's icon font (`External.*.bfotf`: an OpenType CFF font behind an XOR key, zstd with the game's
+   dictionary) gets one glyph per pad input, a Kenney glyph scaled into the game glyph's box, and a new format 4
+   cmap with one segment for each Switch button, which `prompts.c` points at the bound pad input at run time. That
+   needs a small CFF rewriter (charstrings, charset and strings appended), a Type 2 charstring reader and writer with
+   fontTools' rounding and exact curve bounds, and the head, hhea, maxp and hmtx values fontTools recalculates: about
+   400 lines. No crate is needed: write-fonts does not write CFF, and skrifa is heavy for a few glyphs.
+2. The layouts. `Common.blarc` decompressed, `ring.bin` (the Talk ring's panes for each place) and
+   `<face>/hint.bin` (the ocarina hint's x positions and each icon's extra width): byte parsing only.
+3. The size table. `rsizetable.zs`, the game's resource size table with the font's entry raised to fit the largest
+   face's font.
+
+The zstd reading is `ounce-tex`'s dictionaries. The Kenney fonts (`third_party/kenney_input`, CC0) may ship in the
+AppImage.
+
+The textures (the ocarina's notes, the Talk ring's letters, the controller page) have no effect under the direct back
+end, so the runtime no longer serves them. The tool still writes `Common.bntx` and `<face>/textures.bin`, but
+nothing reads them. The back end takes a texture's texels from the texture store, matched by the BNTX's name,
+descriptor and place in the file. A patched copy of the file keeps all three, so it gets the store's Switch icons.
+Showing them would need a design of their own: each face's images for each Switch button on each pad input encoded
+into the store as extra records (BC7 and BC4, by the store's encoders), and the renderer choosing the record by the
+controls when the texture loads. No ASTC encoder, no patched file.
 
 ## The generated code
 

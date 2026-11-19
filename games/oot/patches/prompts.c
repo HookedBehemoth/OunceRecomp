@@ -27,7 +27,6 @@ void hos_sdl_pad_first_name(char *out, size_t cap);
 int hos_mods_has(const char *prefix, const char *suffix);   /* mods.c */
 
 #define FONT_PATH "font2/scalable/external.nin_ounce_nvn2.bfotf.zs"   /* (as hos_mods_romfs's keys: lower case) */
-#define TEXTURES_PATH "ui/layout2archive/common.product.100.nin_ounce_nvn2.bntx.zs"
 #define LAYOUTS_PATH "ui/layout2archive/common.product.100.nin_ounce_nvn2.blarc.zs"
 #define SIZES_PATH "system/resource/resourcesizetable."   /* (then the version, ".rsizetable.zs") */
 #define MAGIC 0x18029a7fu
@@ -231,7 +230,7 @@ static uint64_t fnv(uint64_t h, const void *p, size_t n) {
     return h;
 }
 
-typedef struct { uint32_t off, len, idx; const uint8_t *data; } Run;   /* (idx: its place in textures.bin) */
+typedef struct { uint32_t off, len, idx; const uint8_t *data; } Run;   /* (idx: its place in ring.bin or hint.bin) */
 static int run_cmp(const void *a, const void *b) {
     const Run *x = (const Run *)a, *y = (const Run *)b;
     return x->off != y->off ? (x->off < y->off ? -1 : 1) : (x->idx > y->idx) - (x->idx < y->idx);
@@ -247,10 +246,6 @@ static void add_run(Run **runs, size_t *nruns, size_t *cap, uint32_t off, uint32
     (*nruns)++;
 }
 
-/* prompts/Common.bntx.zs: the game's textures (prompts/Common.bntx) with the blocks of prompts/<face>/textures.bin that this
-   pad's controls choose (tools/prompts/prompt_assets.py: "HPTX", u32 count; each: u8 Switch button (0xff: always), u8 pad input, u16,
-   u32 runs; each run: u32 offset, u32 length, the bytes; a later entry over an earlier). Written again only when the face, the
-   controls or the blocks changed (prompts/Common.key) */
 /* out: the game's file (game) with the runs written over it (a later one over an earlier where they meet), as raw zstd blocks;
    written again only when its key (keypath: the hash h of what chose the runs) changed */
 static int write_patched(const char *game, const char *out, const char *keypath, uint64_t h, Run *runs, size_t nruns) {
@@ -304,45 +299,6 @@ static int write_patched(const char *game, const char *out, const char *keypath,
             fclose(f);
         }
     }
-    return ok;
-}
-
-static int build_textures(char *out, size_t cap) {
-    char dir[OS_PATH_MAX], path[OS_PATH_MAX];
-    int face;
-    if (!setup(dir, sizeof dir, &face)) return 0;
-    snprintf(path, sizeof path, "%sprompts/%s/textures.bin", dir, faces[face]);
-    long tn;
-    uint8_t *t = read_all(path, "HPTX", &tn);
-    if (!t) return 0;   /* (built without the textures: the game's) */
-    int bind[HOS_SW_N];
-    for (int b = 0; b < HOS_SW_N; b++) bind[b] = hos_binding(HOS_BIND_PAD, b, 0);
-    uint64_t h = fnv(fnv(fnv(0xcbf29ce484222325ull, &face, sizeof face), bind, sizeof bind), t, (size_t)tn);
-    /* the runs these controls choose */
-    const uint32_t count = rd32le(t + 4);
-    size_t at = 8, nruns = 0, cap_runs = 256;
-    Run *runs = (Run *)malloc(cap_runs * sizeof *runs);
-    for (uint32_t e = 0; e < count && at + 8 <= (size_t)tn; e++) {
-        const int sw = t[at], pad = t[at + 1];
-        const uint32_t nr = rd32le(t + at + 4);
-        const int on = sw == 0xff || (sw < HOS_SW_N && bind[sw] == pad);
-        at += 8;
-        for (uint32_t r = 0; r < nr && at + 8 <= (size_t)tn; r++) {
-            const uint32_t off = rd32le(t + at), len = rd32le(t + at + 4);
-            if (len > (size_t)tn - at - 8) break;
-            if (on) add_run(&runs, &nruns, &cap_runs, off, len, t + at + 8);
-            at += 8 + len;
-        }
-    }
-    snprintf(out, cap, "%sprompts/Common.bntx.zs", dir);
-    snprintf(path, sizeof path, "%sprompts/Common.bntx", dir);
-    char keypath[OS_PATH_MAX];
-    snprintf(keypath, sizeof keypath, "%sprompts/Common.key", dir);
-    const int ok = write_patched(path, out, keypath, h, runs, nruns);
-    hos_log("prompts: %s textures, %zu runs for this pad's controls%s", faces[face], nruns,
-            ok ? "" : ": could not be written");
-    free(runs);
-    free(t);
     return ok;
 }
 
@@ -490,15 +446,15 @@ static int build(char *out, size_t cap) {
 
 /* mods.c: the file for a RomFS path the prompts replace (key: lower case, '/'), 1 with one. Asked only when no mod has
    the file: a mod's own wins */
-static char built_path[3][OS_PATH_MAX];   /* the font, the textures, the layouts */
-static int built_ok[3];
+static char built_path[2][OS_PATH_MAX];   /* the font, the layouts */
+static int built_ok[2];
 static void built_run(void *arg) {
-    static int (*const builders[3])(char *, size_t) = {build, build_textures, build_layouts};
+    static int (*const builders[2])(char *, size_t) = {build, build_layouts};
     const int which = (int)(intptr_t)arg;
     built_ok[which] = builders[which](built_path[which], OS_PATH_MAX);
 }
 int game_romfs_file(const char *key, char *out, size_t cap) {
-    static os_once once[3] = {OS_ONCE_INIT, OS_ONCE_INIT, OS_ONCE_INIT};   /* the font, the textures, the layouts */
+    static os_once once[2] = {OS_ONCE_INIT, OS_ONCE_INIT};   /* the font, the layouts */
     const size_t kn = strlen(key);
     if (!strncmp(key, SIZES_PATH, sizeof SIZES_PATH - 1) && kn > 14 && !strcmp(key + kn - 14, ".rsizetable.zs")) {
         char dir[OS_PATH_MAX];   /* (the game's size table with room for the faces' fonts, larger than its: tools/prompts/prompt_assets.py) */
@@ -507,7 +463,7 @@ int game_romfs_file(const char *key, char *out, size_t cap) {
         snprintf(out, cap, "%sprompts/rsizetable.zs", dir);
         return os_path_kind(out) != OS_PATH_NONE;
     }
-    const int which = !strcmp(key, FONT_PATH) ? 0 : !strcmp(key, TEXTURES_PATH) ? 1 : !strcmp(key, LAYOUTS_PATH) ? 2 : -1;
+    const int which = !strcmp(key, FONT_PATH) ? 0 : !strcmp(key, LAYOUTS_PATH) ? 1 : -1;
     if (which < 0) return 0;
     os_once_run(&once[which], built_run, (void *)(intptr_t)which);
     if (!built_ok[which]) return 0;
