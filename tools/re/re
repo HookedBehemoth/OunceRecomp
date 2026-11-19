@@ -2,5 +2,6 @@
 # re: the reverse engineering command (tools/re/recmd.py; re help)
 root=$(cd "$(dirname "$0")/../.." && pwd)
 py=$root/work/venv/bin/python
-[ -x "$py" ] || py=/home/behemoth/source/Hookshot/work/venv/bin/python
+# (a worktree has no venv of its own: the main checkout's)
+[ -x "$py" ] || py=$(dirname "$(git -C "$root" rev-parse --path-format=absolute --git-common-dir)")/work/venv/bin/python
 exec "$py" -I "$root/tools/re/recmd.py" "$@"

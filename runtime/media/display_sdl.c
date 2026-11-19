@@ -11,7 +11,7 @@
 #include "hos_sdl.h"
 
 /* (the window's app id: a desktop entry names it as its StartupWMClass) */
-#define HOS_APP_ID "io.github.NotRexed.OunceRecomp"
+#define HOS_APP_ID "io.github.HookedBehemoth.OunceRecomp"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
