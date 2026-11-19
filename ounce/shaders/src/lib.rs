@@ -7,7 +7,8 @@
 //! dynamic ones, the pass and the skinning, are chosen per draw). The other shader archives (agl's BAHS, its NDSR
 //! networks, the movie upscaler's NDVE, the BNSH inside particle sets and layouts) are taken whole. `Scope::All` takes
 //! every program of every archive instead, bfsha included (the shader census's seed). A game whose patches make a kind
-//! of archive unreachable (OoT's and DKB's movies play without NDVE) leaves it out (`make`'s `left_out`).
+//! of archive or a file unreachable (OoT's and DKB's movies play without NDVE, OoT's NDSR stage runs one network of
+//! three) leaves it out (`make`'s `left_out`).
 //!
 //! The pack is the seed format the shader tools read (`HKSEED01`): u32 programs, u32 stages; each stage {u64 code key,
 //! u32 NVN stage, u32 control bytes, u32 code bytes, the control section (0xd8 bytes), the code area its +0x44 sizes};
@@ -81,6 +82,33 @@ impl Archive {
     }
     pub fn from_magic(s: &str) -> Option<Archive> {
         Archive::ALL.into_iter().find(|a| a.magic() == s)
+    }
+}
+
+/// What a game leaves out of its pack (game.toml's `[assets].shaders_left_out`): a kind of archive by its magic, or a
+/// romfs file (`<file>:<member>` for a SARC's member), with every member inside it
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LeftOut {
+    Kind(Archive),
+    File(String),
+}
+
+impl LeftOut {
+    /// a magic, or a path (it has a `/`)
+    pub fn parse(s: &str) -> Option<LeftOut> {
+        Archive::from_magic(s).map(LeftOut::Kind).or_else(|| s.contains('/').then(|| LeftOut::File(s.to_string())))
+    }
+    pub fn text(&self) -> &str {
+        match self {
+            LeftOut::Kind(a) => a.magic(),
+            LeftOut::File(f) => f,
+        }
+    }
+    pub fn covers(&self, o: &Origin) -> bool {
+        match self {
+            LeftOut::Kind(a) => o.archive == *a,
+            LeftOut::File(f) => o.file.strip_prefix(f.as_str()).is_some_and(|rest| rest.is_empty() || rest.starts_with(':')),
+        }
     }
 }
 
@@ -824,14 +852,14 @@ fn bfres_paths(romfs: &Path) -> Vec<PathBuf> {
 const VERSION: u64 = 2;
 
 /// A key of what a pack is made from: the files it reads (their paths, sizes and modification times) and VERSION
-pub fn inputs_key(romfs: &Path, scope: Scope, left_out: &[Archive]) -> u64 {
+pub fn inputs_key(romfs: &Path, scope: Scope, left_out: &[LeftOut]) -> u64 {
     let mut files = archive_paths(romfs);
     files.extend(bfres_paths(romfs));
     files.push(romfs.join("Shader/ExternalBinaryString.bfres.zs"));
     files.sort();
     let mut h = code_key(&VERSION.to_le_bytes(), &[scope as u8]);
-    for a in left_out {
-        h = code_key(&h.to_le_bytes(), a.magic().as_bytes());
+    for l in left_out {
+        h = code_key(&h.to_le_bytes(), l.text().as_bytes());
     }
     for f in files {
         let m = std::fs::metadata(&f).ok();
@@ -843,10 +871,10 @@ pub fn inputs_key(romfs: &Path, scope: Scope, left_out: &[Archive]) -> u64 {
 }
 
 /// The pack of a romfs; `dictionaries` is the romfs file of the game's zstd dictionaries (game.toml's
-/// `[assets].zstd_dictionaries`), `left_out` the kinds of archive the game's patches make unreachable (game.toml's
-/// `[assets].shaders_left_out`: their programs not taken, their codes listed), `progress(done, of)` is told as files
-/// are read.
-pub fn make(romfs: &Path, dictionaries: &Path, scope: Scope, left_out: &[Archive], progress: &(dyn Fn(usize, usize) + Sync)) -> Result<(Pack, Stats), String> {
+/// `[assets].zstd_dictionaries`), `left_out` the kinds of archive and the files the game's patches make unreachable
+/// (game.toml's `[assets].shaders_left_out`: their programs not taken, their codes listed; one that covers no program
+/// is an error), `progress(done, of)` is told as files are read.
+pub fn make(romfs: &Path, dictionaries: &Path, scope: Scope, left_out: &[LeftOut], progress: &(dyn Fn(usize, usize) + Sync)) -> Result<(Pack, Stats), String> {
     let dicts = Dicts::load(dictionaries)?;
     let mut st = Stats::default();
     let mut pack = Pack::default();
@@ -901,13 +929,19 @@ pub fn make(romfs: &Path, dictionaries: &Path, scope: Scope, left_out: &[Archive
         })
         .collect();
     let mut out = Vec::new();
+    let mut covered = vec![false; left_out.len()];
     for (origin, p) in found.into_iter().flatten() {
-        if left_out.contains(&origin.archive) {
+        let by: Vec<usize> = (0..left_out.len()).filter(|&i| left_out[i].covers(&origin)).collect();
+        if !by.is_empty() {
+            by.into_iter().for_each(|i| covered[i] = true);
             out.push((origin, p));
         } else if pack.add(&origin, p) {
             st.other_programs += 1;
             *st.by_archive.entry(origin.archive).or_default() += 1;
         }
+    }
+    if let Some(i) = covered.iter().position(|c| !c) {
+        return Err(format!("shaders_left_out: {} holds no program of the romfs", left_out[i].text()));
     }
     st.left_out_programs = out.len();
     for (origin, p) in &out {
@@ -940,5 +974,17 @@ mod tests {
         p.leave_out(&Origin { archive: Archive::Ndve, file: "b".into() }, &[st(1), st(3), st(3)]);
         assert_eq!(p.left_out.len(), 1);
         assert_eq!(p.left_out[0].0, code_key(&st(3).control, &st(3).area));
+    }
+
+    #[test]
+    fn a_file_left_out_covers_itself_and_its_members() {
+        let o = |f: &str| Origin { archive: Archive::Ndsr, file: f.into() };
+        let l = LeftOut::parse("Lib/a.sarc.zs:x.pck").unwrap();
+        assert!(l.covers(&o("Lib/a.sarc.zs:x.pck")));
+        assert!(!l.covers(&o("Lib/a.sarc.zs:x.pck2")));
+        assert!(!l.covers(&o("Lib/a.sarc.zs:y.pck")));
+        assert!(LeftOut::parse("Lib/a.sarc.zs").unwrap().covers(&o("Lib/a.sarc.zs:y.pck")));
+        assert_eq!(LeftOut::parse("NDVE"), Some(LeftOut::Kind(Archive::Ndve)));
+        assert_eq!(LeftOut::parse("NDXX"), None);
     }
 }

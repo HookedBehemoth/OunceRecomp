@@ -19,12 +19,12 @@ pub fn dictionaries(romfs: &Path, g: &ounce_lift::game::Game) -> std::path::Path
     romfs.join(g.assets.zstd_dictionaries.as_deref().unwrap_or("-"))
 }
 
-/// The kinds of archive the game's patches make unreachable (game.toml's `[assets].shaders_left_out`)
-pub fn left_out(g: &ounce_lift::game::Game) -> Result<Vec<ounce_shaders::Archive>, String> {
+/// The kinds of archive and the files the game's patches make unreachable (game.toml's `[assets].shaders_left_out`)
+pub fn left_out(g: &ounce_lift::game::Game) -> Result<Vec<ounce_shaders::LeftOut>, String> {
     g.assets
         .shaders_left_out
         .iter()
-        .map(|m| ounce_shaders::Archive::from_magic(m).ok_or_else(|| format!("game {}: shaders_left_out: {m:?} is no kind of shader archive", g.name)))
+        .map(|m| ounce_shaders::LeftOut::parse(m).ok_or_else(|| format!("game {}: shaders_left_out: {m:?} is no kind of shader archive and no romfs path", g.name)))
         .collect()
 }
 
@@ -65,7 +65,7 @@ pub fn pack(romfs: &Path, g: &ounce_lift::game::Game, scope: ounce_shaders::Scop
     let by: Vec<String> = st.by_archive.iter().map(|(a, n)| format!("{} {n}", a.magic())).collect();
     println!("shaders: programs by archive: {}", by.join(", "));
     if !left_out.is_empty() {
-        let names: Vec<&str> = left_out.iter().map(|a| a.magic()).collect();
+        let names: Vec<&str> = left_out.iter().map(|l| l.text()).collect();
         println!("shaders: left out ({}, unreachable with the game's patches): {} programs, {} codes", names.join(", "), st.left_out_programs, p.left_out.len());
     }
     for u in st.unread.iter().take(10) {
