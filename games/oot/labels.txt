@@ -383,11 +383,14 @@
 80076e60 dynres_ratio_listener            # work/assets/native/engine-layers.md 6.1: "p_dynamic_resolution_ratio", 12 callers
 80352340 dynres_state_forward             # work/assets/native/engine-layers.md 6.1: the hook vtable's slots 0, 1, 18 forward here (dynamic-resolution state)
 8007c120 dynres_update                    # work/assets/native/engine-layers.md: dynamic resolution (reads GPU timestamps)
-83485280 exposure_compute                 # work/assets/native/readback2.md: the exposure / adaptation
-80354060 report_gpu_timestamps_read       # work/assets/native/engine-layers.md, work/assets/native/readback2.md: 29 x 64-byte readbacks (agl GPU timestamps)
+83485280 exposure_compute                 # work/assets/native/readback2.md: the exposure / adaptation # ? 4 instructions, no callers; exposure_light_readback calls math_vec4_scale (0x834a5280) instead
+80354060 render_light_visibility_readback # work/assets/native/readback2.md (its 29 x 64-byte readbacks): each frame, for every object of the list at +0xab0 (count +0xaa8), invalidates the 0x40 buffer at object +0x720 (pool +0x750; written by the atomic-add program 6214a97bec4cc0bf), reads its float +0 (0x803541c0), stores it / (12 x [+0x7f0]) at +0x7ec, zeroes it and flushes; not GPU timestamps
 80365f00 report_reader_a                  # runtime/nvn_native.c: (the occlusion grid reader, agl::utl::DepthBufferEx); ENTRY_HOOK marks its run: its 0x3980-byte invalidates do not wait
 80362ff0 report_reader_b                  # docs/direct/task-mesh.md: (GPU-culling append counters, read-and-zero)
-80357060 report_reader_c                  # work/assets/native/engine-layers.md: (the exposure reader, luminance rings)
+80c54290 exposure_light_buffers_create    # exposure_light_readback's object: four buffers by ubo_object_pool_alloc (+0xc0 0x90 bytes, +0x30, +0x1d8, +0x268 0x1010 bytes each, filled from a 0x1010 template, +0x150 0x40 x2), the averages' histories (+0x320, +0x340, +0x360)
+834a5280 math_vec4_scale                  # four floats at x0 times s0, returned in s0..s3
+831e5dd0 render_light_visibility_buffer   # makes an object (0x870 bytes, "Player") with the 0x40 buffer at +0x720 that render_light_visibility_readback reads # ? which objects; reached through a pointer only
+80357060 exposure_light_readback          # work/assets/native/readback2.md D: each frame reads one float of each of the three 0x1010 light-sum buffers (+0x30 at 0x803571c4, +0x1d8 +0xc at 0x803573c4, +0x268 at 0x80357784; GPU atomic adds of 592079442d7129da, 435a0138b9013040, aba5e6af8d4683eb), zeroes them, keeps moving averages (+0x32c, +0x34c, +0x36c), and writes the 0x90 exposure block (+0xc0: four sums zeroed, 8 floats, 0x60 zero bytes; 0x80357608) and a 0x40 light block (+0x150)
 
 # --- shaders and programs
 81279cd0 g3d_material_shader_setup        # work/assets/native/shader-stream.md, work/assets/native/engine-materials.md: g3d's per-material shader setup ("nvn2")
