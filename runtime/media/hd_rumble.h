@@ -142,7 +142,7 @@ static inline int hd_rumble_due(const uint8_t packet[HD_RUMBLE_PACKET_SIZE], con
 
 /* A pad's HD rumble state, as the poll moves it: unknown until its first packet; on while SDL takes them; off (the
    motor path, for as long as the pad is open) once SDL refuses one, or when it has no effect call, is no Switch
-   controller, or HOS_HD_RUMBLE=0. */
+   controller, or hd_rumble=0. */
 enum { HD_RUMBLE_UNKNOWN, HD_RUMBLE_ON, HD_RUMBLE_OFF };
 static inline int hd_rumble_start(int kind, int have_call, int env_off) {
     return kind != HD_RUMBLE_NONE && have_call && !env_off ? HD_RUMBLE_UNKNOWN : HD_RUMBLE_OFF;

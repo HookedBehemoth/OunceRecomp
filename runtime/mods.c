@@ -1,11 +1,11 @@
 /* Mods, in the layout emulators use, so RomFS mods made for them work as they are:
      <mods>/<name>/romfs/...          files that replace (or add to) the game's RomFS
-   <mods> is the "mods" folder beside the executable, or HOS_MODS=<dir>. A mod may sit deeper, as emulators keep them
+   <mods> is the "mods" folder beside the executable, or mods=<dir>. A mod may sit deeper, as emulators keep them
    (<mods>/contents/<title id>/<name>/romfs): any folder holding a romfs or exefs folder is a mod. Folders whose names
    start with '-' or '_' are left out (off). When two mods have the same file, the one whose path sorts last wins (name
    them 01-..., 02-... to order them).
    Every mod file is indexed once at the start (no disk lookups per open); nn_fs.c asks hos_mods_romfs for each rom:
-   path and lists a folder's mod-only entries with the game's own (hos_mods_dir_extras). HOS_FS_OVERLAY (nn_fs.c) is
+   path and lists a folder's mod-only entries with the game's own (hos_mods_dir_extras). fs.overlay (nn_fs.c) is
    looked at after this, so a test overlay wins over mods.
    exefs patches (.pchtxt, .ips) are not applied: the code is compiled ahead of time from the original instructions, and
    the game folder has no module map (image.json) to place data patches with. A mod's exefs folder is logged as left out.
@@ -142,8 +142,8 @@ static int mod_cmp(const void *a, const void *b) { return strcasecmp(((const Mod
 void hos_mods_init(const char *image_path) {
     (void)image_path;
     char root[OS_PATH_MAX];
-    if (getenv("HOS_MODS")) {
-        snprintf(root, sizeof root, "%s", getenv("HOS_MODS"));
+    if (*setting_str(SET_MODS)) {
+        snprintf(root, sizeof root, "%s", setting_str(SET_MODS));
     } else {
         hos_game_path_a(root, sizeof root);
         char *slash = strrchr(root, '/');

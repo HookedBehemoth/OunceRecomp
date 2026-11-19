@@ -12,9 +12,8 @@
    aux effects pass through. Played sample counts and released wave buffers go back to the game as on hardware.
    The game's parameter changes take effect together at RequestUpdateAudioRenderer, and volume changes ramp over a
    frame, as the console's renderer does them (see "parameter updates").
-   HOS_AUDIO_DUMP=<file.wav>: also write what is played (checking without speakers); HOS_AUDIO=0: silence;
-   HOS_AUDIO_CHANNELS=2 or 6: stereo or 5.1 whatever the default output has and the Insert menu's Audio output say
-   (see au_speakers). */
+   audio.dump=<file.wav>: also write what is played (checking without speakers); audio=0: silence;
+   audio_output: auto, stereo or 5.1 (see au_speakers). */
 #include "hos.h"
 #include <math.h>
 #include <stdio.h>
@@ -22,7 +21,6 @@
 #include <string.h>
 #include "os.h"
 #include "hos_sdl.h"
-#include "hos_paths.h"   /* (the game folder: ounce_options.ini, au_menu_output) */
 
 void hos_system_event_init(uint64_t key, int autoclear);
 void hos_system_event_signal(uint64_t key);
@@ -102,8 +100,8 @@ static void au_unlock(void) { os_mutex_unlock(&lock); }
 static void put_handle(uint64_t obj, int kind, int index) {
     if (obj) G64(obj) = (uint64_t)AU_MAGIC << 32 | (uint64_t)kind << 24 | (uint32_t)index;
 }
-static int au_trace = -1;   /* HOS_AUDIO_TRACE=1: the graph setup calls */
-#define AUT(...) do { if (au_trace < 0) au_trace = getenv("HOS_AUDIO_TRACE") != NULL; if (au_trace) hos_log(__VA_ARGS__); } while (0)
+static int au_trace = -1;   /* log.audio: the graph setup calls */
+#define AUT(...) do { if (au_trace < 0) au_trace = setting_bool(SET_LOG_AUDIO); if (au_trace) hos_log(__VA_ARGS__); } while (0)
 static int get_handle(uint64_t obj, int kind) {
     if (!obj) return -1;
     const uint64_t h = G64(obj);
@@ -269,7 +267,7 @@ static int next_source_frame(Voice *v) {
    Parameters as the game sets them (gains in millibels, times as nn::TimeSpan); the processing is ours, a small
    feedback delay network in the I3DL2 spirit: a pre-delay line feeding early reflection taps, then 4 delay lines
    (Hadamard feedback, high-frequency damping from the HF decay ratio), wet = room gain x (reflections + late),
-   out = dry gain x in + wet. HOS_AUDIO_NO_REVERB=1: left out (dry). */
+   out = dry gain x in + wet. audio.no_reverb: left out (dry). */
 #define MAX_EFFECTS 16
 #define REV_PRE (RATE / 2)          /* pre-delay line: 0.5 s */
 #define REV_LINE 4096               /* each late line, at most ~85 ms */
@@ -288,7 +286,7 @@ static Reverb reverbs[MAX_EFFECTS];
 static float mb_gain(float mb) { return powf(10.0f, mb / 2000.0f); }
 static void reverb_frame(Reverb *rv, Mix *m) {
     static int off = -1;
-    if (off < 0) off = getenv("HOS_AUDIO_NO_REVERB") != NULL;
+    if (off < 0) off = setting_bool(SET_AUDIO_NO_REVERB);
     if (off || !rv->enabled || rv->n <= 0) return;
     static const int base_len[4] = {1559, 1617, 1491, 1422};
     const float density = rv->density > 0 ? rv->density / 100.0f : 1.0f;
@@ -496,9 +494,9 @@ static void render_frame(int16_t *pcm, int channels) {   /* 240 frames of the de
         }
     }
     const int nch = six ? 6 : 2;
-    {   /* HOS_AUDIO_STATS=1: once a second, what plays and where the signal is */
+    {   /* log.audio_stats: once a second, what plays and where the signal is */
         static int stats = -1, frames;
-        if (stats < 0) stats = getenv("HOS_AUDIO_STATS") != NULL;
+        if (stats < 0) stats = setting_bool(SET_LOG_AUDIO_STATS);
         if (stats && ++frames % 200 == 0) {
             int started = 0, with_buffers = 0, to_mix = 0, to_split = 0;
             for (int i = 0; i < MAX_VOICES; i++) {
@@ -575,25 +573,7 @@ static void render_frame(int16_t *pcm, int channels) {   /* 240 frames of the de
 static uint64_t au_ms(void) { return (uint64_t)(os_now_ns() / 1000000); }
 /* The default output's channels (SDL's default device); 2 when unknown. */
 static int au_device_channels(void) { return hos_sdl_audio_channels(); }
-/* (runtime) The Insert menu's Audio output (gpu/legacy/vk/vk_menu.cpp): audio_output= in ounce_options.ini beside the game,
-   0 Auto, 1 Stereo, 2 5.1 (a number past them is the nearest, as the menu reads it). Read from the file, as
-   runtime/nn_applet.c reads the Handheld profile: the game asks for its speakers only once, at its start */
-static int au_menu_output(void) {
-    char path[OS_PATH_MAX];
-    const uint32_t len = hos_game_path_a(path, OS_PATH_MAX);
-    char *slash = len ? strrchr(path, '/') : NULL;
-    if (!slash) return 0;
-    snprintf(slash + 1, (size_t)(path + OS_PATH_MAX - slash - 1), "ounce_options.ini");
-    FILE *f = fopen(path, "r");
-    if (!f) return 0;
-    char line[80];
-    int v = 0;
-    while (fgets(line, sizeof line, f))
-        if (!strncmp(line, "audio_output=", 13)) v = atoi(line + 13);
-    fclose(f);
-    return v < 1 ? 0 : v > 2 ? 2 : v;
-}
-/* The speakers the game mixes for: the Insert menu's Audio output, Stereo 2 or 5.1 6, HOS_AUDIO_CHANNELS=2 or 6 over it;
+/* The speakers the game mixes for: the audio_output setting, stereo 2 or 5.1 6;
    Auto: 6 when the default output has 5.1 or more, else 2. The game asks once, at its start
    (GetActiveAudioDeviceChannelCountForOutput), and pans for that many, so a change takes a restart. Told 2 (always,
    before), it put nothing behind the player, and a 5.1 system played the whole game from the front speakers (issue
@@ -603,15 +583,11 @@ static int au_speakers(void) {
     if (!known) {
         au_lock();   /* (the game's thread and the mixer's ask at about the same time: one of them looks) */
         if (!known) {
-            const char *want = getenv("HOS_AUDIO_CHANNELS");
-            const int menu = want && *want ? 0 : au_menu_output();
+            const int menu = (int)setting_int(SET_AUDIO_OUTPUT);   /* (0 auto, 1 stereo, 2 5.1) */
             int n;
-            if (want && *want) {
-                n = atoi(want) >= 6 ? 6 : 2;
-                hos_log("audio: %s for the game (HOS_AUDIO_CHANNELS)", n == 6 ? "5.1" : "stereo");
-            } else if (menu) {
+            if (menu) {
                 n = menu == 2 ? 6 : 2;
-                hos_log("audio: %s for the game (the Insert menu's Audio output)", n == 6 ? "5.1" : "stereo");
+                hos_log("audio: %s for the game (audio_output)", n == 6 ? "5.1" : "stereo");
             } else {
                 const int device = au_device_channels();
                 n = device >= 6 ? 6 : 2;
@@ -623,7 +599,7 @@ static int au_speakers(void) {
     }
     return known;
 }
-/* ---- output: SDL's default device, 10 ms blocks; a WAV file with HOS_AUDIO_DUMP ----------------------------------
+/* ---- output: SDL's default device, 10 ms blocks; a WAV file with audio.dump ----------------------------------
    The mixer fills the blocks in turn and queues each one full; SDL's thread (output_pull) plays the queued ones in
    order, giving each back as it takes its last byte, and silence when none is queued. */
 #define NBLOCKS 10
@@ -698,15 +674,15 @@ static void output_open(void) {
     static int dump_done;
     int channels = au_speakers();
     if (!dump_done) {
-        const char *d = getenv("HOS_AUDIO_DUMP");
-        if (d && (dump = fopen(d, "wb")) != NULL) {
+        const char *d = setting_str(SET_AUDIO_DUMP);
+        if (*d && (dump = fopen(d, "wb")) != NULL) {
             static const uint8_t z[44];
             fwrite(z, 1, 44, dump);
         }
         out_channels = channels;
         dump_done = 1;
     }
-    if (getenv("HOS_AUDIO") && atoi(getenv("HOS_AUDIO")) == 0) return;
+    if (!setting_bool(SET_AUDIO)) return;
     if (dump) channels = out_channels;   /* (a dump keeps one layout: no stereo fallback) */
     while (!output_try(channels) && channels != 2 && !dump) {
         hos_log("audio: the device took no 5.1: stereo instead");
@@ -804,7 +780,7 @@ static void output_frame(const int16_t *pcm) {
    finished them, a pass over the voices could find the first ones full and a later one a buffer short: Ocarina's sound
    thread feeds its six speaker voices that way, appended the short one an extra buffer, then one more each pass, until
    the queue was full and that speaker went silent for good (a run in five or so).
-   HOS_AUDIO_IMMEDIATE=1: every change applied as it comes (as before). */
+   audio.immediate: every change applied as it comes (as before). */
 enum { OP_VOICE_RELEASE, OP_VOICE_DEST, OP_VOICE_MIX_VOLUME, OP_VOICE_VOLUME, OP_VOICE_PITCH, OP_VOICE_BIQUAD,
        OP_VOICE_STATE, OP_VOICE_APPEND, OP_MIX_RELEASE, OP_MIX_VOLUME, OP_MIX_DEST, OP_MIX_MIX_VOLUME, OP_SPLIT_RELEASE,
        OP_SPLIT_DEST, OP_SPLIT_VOLUME };
@@ -897,7 +873,7 @@ static void apply(const Cmd *k) {   /* (with the lock held) */
 }
 static void submit(const Cmd *k) {   /* (with the lock held) */
     static int immediate = -1;
-    if (immediate < 0) immediate = getenv("HOS_AUDIO_IMMEDIATE") != NULL;
+    if (immediate < 0) immediate = setting_bool(SET_AUDIO_IMMEDIATE);
     if (ncmds == cmds_cap && !immediate) {
         const int cap = cmds_cap ? cmds_cap * 2 : 4096;
         Cmd *grown = (Cmd *)realloc(cmds, (size_t)cap * sizeof *grown);
@@ -1347,10 +1323,10 @@ HLE(_ZN2nn5audio16AppendWaveBufferEPNS0_9VoiceTypeEPKNS0_10WaveBufferE) {
     Voice *v = voice_of(ARG(0));
     int ok = 0;
     if (v && v->nwb + v->pending_wb < MAX_WB) {
-        {   /* HOS_AUDIO_WB_DUMP=<dir>: the first 40 wave buffers' data and the voice's coefficients (debugging) */
+        {   /* audio.wb_dump=<dir>: the first 40 wave buffers' data and the voice's coefficients (debugging) */
             static const char *dir;
             static int init, nd;
-            if (!init) { init = 1; dir = getenv("HOS_AUDIO_WB_DUMP"); }
+            if (!init) { init = 1; dir = *setting_str(SET_AUDIO_WB_DUMP) ? setting_str(SET_AUDIO_WB_DUMP) : NULL; }
             if (dir && nd < 40) {
                 const WB w = read_wb(ARG(1));
                 char path[512];

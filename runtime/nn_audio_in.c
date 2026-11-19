@@ -16,7 +16,7 @@
    it (silence when there is none either) and it is tried again, found by its name in a list made then (it may come back
    under another id), after 3 s, then twice as long each time up to a minute; once it gives sound again the waits start
    over. Off, or no SDL: silence at the stream's rate, so the game's reads go on as they
-   would. A change in the menu takes effect at the next read. HOS_MIC_LOG=1: a line a second while a stream runs (its
+   would. A change in the menu takes effect at the next read. log.mic: a line a second while a stream runs (its
    frames and level). */
 #include "hos.h"
 #include "hos_sdl.h"
@@ -325,7 +325,7 @@ static void detach(InStream *s) {
 }
 static void note_read(InStream *s, const uint8_t *p, int frames) {
     s->frames_read += frames;
-    if (log_on < 0) log_on = getenv("HOS_MIC_LOG") != NULL;
+    if (log_on < 0) log_on = setting_bool(SET_LOG_MIC);
     if (!log_on) return;
     if (s->format == FMT_PCM16)
         for (int i = 0; i < frames * s->channels; i++) {

@@ -4,7 +4,7 @@
 
    The keyboard's state, the window's focus and the screen's size are kept here for nn_hid.c (hos_key_down,
    hos_window_focused, hos_screen_size: hos_sdl.h).
-   HOS_HEADLESS=1: no window. HOS_WINDOW_SIZE=<w>x<h>: its size (default 1280x720). F11: fullscreen (HOS_FULLSCREEN=1 to
+   headless: no window. window_size=<w>x<h>: its size (default 1280x720). F11: fullscreen (fullscreen to
    start so). Mouse: a click in the window captures it (relative motion, for nn_hid.c), Esc or leaving releases it. */
 #include "hos.h"
 #include "game_hooks.h"
@@ -138,33 +138,31 @@ static void renderer_main(void *p) {
 /* The game's first work for the GPU waits for the renderer (nvn_native.c), so nothing it submits while
    the shaders are prepared is lost. Without a window the renderer starts on the game's own thread, before this is asked */
 void hos_renderer_wait(void) {
-    { const char *e = getenv("HOS_NO_RENDERER_WAIT"); if (e && atoi(e) != 0) return; }
     os_event_wait(&renderer_up, OS_FOREVER);
 }
 
 /* ---- the game's frame follows the window. SDL sends resize events all through a drag and has no event for its end,
    so a size applies once no resize came for 250 ms; until then the old frame is letterboxed into the window.
-   HOS_DBG=resize:<w>x<h>@<present>[+<w>x<h>@<present>...] resizes as a window would, for headless tests */
+   debug.resize=<w>x<h>@<present>[+<w>x<h>@<present>...] resizes as a window would, for headless tests */
 static volatile uint64_t resize_size;   /* (width | height << 32 of the last resize not applied yet) */
 static volatile int64_t resize_ns;
 static void resize_note(int w, int h) {
     __atomic_store_n(&resize_ns, os_now_ns(), __ATOMIC_RELAXED);
     __atomic_store_n(&resize_size, (uint64_t)(uint32_t)h << 32 | (uint32_t)w, __ATOMIC_RELEASE);
 }
-static const char *dbg_resize;   /* (the next HOS_DBG resize, or NULL) */
+static const char *dbg_resize;   /* (the next debug.resize, or NULL) */
 static int dbg_resize_parsed;
 void hos_display_presented(void) {   /* (the Presentation Thread, after each present) */
     if (!dbg_resize_parsed) {
         dbg_resize_parsed = 1;
-        const char *d = getenv("HOS_DBG");
-        if (d && hos_dbg_item("resize")) dbg_resize = strstr(d, "resize:") ? strstr(d, "resize:") + 7 : NULL;
+        dbg_resize = *setting_str(SET_DBG_RESIZE) ? setting_str(SET_DBG_RESIZE) : NULL;
     }
     int w, h;
     long long at;
     if (dbg_resize && sscanf(dbg_resize, "%dx%d@%lld", &w, &h, &at) == 3 && hos_present_count >= at) {
         const char *next = strpbrk(dbg_resize, "+,");
         dbg_resize = next && *next == '+' ? next + 1 : NULL;
-        hos_log("display: HOS_DBG resize to %dx%d", w, h);
+        hos_log("display: debug.resize to %dx%d", w, h);
         rx_resize(w, h);
         resize_note(w, h);
     }
@@ -202,7 +200,7 @@ int hos_display_owns_sdl(void) { return sdl_ready; }   /* (controllers stay on t
 /* main(), before the game: SDL's video on this, the main, thread; the screen's size for hos_screen_size.
    Returns 1 when ready, 0 for explicit headless, -1 for startup failure. */
 int hos_display_init(void) {
-    if (getenv("HOS_HEADLESS")) return 0;
+    if (setting_bool(SET_HEADLESS)) return 0;
     if (!hos_sdl_load()) {
         hos_log("display: no SDL: no window");
         fprintf(stderr, "display: no SDL: no window\n");
@@ -231,7 +229,7 @@ int hos_display_init(void) {
 
 /* the game's thread, when NVN is up (hos_main.c): the window is made on the main thread, which waits for this */
 void hos_display_start(void) {
-    if (getenv("HOS_HEADLESS") || !sdl_ready) {   /* no window: the renderer still draws, offscreen (screenshots) */
+    if (setting_bool(SET_HEADLESS) || !sdl_ready) {   /* no window: the renderer still draws, offscreen (screenshots) */
         rx_start(NULL);
         os_event_set(&renderer_up);
         return;
@@ -249,9 +247,9 @@ void hos_display_loop(void) {
     extern float hos_aspect_ratio;
     /* (the picture's shape when Monitor's shape set one, wider or narrower than 16:9: 960 x 720 for 4:3, 1720 x 720 for 21:9) */
     int win_w = hos_aspect_ratio > 0.0f ? (int)(720 * hos_aspect_ratio + 0.5f) : 1280, win_h = 720;
-    if (getenv("HOS_WINDOW_SIZE")) {
+    {
         int w = 0, h = 0;
-        if (sscanf(getenv("HOS_WINDOW_SIZE"), "%dx%d", &w, &h) == 2 && w >= 64 && h >= 64) win_w = w, win_h = h;
+        if (sscanf(setting_str(SET_WINDOW_SIZE), "%dx%d", &w, &h) == 2 && w >= 64 && h >= 64) win_w = w, win_h = h;
     }
     char title[256];
     window_title(title, sizeof title);
@@ -275,7 +273,7 @@ void hos_display_loop(void) {
         game_file(bmp, sizeof bmp, "icon.bmp");
         if (os_path_kind(bmp) != OS_PATH_NONE) hos_sdl_icon(window, bmp);
     }
-    if (getenv("HOS_FULLSCREEN") && atoi(getenv("HOS_FULLSCREEN"))) set_fullscreen(1);
+    if (setting_bool(SET_FULLSCREEN)) set_fullscreen(1);
     __atomic_store_n(&refresh_now, hos_sdl_refresh_mhz(window), __ATOMIC_RELAXED);
     os_thread_release(os_thread_start(renderer_main, NULL, 0, NULL));
     uint32_t refresh_asked = (uint32_t)(os_now_ns() / 1000000);

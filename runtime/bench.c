@@ -1,5 +1,5 @@
-/* HOS_BENCH=<frames>[,<ready frames>[,<GPU frames>[,noplay]]]: a benchmark run, for numbers that compare between runs. The game steps exactly 1/60 s of
-   game time a frame whatever the wall time (nn_vi.c realtime_step, rx_option 0 answered "per frame") and presents unpaced
+/* bench=<frames>[,<ready frames>[,<GPU frames>[,noplay]]]: a benchmark run, for numbers that compare between runs. The game steps exactly 1/60 s of
+   game time a frame whatever the wall time (games' frame_rate.c: a 60th a frame) and presents unpaced
    (hos_vi_native_acquire waits for nothing). Once the scene is ready, every part of it settled for <ready frames> presents in a
    row (60 by default), it runs <frames> more presents, writes bench.csv in the working folder (the run's), logs a summary
    and exits with code 0. The parts: in play (Link updated in the last presents, no map load, no event playing: games/oot/patches/oot_probes.c hos_oot_player_update),
@@ -7,7 +7,7 @@
    shader jobs queued or running, and no draw skipped for a shader not ready), no streaming (no file read by the game since
    the last present), the resource system quiet (resource_work); noplay leaves out "in play" (a game whose patches name no
    player, or a scene with none). <GPU frames>: the back end measures the first of the measured frames by pass
-   (renderer/vk_passtime.h; 0: only HOS_DBG=pstats:bench's present). Unset: off, and nothing here runs but the checks of hos_bench_on. */
+   (renderer/vk_passtime.h; 0: only debug.pstats=bench's present). Unset: off, and nothing here runs but the checks of hos_bench_on. */
 #include "hos.h"
 #include "game_hooks.h"
 #include "bench.h"
@@ -25,9 +25,9 @@ double hos_log_seconds(void);   /* (hos_thread.c: the log's seconds since the pr
 static int frames_wanted = -1, ready_need = 60, gpu_frames = -1, need_play = 1;
 int hos_bench_on(void) {
     if (frames_wanted < 0) {
-        const char *e = getenv("HOS_BENCH");
-        frames_wanted = e && atoi(e) > 0 ? atoi(e) : 0;
-        const char *k = e ? strchr(e, ',') : NULL;
+        const char *e = setting_str(SET_BENCH);
+        frames_wanted = atoi(e) > 0 ? atoi(e) : 0;
+        const char *k = strchr(e, ',');
         if (k && atoi(k + 1) > 0) ready_need = atoi(k + 1);
         const char *g = k ? strchr(k + 1, ',') : NULL;
         if (g) gpu_frames = atoi(g + 1) > 0 ? atoi(g + 1) : 0;

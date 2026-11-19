@@ -253,10 +253,10 @@ HLE(_ZN2nn2fs6CommitEPKc) { RET(0); }
 HLE(_ZN2nn2fs26SetPriorityOnCurrentThreadENS0_8PriorityE) {}
 
 /* ---- files ---------------------------------------------------------------------------------------------------- */
-/* HOS_FS_TRACE=1: every file opened (or not found) is logged */
+/* log.fs: every file opened (or not found) is logged */
 static int fs_trace(void) {
     static int on = -1;
-    if (on < 0) on = getenv("HOS_FS_TRACE") != NULL;
+    if (on < 0) on = setting_bool(SET_LOG_FS);
     return on;
 }
 /* OpenFile(FileHandle*, char const* path, int mode): mode bit 0 read, bit 1 write, bit 2 append */
@@ -267,25 +267,9 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
     if (!host_path(g, path, sizeof path, &writable)) { hos_log("fs: OpenFile(%s): unknown mount", g); RET(R_PATH_NOT_FOUND); return; }
     int want_write = (ARG(2) & 6) != 0;
     if (want_write && !writable) { RET(R_PATH_NOT_FOUND); return; }
-    /* (mkw-recomp) HOS_NO_MOVIES=1: MKW's WebM movies (cup openings, billboards, emblems) are not found, and the
-       game goes on without them (decoded by nn_video.c otherwise) */
-    static int no_movies = -1;   /* (switches read once: OpenFile runs ~6,000 times in a load) */
-    if (no_movies < 0) no_movies = getenv("HOS_NO_MOVIES") != NULL;
-    if (!want_write && no_movies) {
-        const size_t n = strlen(g);
-        if (n > 5 && !strcasecmp(g + n - 5, ".webm")) {
-            static int logged;
-            if (!logged++) hos_log("fs: OpenFile(%s): movies are left out (HOS_NO_MOVIES)", g);
-            RET(R_PATH_NOT_FOUND);
-            return;
-        }
-    }
-    {   /* HOS_FS_OVERLAY=<folder> (a test): a file of the game's data found there is read in place of the game's own */
-        static const char *ov_env;
-        static int ov_read;
-        if (!ov_read) ov_env = getenv("HOS_FS_OVERLAY"), ov_read = 1;
-        const char *ov = ov_env;
-        const char *rel = !want_write && ov ? strstr(g, ":/") : NULL;
+    {   /* fs.overlay=<folder> (a test): a file of the game's data found there is read in place of the game's own */
+        const char *ov = setting_str(SET_FS_OVERLAY);
+        const char *rel = !want_write && *ov ? strstr(g, ":/") : NULL;
         if (rel) {
             char alt[HOS_FS_PATH];
             snprintf(alt, sizeof alt, "%s/%s", ov, rel + 2);
@@ -295,7 +279,7 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
             }
         }
     }
-    /* (the host's file calls block: a block for HOS_DBG=crit) */
+    /* (the host's file calls block: a block for debug.crit) */
     const int away = hos_block_begin(CRIT_BLOCK_OTHER, (const void *)9);
     os_file *f = os_file_open(path, OS_READ | (want_write ? OS_WRITE : 0), NULL);
     if (away) hos_block_end();
@@ -317,35 +301,31 @@ static uint64_t read_at(Ctx *c, uint64_t id, int64_t off, uint64_t buf, uint64_t
     Handle *fh = get_handle(c, id);
     uint64_t done = 0;
     if (!hos_guest_range(buf, size)) return 0;   /* (runtime: the file's bytes go into guest memory only) */
-    if (hos_bench_on()) hos_bench_fs_read();   /* (HOS_BENCH's "no streaming") */
-    static int64_t delay_ns = -1, delay_after_ns;   /* HOS_FS_DELAY_MS=<ms>[,<after s>] (experiment): slower reads */
+    if (hos_bench_on()) hos_bench_fs_read();   /* (bench's "no streaming") */
+    static int64_t delay_ns = -1, delay_after_ns;   /* fs.delay_ms=<ms>[,<after s>] (experiment): slower reads */
     if (delay_ns < 0) {
-        const char *e = getenv("HOS_FS_DELAY_MS");
-        delay_ns = e ? (int64_t)(atof(e) * 1e6) : 0;
-        const char *a = e ? strchr(e, ',') : NULL;
+        const char *e = setting_str(SET_FS_DELAY);
+        delay_ns = (int64_t)(atof(e) * 1e6);
+        const char *a = strchr(e, ',');
         delay_after_ns = hos_now_ns() + (a ? (int64_t)(atof(a + 1) * 1e9) : 0);
     }
     if (delay_ns && hos_now_ns() >= delay_after_ns) {
         if (fs_trace()) hos_log("fs: read %s at %lld, %llu bytes", fh->path, (long long)off, (unsigned long long)size);
         hos_sleep_ns(delay_ns);
     }
-    /* (as OpenFile: no core held through the read). HOS_FS_KEEP_CORE_KB=<KB> (experiment, native-vk boot speed): reads
-       up to that size keep the core. The loading screen's reads come from the page cache in well under a millisecond,
-       while taking the core back cost ARes Loading 0 580 ms of 5.5 s (work/assets/native/boot-speed.md) */
-    static int64_t keep_core = -1;
-    if (keep_core < 0) keep_core = getenv("HOS_FS_KEEP_CORE_KB") ? atoll(getenv("HOS_FS_KEEP_CORE_KB")) * 1024 : 0;
-    const int away = (int64_t)size <= keep_core ? 0 : hos_block_begin(CRIT_BLOCK_OTHER, (const void *)10);
-    {   /* (M4d: HOS_DBG=texwatch in direct mode: a read into watched texture storage, made writable first) */
+    /* (as OpenFile: no core held through the read) */
+    const int away = hos_block_begin(CRIT_BLOCK_OTHER, (const void *)10);
+    {   /* (M4d: debug.texwatch in direct mode: a read into watched texture storage, made writable first) */
         void texwatch_kernel_write(uint64_t guest, uint64_t n, const char *what);
         texwatch_kernel_write(buf, size, fh->path);
     }
     const int64_t got = os_file_read_at(fh->f, GP(buf), (size_t)size, (uint64_t)off);
     if (got > 0) done = (uint64_t)got;
     if (away) hos_block_end();
-    {   /* HOS_FS_WATCH=<lo hex>:<hi hex> (debugging): reads into that guest range, with the file */
+    {   /* fs.watch=<lo hex>:<hi hex> (debugging): reads into that guest range, with the file */
         static int on = -1;
         static unsigned long long wlo, whi;
-        if (on < 0) on = getenv("HOS_FS_WATCH") && sscanf(getenv("HOS_FS_WATCH"), "%llx:%llx", &wlo, &whi) == 2;
+        if (on < 0) on = sscanf(setting_str(SET_FS_WATCH), "%llx:%llx", &wlo, &whi) == 2;
         if (on && buf < whi && buf + done > wlo)
             hos_log("fs: read into watched memory: %s at %lld, %llu bytes to %#llx", fh->path, (long long)off,
                     (unsigned long long)done, (unsigned long long)buf);

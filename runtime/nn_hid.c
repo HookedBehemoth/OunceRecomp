@@ -1,24 +1,22 @@
 /* nn::hid: one Pro Controller (FullKey style) on Npad No.1, from every SDL gamepad and the keyboard and mouse at
    once. Buttons map by position (the Xbox bottom face button is the Switch's bottom one, B).
 
-   (runtime) What presses each button, on a gamepad and on the keyboard, is the player's: the Insert menu's Controls
-   page (gpu/legacy/vk/vk_menu.cpp) changes it, kept in ounce_options.ini (binds_load). The defaults:
+   (runtime) What presses each button, on a gamepad and on the keyboard, is the player's: the pad_ and key_ settings
+   (binds_load). The defaults:
    Keyboard (totk-pc-recomp's layout): WASD left stick, arrows or IJKL right stick (camera), Space X (jump), E A
    (action), Shift B (run/cancel), Q L (abilities), R R, Z ZL, X or F ZR (bow), Ctrl left-stick click (crouch), C
    right-stick click (first person), Tab or Enter Plus, M Minus (map), 1 2 3 4 d-pad left, up, right, down. Only
    while the game's window is in front.
    Mouse (after a click in the window, display.c; Esc releases): its motion is the right stick (mouse panning,
-   mouse_stick), or with the Insert menu's "Mouse camera" set to Native (HOS_MOUSE_NATIVE=1 or 0 overrides it) turns
-   the camera itself (mouse_native.c); left button Y (attack), right button ZL (shield, lock on). - and = change its sensitivity (x0.8 /
-   x1.25, shown in the title bar, kept by the Insert menu's Mouse sensitivity row); HOS_MOUSE_SENS=<x> sets it,
-   HOS_MOUSE_INVERT_Y=1 (or the menu's Invert mouse vertical) flips up/down.
+   mouse_stick), or with mouse_camera set to native turns the camera itself (mouse_native.c); left button Y (attack),
+   right button ZL (shield, lock on). - and = change its sensitivity (x0.8 / x1.25, shown in the title bar, kept as
+   mouse_sensitivity); mouse_invert_y flips up/down.
 
-   Controllers count only while the game's window is in front, like the keyboard, unless the Insert menu's "Controller in
-   background" is on (or HOS_INPUT_BACKGROUND=1; =0 keeps them to the window in front whatever the menu says): then a
+   Controllers count only while the game's window is in front, like the keyboard, unless pads_in_background is on: then a
    game streamed from a screen of its own, or left running behind another window, still follows the pad. The keyboard
    and mouse stay with the window in front either way.
 
-   HOS_INPUT_SCRIPT (test runs): timed presses added to the input, "<seconds>:<button>[+<button>...][/<ms held>],..."
+   input.script (test runs): timed presses added to the input, "<seconds>:<button>[+<button>...][/<ms held>],..."
    with buttons A B X Y L R ZL ZR PLUS MINUS LS RS LEFT UP RIGHT DOWN and the stick directions LUP LDOWN LLEFT
    LRIGHT RUP RDOWN RLEFT RRIGHT; held 200 ms unless given. Example: "50:A,52:A,80:LUP/4000".
 
@@ -45,51 +43,23 @@ enum { B_A = 0, B_B, B_X, B_Y, B_LS, B_RS, B_L, B_R, B_ZL, B_ZR, B_PLUS, B_MINUS
 
 static int64_t sampling;
 
-int rx_option(int id, int otherwise);
-/* (the Insert menu takes the keyboard while it is open) */
-static int key(int vk) { return !rx_option(1, 0) && hos_key_down(vk); }
+static int key(int vk) { return hos_key_down(vk); }
 
 int hos_mouse_take(int32_t *dx, int32_t *dy);   /* display.c */
 
-/* The captured mouse's sensitivity (mouse_stick below): - and = change it, kept in <user>/mouse_sens.txt */
+/* The captured mouse's sensitivity (mouse_stick below), the mouse_sensitivity setting: - and = change it (x0.8, x1.25),
+   kept in the options file */
 double hos_mouse_sens = 0;   /* (display.c shows it in the title) */
-extern const char *hos_user_dir;
 
-static void mouse_sens_save(void) {
-    char path[512];
-    snprintf(path, sizeof path, "%s/mouse_sens.txt", hos_user_dir ? hos_user_dir : "user");
-    FILE *f = fopen(path, "w");
-    if (f) { fprintf(f, "%.3f\n", hos_mouse_sens); fclose(f); }
-}
-
-/* The Insert menu keeps the sensitivity (its Mouse sensitivity row, option 7, in percent), read with each read; - and =
-   change it there. HOS_MOUSE_SENS still wins, and then - and = keep it in <user>/mouse_sens.txt as before. A value in
-   mouse_sens.txt from before is moved into the menu once, while the menu's is still its default; the file is renamed
-   mouse_sens.txt.moved then, so the menu's value is not replaced by it again at a later start */
-void rx_option_set(int id, int value);
-static int sens_from_file;   /* (mouse_setup: <user>/mouse_sens.txt was there) */
 static void mouse_sens_keys(void) {
-    static int prev_minus, prev_plus, from_env = -1;
-    if (from_env < 0) {
-        from_env = getenv("HOS_MOUSE_SENS") && atof(getenv("HOS_MOUSE_SENS")) > 0;
-        if (!from_env && sens_from_file && rx_option(7, -1) >= 0) {   /* (the menu is there to take it) */
-            if (hos_mouse_sens > 0 && fabs(hos_mouse_sens - 1.0) > 0.01 && rx_option(7, 100) == 100)
-                rx_option_set(7, (int)lround(hos_mouse_sens * 100));
-            char from[512], to[520];
-            snprintf(from, sizeof from, "%s/mouse_sens.txt", hos_user_dir ? hos_user_dir : "user");
-            snprintf(to, sizeof to, "%s.moved", from);
-            remove(to);
-            if (rename(from, to)) hos_log("hid: %s could not be renamed after its move into the menu", from);
-        }
-    }
-    if (!from_env) hos_mouse_sens = rx_option(7, 100) / 100.0;
+    static int prev_minus, prev_plus;
+    hos_mouse_sens = setting_float(SET_MOUSE_SENSITIVITY);
     const int minus = key(VK_OEM_MINUS) || key(VK_SUBTRACT), plus = key(VK_OEM_PLUS) || key(VK_ADD);
     if ((minus && !prev_minus) || (plus && !prev_plus)) {
-        hos_mouse_sens *= minus && !prev_minus ? 0.8 : 1.25;
-        if (hos_mouse_sens < 0.1) hos_mouse_sens = 0.1;
-        if (hos_mouse_sens > 5) hos_mouse_sens = 5;
-        if (from_env) mouse_sens_save();
-        else rx_option_set(7, (int)lround(hos_mouse_sens * 100));
+        double v = hos_mouse_sens * (minus && !prev_minus ? 0.8 : 1.25);
+        v = v < 0.1 ? 0.1 : v > 5 ? 5 : v;
+        setting_write_float(SET_MOUSE_SENSITIVITY, v);
+        hos_mouse_sens = v;
     }
     prev_minus = minus;
     prev_plus = plus;
@@ -103,16 +73,11 @@ static void mouse_sens_keys(void) {
    decay), at least min_decay a tick; the held length is cut to 1.5 (past the stick's edge, so a steady turn is easy
    to hold) and shown at most 1. A movement that leaves less than 20% is lifted to 20%, past the game's dead zone.
    MacNativeGames' decay (18%, at least 6%) suits a trackpad: with a mouse the camera drifted on for 0.4 s after it
-   stopped. Here 30%, at least 20% (HOS_MOUSE_DECAY / HOS_MOUSE_MIN_DECAY, percent): it stops within ~0.1 s, and one
+   stopped. Here 30%, at least 20%: it stops within ~0.1 s, and one
    raw count moves the stick by sensitivity * 0.03, so at 1 the deflection follows 100-700 counts/s (0.2 to ~0.9)
    and is full from ~1000. */
 enum { MOUSE_TICK_NS = 10000000 };
 static double look_x, look_y;   /* (the held deflection, stick units, y up) */
-
-static double mouse_percent(const char *name, double fallback) {
-    const char *e = getenv(name);
-    return e && atof(e) >= 0 && atof(e) <= 100 ? atof(e) / 100 : fallback;
-}
 
 static void mouse_look_move(double dx, double dy) {
     const double k = hos_mouse_sens * 0.03;
@@ -125,8 +90,8 @@ static void mouse_look_move(double dx, double dy) {
 static void mouse_look_tick(void) {
     static double decay_rate = -1, min_decay;
     if (decay_rate < 0) {
-        decay_rate = mouse_percent("HOS_MOUSE_DECAY", 0.30);
-        min_decay = mouse_percent("HOS_MOUSE_MIN_DECAY", 0.20);
+        decay_rate = 0.30;
+        min_decay = 0.20;
     }
     double length = sqrt(look_x * look_x + look_y * look_y);
     if (length > 1.5) look_x *= 1.5 / length, look_y *= 1.5 / length, length = 1.5;
@@ -142,34 +107,13 @@ static void mouse_look_tick(void) {
    the centre as soon as the mouse stopped, taking the pick with it. The stick starts at the centre, stays where the
    mouse puts it (cut to length 1) and is centred again when L is let go, so the camera does not turn by itself after
    the wheel closes. */
-static int invert = -1;
-static void mouse_setup(void) {   /* (once: the sensitivity kept in <user>/mouse_sens.txt, HOS_MOUSE_SENS, the inversion) */
-    if (invert < 0) {
-        invert = getenv("HOS_MOUSE_INVERT_Y") != NULL;
-        hos_mouse_sens = 1.0;
-        char path[512];
-        snprintf(path, sizeof path, "%s/mouse_sens.txt", hos_user_dir ? hos_user_dir : "user");
-        FILE *f = fopen(path, "r");
-        if (f) {
-            double v;
-            if (fscanf(f, "%lf", &v) == 1 && v > 0) hos_mouse_sens = v;
-            fclose(f);
-            sens_from_file = 1;
-        }
-        const char *e = getenv("HOS_MOUSE_SENS");
-        if (e && atof(e) > 0) hos_mouse_sens = atof(e);
-    }
-}
-
+static int invert;
 static int mouse_stick(int32_t *rx, int32_t *ry, int pointing) {
     static int64_t next_tick;
     static int32_t shown[2];
     static int captured, was_pointing;
-    mouse_setup();
     mouse_sens_keys();
-    static int env_invert = -1;   /* (HOS_MOUSE_INVERT_Y, or the menu's Invert mouse vertical, option 8) */
-    if (env_invert < 0) env_invert = invert;
-    invert = env_invert || rx_option(8, 0);
+    invert = setting_bool(SET_MOUSE_INVERT_Y);
     const int64_t now = hos_now_ns();
     if (now >= next_tick) {
         int32_t dx, dy;
@@ -214,7 +158,7 @@ static int game_in_front(void) {
     return front;
 }
 
-/* HOS_INPUT_SCRIPT, and HOS_INPUT_LIVE=<file>: lines appended to that file while the game runs are presses in the
+/* input.script, and input.live=<file>: lines appended to that file while the game runs are presses in the
    script's syntax, their times counted from when the line is read ("0:LUP/2000,2:A"): a test can steer the game
    by looking at its screenshots. */
 typedef struct { int64_t start_ms, end_ms; uint64_t buttons; int32_t stick[4]; } Press;
@@ -225,7 +169,7 @@ static int64_t script_t0, script_end_ms;
 static int script_frame_clock;
 static int64_t script_frame0;
 extern volatile int64_t hos_present_count;   /* native game presents, not generated frames or HID polls */
-/* HOS_INPUT_FRAME_CLOCK=1: the existing script seconds/millisecond holds advance at 60 native frames per second;
+/* input.frame_clock: the existing script seconds/millisecond holds advance at 60 native frames per second;
    =game: by the game's own clock (game_hooks.h game_clock, in 1/60 s), so a press lands at the same moment of game
    time at any frame rate. Live-file polling and HID diagnostics keep their wall clocks. Default/0/empty retains
    wall-clock scripts. */
@@ -249,11 +193,10 @@ static void parse_script(void) {
     npresses = 0;
     script_t0 = hos_now_ns();
     {
-        const char *e = getenv("HOS_INPUT_FRAME_CLOCK");
-        script_frame_clock = e && !strcmp(e, "game") ? 2 : e && atoi(e) != 0;
+        script_frame_clock = (int)setting_int(SET_INPUT_FRAME_CLOCK);   /* (0 off, 1 presents, 2 the game clock) */
         if (script_frame_clock) script_frame0 = os_atomic_load(&hos_present_count), script_clock0 = game_clock();
     }
-    parse_presses(getenv("HOS_INPUT_SCRIPT"), 0, 0);
+    parse_presses(setting_str(SET_INPUT_SCRIPT), 0, 0);
     if (npresses)
         hos_log("hid: input script of %d presses (last at %.0f s; the player's devices count too)", npresses,
                 script_end_ms / 1000.0);
@@ -263,7 +206,7 @@ static void live_input(void) {
     static const char *path;
     static int64_t next_check, offset;
     static int looked;
-    if (!looked) { looked = 1; path = getenv("HOS_INPUT_LIVE"); }
+    if (!looked) { looked = 1; path = *setting_str(SET_INPUT_LIVE) ? setting_str(SET_INPUT_LIVE) : NULL; }
     if (!path) return;
     const int64_t now = hos_now_ns();
     if (now < next_check) return;
@@ -352,16 +295,12 @@ static void stick_max(int32_t stick[4], const int32_t v[4]) {
         if ((v[i] < 0 ? -v[i] : v[i]) > (stick[i] < 0 ? -stick[i] : stick[i])) stick[i] = v[i];
 }
 
-/* ---- (runtime) the controls: the gamepad input (by position) and the keys that press each Switch button, from
-   ounce_options.ini beside the executable when it has them: pad_<button>=<HOS_PAD_* position, -1 none> and
-   key_<button>=<key code>,<key code> (Windows key codes, 0 none), <button> one of bind_names. Read once, at the
-   first use; what the file leaves out keeps its default. Keys only, after the Switch's buttons (HOS_KEY_*): the left
-   stick's and the camera's directions. A key can be a mouse button (1 2 4 5 6: left, right, middle, 4, 5), which counts
-   only while the mouse is captured ---- */
-static const char *const bind_names[HOS_KEY_N] = {"a", "b", "x", "y", "ls", "rs", "l", "r", "zl", "zr", "plus",
-                                                  "minus", "left", "up", "right", "down", "move_up", "move_down",
-                                                  "move_left", "move_right", "cam_up", "cam_down", "cam_left",
-                                                  "cam_right"};
+/* ---- (runtime) the controls: the gamepad input (by position) and the keys that press each Switch button, the pad_<button>
+   and key_<button> settings (renderer/api/settings.h; key codes are Windows', 0 none). Read once, at the first use; what
+   is not set keeps its default. Keys only, after the Switch's buttons (HOS_KEY_*): the left stick's and the camera's
+   directions. A key can be a mouse button (1 2 4 5 6: left, right, middle, 4, 5), which counts only while the mouse is
+   captured ---- */
+_Static_assert(SET_PAD_DOWN - SET_PAD_A + 1 == HOS_SW_N && SET_KEY_CAM_RIGHT - SET_KEY_A + 1 == HOS_KEY_N, "the controls' settings");
 static const signed char pad_default[HOS_SW_N] = {
     HOS_PAD_EAST, HOS_PAD_SOUTH, HOS_PAD_NORTH, HOS_PAD_WEST, HOS_PAD_LSTICK, HOS_PAD_RSTICK, HOS_PAD_LSHOULDER,
     HOS_PAD_RSHOULDER, HOS_PAD_LTRIGGER, HOS_PAD_RTRIGGER, HOS_PAD_START, HOS_PAD_BACK, HOS_PAD_LEFT, HOS_PAD_UP,
@@ -385,53 +324,23 @@ static void binds_default(void) {
 static void binds_read(void *arg) {
     (void)arg;
     binds_default();
-    char path[OS_PATH_MAX];
-    const uint32_t len = hos_game_path_a(path, OS_PATH_MAX);
-    char *slash = len ? strrchr(path, '/') : NULL;
-    FILE *f = NULL;
-    if (slash) {
-        snprintf(slash + 1, (size_t)(path + OS_PATH_MAX - slash - 1), "ounce_options.ini");
-        f = fopen(path, "r");
-    }
     int changed = 0;
-    if (f) {
-        char line[80];
-        int version = 0, had_keys = 0;   /* (options_version: 3 since the mouse's buttons are bindings) */
-        while (fgets(line, sizeof line, f)) {
-            char *eq = strchr(line, '=');
-            if (!eq) continue;
-            *eq = 0;
-            if (!strcmp(line, "options_version")) version = atoi(eq + 1);
-            const int pad = !strncmp(line, "pad_", 4), keys = !strncmp(line, "key_", 4);
-            had_keys |= keys;
-            for (int i = 0; (pad || keys) && i < HOS_KEY_N; i++) {
-                if (strcmp(line + 4, bind_names[i]) || (pad && i >= HOS_SW_N)) continue;
-                changed++;
-                if (pad) {
-                    const int v = atoi(eq + 1);
-                    pad_bind[i] = v >= 0 && v < HOS_PAD_N ? v : -1;
-                } else {
-                    const char *comma = strchr(eq + 1, ',');
-                    const int a = atoi(eq + 1), b = comma ? atoi(comma + 1) : 0;
-                    key_bind[i][0] = a > 0 && a < 256 ? a : 0;
-                    key_bind[i][1] = b > 0 && b < 256 ? b : 0;
-                }
-            }
+    for (int i = 0; i < HOS_KEY_N; i++) {
+        if (i < HOS_SW_N && setting_int((setting_id)(SET_PAD_A + i)) != -2) {
+            const int v = (int)setting_int((setting_id)(SET_PAD_A + i));
+            pad_bind[i] = v >= 0 && v < HOS_PAD_N ? v : -1;
+            changed++;
         }
-        fclose(f);
-        /* An options file from before version 3 wrote key_y and key_zl without the mouse's buttons, which pressed Y and ZL
-           by themselves then: they go into the second slot when it is empty and no other control has them */
-        if (version < 3 && had_keys) {
-            static const int mouse_to[2][2] = {{HOS_SW_Y, VK_LBUTTON}, {HOS_SW_ZL, VK_RBUTTON}};
-            for (int m = 0; m < 2; m++) {
-                int taken = 0;
-                for (int i = 0; i < HOS_KEY_N; i++)
-                    for (int k = 0; k < 2; k++) taken |= key_bind[i][k] == mouse_to[m][1];
-                if (!taken && !key_bind[mouse_to[m][0]][1]) key_bind[mouse_to[m][0]][1] = mouse_to[m][1];
-            }
+        const char *k = setting_str((setting_id)(SET_KEY_A + i));
+        if (*k) {
+            const char *comma = strchr(k, ',');
+            const int a = atoi(k), b = comma ? atoi(comma + 1) : 0;
+            key_bind[i][0] = a > 0 && a < 256 ? a : 0;
+            key_bind[i][1] = b > 0 && b < 256 ? b : 0;
+            changed++;
         }
     }
-    if (changed) hos_log("hid: %d controls from ounce_options.ini", changed);
+    if (changed) hos_log("hid: %d controls from the options file", changed);
 }
 static void binds_load(void) {
     static os_once once = OS_ONCE_INIT;
@@ -513,12 +422,6 @@ static void pads_read(uint64_t *buttons, int32_t stick[4]) {
     stick_max(stick, s);
 }
 
-/* Whether the controllers count while another window is in front: HOS_INPUT_BACKGROUND=1 or 0 decides when it is set,
-   otherwise the Insert menu's "Controller in background" row */
-static int pads_in_background(const char *env, int menu) {
-    return env ? atoi(env) != 0 : menu != 0;
-}
-
 #ifndef VK_XBUTTON1
 #define VK_XBUTTON1 0x05
 #define VK_XBUTTON2 0x06
@@ -554,38 +457,29 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
        while the game's window is in front, like the keyboard: the pads are read whatever window is in front (pad_sdl.c), so a test
        run in the background used to follow the player's pad (and pressed things in its own menus). */
     /* (runtime) The player's devices count during a script too (the user plays along in test runs, 2026-11-05):
-       the presses add to theirs. HOS_INPUT_EXCLUSIVE=1: the script alone until 5 s after its last press, as before */
+       the presses add to theirs. input.exclusive: the script alone until 5 s after its last press, as before */
     static int exclusive = -1;
-    if (exclusive < 0) exclusive = getenv("HOS_INPUT_EXCLUSIVE") != NULL;
+    if (exclusive < 0) exclusive = setting_bool(SET_INPUT_EXCLUSIVE);
     if (exclusive && npresses > 0 && script_elapsed_ms(hos_now_ns()) < script_end_ms + 5000)
         return;
-    /* (runtime, issue 389) A scripted press (HOS_INPUT_SCRIPT, HOS_INPUT_LIVE) is the test's own, not the
+    /* (runtime, issue 389) A scripted press (input.script, input.live) is the test's own, not the
        player's: it counts with the game's window behind another one, so a test run can drive the game on one
-       monitor while the player works in the front window. HOS_INPUT_BACKGROUND still decides the pads. */
+       monitor while the player works in the front window. pads_in_background still decides the pads. */
     static int scripted_background = -1;
     if (scripted_background < 0) {
-        scripted_background = getenv("HOS_INPUT_SCRIPT_BACKGROUND") != NULL;
-        if (scripted_background) hos_log("hid: scripted input runs with the game in the background (HOS_INPUT_SCRIPT_BACKGROUND)");
+        scripted_background = setting_bool(SET_INPUT_SCRIPT_BACKGROUND);
+        if (scripted_background) hos_log("hid: scripted input runs with the game in the background (input.script_background)");
     }
     if (!game_in_front() && !scripted_background) {   /* (the pads alone, when the player asked for them behind other windows) */
-        static const char *env;
-        static int looked;
-        if (!looked) looked = 1, env = getenv("HOS_INPUT_BACKGROUND");
-        if (pads_in_background(env, rx_option(4, 0))) pads_read(buttons, stick);
+        if (setting_bool(SET_PADS_IN_BACKGROUND)) pads_read(buttons, stick);
         return;
     }
-    {   /* (runtime) while the Insert menu is open the pads are its own, as the keyboard is (key()), and after it
-           closed until they are let go (the press that closed it never reaches the game) */
+    {
         uint64_t pb = 0;
         int32_t ps[4] = {0};
         pads_read(&pb, ps);
-        static int after_menu;
-        if (rx_option(1, 0)) after_menu = 1;
-        else if (after_menu && !pad_raw_now) after_menu = 0;
-        if (!after_menu) {
-            *buttons |= pb;
-            stick_max(stick, ps);
-        }
+        *buttons |= pb;
+        stick_max(stick, ps);
     }
     binds_load();   /* (the keys: key_default's, or ounce_options.ini's; the mouse's buttons once its capture is known) */
     for (int i = 0; i < HOS_SW_N; i++)
@@ -593,13 +487,9 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
     int32_t mouse[4] = {0};
     /* the mouse's motion: the camera itself (mouse_native.c) with the menu's Mouse camera on Native, else the right
        stick; also the stick while the player camera does not run (the pause menu, other cameras: mouse_native.c) */
-    static const char *native_env;
-    static int native_looked;
-    if (!native_looked) native_looked = 1, native_env = getenv("HOS_MOUSE_NATIVE");
-    const int native = native_env ? atoi(native_env) != 0 : rx_option(6, 0);
+    const int native = setting_int(SET_MOUSE_CAMERA) == 1;
     int captured = 0, as_stick = !native;
     if (native) {
-        mouse_setup();
         mouse_sens_keys();
         captured = game_mouse_camera();
         if (captured < 0) captured = 0, as_stick = 1;
@@ -621,13 +511,13 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
     stick_max(stick, keys);
 }
 
-/* HOS_INPUT_RECORD=<dir>: the pad state each read of pad No.1 gives the game (read_input's: pads, keys and mouse after
+/* input.record=<dir>: the pad state each read of pad No.1 gives the game (read_input's: pads, keys and mouse after
    their mapping, and any script) goes to <dir>/input.rec when it changes and once a second, a line each, flushed (a
    kill loses nothing). hos_main.c copies the save folder to <dir>/user before the game starts. Line: <read> <present>
    <ms> <buttons hex> <lx> <ly> <rx> <ry>: the read's number (1 the first), native presents so far, ms since the
    first read. '#' lines are notes; the first names the build and the settings a replay should share.
-   HOS_INPUT_REPLAY=<file>: the file's states instead of the devices' (a line holds until the next), by the read's
-   number, or HOS_INPUT_REPLAY_KEY=present or ms; after the last line the devices count again. */
+   input.replay=<file>: the file's states instead of the devices' (a line holds until the next), by the read's
+   number, or input.replay_key=present or ms; after the last line the devices count again. */
 typedef struct { int64_t key[3]; uint64_t buttons; int32_t stick[4]; } RecLine;
 
 static void input_record(const int64_t key[3], uint64_t buttons, const int32_t stick[4]) {
@@ -638,17 +528,18 @@ static void input_record(const int64_t key[3], uint64_t buttons, const int32_t s
     static int64_t last_ms = -1000000;   /* (the first read is written) */
     if (!opened) {
         opened = 1;
-        const char *dir = getenv("HOS_INPUT_RECORD");
-        if (!dir || !*dir) return;
+        const char *dir = setting_str(SET_INPUT_RECORD);
+        if (!*dir) return;
         char path[1024];
         snprintf(path, sizeof path, "%s/input.rec", dir);
         if (!(f = fopen(path, "w"))) { hos_log("hid: cannot write %s", path); return; }
         const char *hos_version(void);
-        int hos_output_res(void), hos_fps_max(void);   /* nn_applet.c, nn_vi.c */
-        const char *hos_language(void);                /* nn_applet.c */
-        fprintf(f, "# ounce input record 1 build=%s HOS_OUTPUT_RES=%d HOS_FPS_MAX=%d HOS_LANGUAGE=%s\n"
+        /* (the settings a replay is to run with: ounce run --replay gives them as --set) */
+        char out_res[32], rate[32], lang[32];
+        fprintf(f, "# ounce input record 2 build=%s output_res=%s frame_rate=%s language=%s\n"
                    "# read present ms buttons lx ly rx ry\n",
-                hos_version(), hos_output_res(), hos_fps_max(), hos_language());
+                hos_version(), setting_text(SET_OUTPUT_RES, out_res, sizeof out_res),
+                setting_text(SET_FRAME_RATE, rate, sizeof rate), setting_text(SET_LANGUAGE, lang, sizeof lang));
         fflush(f);
         hos_log("hid: recording input to %s", path);
     }
@@ -665,10 +556,9 @@ static int input_replay(const int64_t key[3], uint64_t *buttons, int32_t stick[4
     static int n, at = -1, k, state;   /* state: 0 not read, 1 replaying, 2 over or none */
     if (!state) {
         state = 2;
-        const char *path = getenv("HOS_INPUT_REPLAY");
-        if (!path || !*path) return 0;
-        const char *e = getenv("HOS_INPUT_REPLAY_KEY");
-        k = e && !strcmp(e, "present") ? 1 : e && !strcmp(e, "ms") ? 2 : 0;
+        const char *path = setting_str(SET_INPUT_REPLAY);
+        if (!*path) return 0;
+        k = (int)setting_int(SET_INPUT_REPLAY_KEY);   /* (0 the read, 1 the present, 2 the time) */
         FILE *f = fopen(path, "r");
         if (!f) { hos_log("hid: replay: cannot read %s", path); return 0; }
         char line[256];

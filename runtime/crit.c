@@ -1,4 +1,4 @@
-/* HOS_DBG=crit: the trace for the frame's critical path (crit.h). Measurement only. */
+/* debug.crit= the trace for the frame's critical path (crit.h). Measurement only. */
 #include "crit.h"
 #include "renderer.h"
 #include "hos.h"
@@ -28,18 +28,17 @@ static int64_t ns0, ns1;
 int crit_wanted(void) {
     static int v = -1;
     if (v < 0) {
-        const char *d = getenv("HOS_DBG");
-        const char *p = d ? strstr(d, "crit") : NULL;
-        v = p != NULL;
-        if (v && p[4] == ':') {
-            first = atoll(p + 5);
-            const char *q = strchr(p + 5, ':');
-            if (q && (!strchr(p + 5, ',') || q < strchr(p + 5, ','))) count = atoll(q + 1);
+        const char *p = setting_str(SET_DBG_CRIT);   /* (on, or <first present>[:<presents>]) */
+        v = *p != 0;
+        if (v && atoll(p) > 0) {
+            first = atoll(p);
+            const char *q = strchr(p, ':');
+            if (q) count = atoll(q + 1);
         }
         if (v) {
             evs = (crit_ev *)calloc((size_t)cap, sizeof *evs);
             if (!evs) v = 0;
-            hos_log("crit: a trace of the guest threads and the back end's calls over presents %lld-%lld (HOS_DBG=crit)", first, first + count);
+            hos_log("crit: a trace of the guest threads and the back end's calls over presents %lld-%lld (debug.crit)", first, first + count);
         }
     }
     return v;

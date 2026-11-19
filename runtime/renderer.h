@@ -60,7 +60,7 @@ void gpu_flush(void);
 
 /* nvn_native.c : the back end's open list of a guest command buffer (this thread's record handed over first) */
 void *cmd_list(uint64_t cmd);
-/* texwatch.c : HOS_DBG=texwatch, CPU writes into texture storage (diagnosis): nvn_native.c's texture
+/* texwatch.c : debug.texwatch, CPU writes into texture storage (diagnosis): nvn_native.c's texture
    initialization and release, nn_fs.c's reads into guest memory, the present's line */
 int texwatch_on(void);
 void texwatch_created(const void *nvn_texture, uint64_t init_lr);

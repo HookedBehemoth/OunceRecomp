@@ -42,9 +42,9 @@
    than it has room for; MAX_QUEUE, so the queue never drops a picture */
 #define MAX_IN_FLIGHT MAX_QUEUE
 
-static int video_log(void) {   /* HOS_VIDEO_LOG=1: submissions and acquisitions */
+static int video_log(void) {   /* log.video: submissions and acquisitions */
     static int on = -1;
-    if (on < 0) on = getenv("HOS_VIDEO_LOG") != NULL;
+    if (on < 0) on = setting_bool(SET_LOG_VIDEO);
     return on;
 }
 
@@ -89,7 +89,7 @@ typedef struct {
     uint64_t waiting_fence[MAX_SLOTS];
     int nwaiting;
     int64_t last_pts;                /* the pts of the last picture handed out */
-    int64_t log_submits;             /* (HOS_VIDEO_LOG) submissions still to log, after a flush or the end */
+    int64_t log_submits;             /* (log.video) submissions still to log, after a flush or the end */
     os_mutex lock;
     os_thread *worker;               /* decodes the submissions (worker_main) */
     os_cond wake;                    /* (with lock) work for the worker, or its submission done */
@@ -226,7 +226,7 @@ HLE(_ZN2nn5codec26ReadDecoderOutputImageRgbaEPKNS0_25VideoDecoderImagePoolTypeEj
     Pool *o = (Pool *)host_of(ARG(0), POOL_MAGIC);
     const uint32_t i = (uint32_t)ARG(1), x = (uint16_t)ARG(2), y = (uint16_t)ARG(3), w = (uint16_t)ARG(4), h = (uint16_t)ARG(5);
     const uint64_t dst = ARG(6), stride = ARG(7) ? ARG(7) : (uint64_t)w * 4;
-    {   /* (runtime, HOS_VIDEO_LOG) the first reads, with where they go */
+    {   /* (runtime, log.video) the first reads, with where they go */
         static volatile int32_t n;
         if (video_log() && os_atomic_inc(&n) <= 4)
             hos_log("video: ReadDecoderOutputImageRgba(pool %s, index %u, %u,%u %ux%u, dst %#llx stride %llu)",
@@ -250,7 +250,7 @@ HLE(_ZN2nn5codec26ReadDecoderOutputImageNv12EPKNS0_25VideoDecoderImagePoolTypeEj
     const uint32_t i = (uint32_t)ARG(1), x = (uint16_t)ARG(2), y = (uint16_t)ARG(3), w = (uint16_t)ARG(4), h = (uint16_t)ARG(5);
     const uint64_t ydst = ARG(6), ystride = ARG(7) ? ARG(7) : w;
     const uint64_t uvdst = G64(c->x[31] + 8), uvstride = G64(c->x[31] + 16) ? G64(c->x[31] + 16) : w;
-    {   /* (HOS_VIDEO_LOG) each new destination, with the pool and image */
+    {   /* (log.video) each new destination, with the pool and image */
         static uint64_t seen[32];
         static volatile int32_t nseen;
         int k;
@@ -747,7 +747,7 @@ static void dec_properties(Ctx *c) {
     if (ARG(3)) *(uint16_t *)GP(ARG(3)) = h;
     if (ARG(4)) G64(ARG(4)) = d && i < MAX_SLOTS ? (uint64_t)d->slot_pts[i] : 0;
     if (ARG(5)) *(uint8_t *)GP(ARG(5)) = d && i < MAX_SLOTS ? (uint8_t)d->slot_last[i] : 0;
-    {   /* (HOS_VIDEO_LOG) the first times the game is told of the end */
+    {   /* (log.video) the first times the game is told of the end */
         static volatile int32_t n;
         if (video_log() && d && i < MAX_SLOTS && d->slot_last[i] && os_atomic_inc(&n) <= 8)
             hos_log("video: properties of buffer %u: the end, pts %lld (lr %#llx)", i, (long long)d->slot_pts[i],

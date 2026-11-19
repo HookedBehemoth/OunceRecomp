@@ -28,19 +28,18 @@ void hos_mem_init(uint64_t image_end) {
     hos_commit(HOS_SYSTEM_BASE, HOS_SYSTEM_END - HOS_SYSTEM_BASE);
     low_hole[0][0] = 0x00100000ULL, low_hole[0][1] = HOS_SYSTEM_BASE;
     low_hole[1][0] = (image_end + 0xFFFFFULL) & ~0xFFFFFULL, low_hole[1][1] = HOS_HEAP_BASE;
-    /* Retail Switch gives an application 3285 MB. HOS_MEMORY_MB overrides it: TOTK sizes its heap from this
-       (heap = total - used - 1080 MB), which is the lever for fitting the web build into wasm32. */
-    const char *mb = getenv("HOS_MEMORY_MB");
+    /* Retail Switch gives an application 3285 MB; memory_mb overrides it */
+    const uint64_t mb = (uint64_t)setting_int(SET_MEMORY_MB);
 #ifdef A64_MEM_ZERO
     /* (web: TOTK keeps 1080 MB of the total for address regions (its resource memory grows into them) and its heap
        must stay 2104 MB (a 1902 MB heap: an indirect call into nothing 4 s in), so the window must hold heap +
        regions; the holes below the heap help) */
-    hos_total_memory = (mb ? strtoull(mb, NULL, 0) : 3285ULL) << 20;
+    hos_total_memory = (mb ? mb : 3285ULL) << 20;
     hos_log("memory: %llu MB for the game (window %llu MB)", (unsigned long long)(hos_total_memory >> 20),
             (unsigned long long)(HOS_SPACE_END >> 20));
 #else
     /* mkw-recomp: a Switch 2 application gets 9809 MB (Eglantine's KSystemControl, 12 GB arrangement) */
-    hos_total_memory = (mb ? strtoull(mb, NULL, 0) : 9809ULL) << 20;
+    hos_total_memory = (mb ? mb : 9809ULL) << 20;
 #endif
 }
 
@@ -118,7 +117,7 @@ static void discard_pages(uint64_t addr, uint64_t size) {
     if (!hos_guest_range(addr, size)) return;   /* (runtime: guest pages only; a discard zeroes what it is given) */
     const uint64_t lo = (addr + 0xFFF) & ~0xFFFULL, hi = (addr + size) & ~0xFFFULL;
     static int keep = -1;
-    if (keep < 0) keep = getenv("HOS_KEEP_FREED_PAGES") != NULL;
+    if (keep < 0) keep = setting_bool(SET_KEEP_FREED_PAGES);
     if (hi <= lo || keep) return;
 #if !defined(__EMSCRIPTEN__)
     extern int rx_guest_imported(uint64_t lo, uint64_t hi);
@@ -166,13 +165,6 @@ HLE(_ZN2nn2os17SetMemoryHeapSizeEm) {
     }
     if (size < hos_heap_size) {
         memset(GP(HOS_HEAP_BASE + size), 0, hos_heap_size - size);
-    }
-    /* HOS_PREFAULT=1 (experiment): the new heap pages touched now (a zero written to fresh, zero memory), so that the
-       game's first touches while streaming are not page faults (which may hold up the renderer's write-watch scans) */
-    if (size > hos_heap_size && getenv("HOS_PREFAULT")) {
-        const int64_t t0 = hos_now_ns();
-        for (uint64_t a = HOS_HEAP_BASE + hos_heap_size; a < HOS_HEAP_BASE + size; a += 4096) *(volatile uint8_t *)GP(a) = 0;
-        hos_log("heap: %llu MB prefaulted in %.0f ms", (unsigned long long)((size - hos_heap_size) >> 20), (hos_now_ns() - t0) / 1e6);
     }
     if (size > hos_heap_size) hos_commit(HOS_HEAP_BASE + hos_heap_size, size - hos_heap_size);
     hos_heap_size = size;
@@ -222,7 +214,7 @@ HLE(_ZN2nn2os19AllocateMemoryPagesEmm) {
         return;
     }
     static int zero_all = -1;
-    if (zero_all < 0) zero_all = getenv("HOS_ZERO_ALL_PAGES") != NULL;
+    if (zero_all < 0) zero_all = setting_bool(SET_ZERO_ALL_PAGES);
     if (end > (1ULL << 32) && !zero_all) {
         /* (mkw-recomp) above 4 GB the used-page bitmap does not reach, and zeroing the whole range wiped live data
            when the game mapped pages over memory it already used (a heap's list lost its links). Horizon's rule

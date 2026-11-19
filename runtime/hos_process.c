@@ -1,5 +1,5 @@
 /* The process around the guest (was mkw_glue.c): the 64-bit guest window's commit (a range check: the window is mapped
-   whole), crash reports with the guest's state, the guest backtrace, HOS_STATS_AFTER, the Switch 2's counter
+   whole), crash reports with the guest's state, the guest backtrace, stats_after, the Switch 2's counter
    (CNTPCT_EL0), and stand-ins for the hooks of TOTKPort files not taken into runtime/ (its profiler's memory checkpoints,
    its emulated GPU's submissions, a frame-step input filter). */
 #include "hos.h"
@@ -84,7 +84,7 @@ static int report_crash(const os_fault *f) {
     }
     hos_log_flush();
     void hos_hostcall_stats(void);
-    hos_hostcall_stats();   /* (HOS_HOSTCALL_STATS=1: the host calls made, and the last 256 of them) */
+    hos_hostcall_stats();   /* (hostcall.stats: the host calls made, and the last 256 of them) */
     return OS_FAULT_PASS;
 }
 
@@ -105,7 +105,7 @@ void hos_backtrace(void) {
     fflush(stderr);
 }
 
-/* HOS_STATS_AFTER=<seconds> (with HOS_HOSTCALL_STATS=1): the host call counts and the last calls at that time, for
+/* stats_after=<seconds> (with hostcall.stats): the host call counts and the last calls at that time, for
    runs that are stopped rather than exit (what a quiet game is doing) */
 static void stats_after(void *p) {
     os_sleep_ns((int64_t)((uint32_t)(uintptr_t)p * 1000) * 1000000);
@@ -119,8 +119,8 @@ static void stats_after(void *p) {
 
 void hos_commit_init(void) {
     os_fault_set_last(report_crash);
-    const char *after = getenv("HOS_STATS_AFTER");
-    if (after && atoi(after) > 0) os_thread_release(os_thread_start(stats_after, (void *)(uintptr_t)atoi(after), 0, "stats after"));
+    const int after = (int)setting_int(SET_STATS_AFTER);
+    if (after > 0) os_thread_release(os_thread_start(stats_after, (void *)(uintptr_t)after, 0, "stats after"));
 }
 
 /* ---- stand-ins --------------------------------------------------------------------------------------------- */

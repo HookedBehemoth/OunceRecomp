@@ -46,11 +46,11 @@ typedef struct Obj {
     int nlinks, caplinks;
     struct Obj *mw;    /* holder -> the multi-wait it is linked to */
     int spin_misses, spin_waits;
-    int64_t sig_ns;      /* (HOS_WAKE_LAT: when it was last signaled / sent to) */
+    int64_t sig_ns;      /* (log.wake_latency: when it was last signaled / sent to) */
     struct Obj *spare;   /* (on the spare list: see spares) */
 } Obj;
 
-static int wake_lat_on(void);   /* (HOS_WAKE_LAT, below) */
+static int wake_lat_on(void);   /* (log.wake_latency, below) */
 
 /* ---- the object table: open addressing on the guest address --------------------------------------------- */
 static os_mutex table_lock = OS_MUTEX_INIT;
@@ -310,14 +310,13 @@ static void poke_multiwait(Obj *o) {
 
 #if (defined(__x86_64__) || defined(_M_X64)) && !defined(__EMSCRIPTEN__)
 #include <emmintrin.h>
-/* how long a wait spins before it sleeps, in ns: HOS_SPIN_US (default 5 us; 0: no spin). The default was 20 us; one
+/* how long a wait spins before it sleeps, in ns: threads.spin_us (default 5 us; 0: no spin). The default was 20 us; one
    market bench per setting at ea6b61d8 gave CPU over 600 frames 16.02 s at 20 us, 14.75 s at 5, 14.77 s at 0, frame
    mean and median unchanged, p99 10.06 / 10.07 / 10.46 ms. Also the arbitration mutex's spin (hos_svc.c) */
 int64_t hos_spin_ns(void) {
     static int64_t ns = -1;
     if (ns < 0) {
-        const char *e = getenv("HOS_SPIN_US");
-        ns = (e ? atoll(e) : 5) * 1000;
+        ns = setting_int(SET_SPIN_US) * 1000;
     }
     return ns;
 }
@@ -386,13 +385,13 @@ static void cv_reserve(Obj *cv) {
     mx_reserve(cv->cv_mutex);
 }
 
-/* (EvilOOT, 11-07) HOS_MUTEX_WATCH=<guest address>: every operation on that mutex, and the signals of the condition
+/* (EvilOOT, 11-07) mutex.watch=<guest address>: every operation on that mutex, and the signals of the condition
    variables waited on with it, logged with the thread and the caller (lr). The freeze after Load: MovieOperateThread
    holds 0x106a387d58 and joins VideoDecoderThread, which waits for it on its way out of a condition variable wait. */
 static uint64_t watch_mutex(void) {
     static int looked;
     static uint64_t addr;
-    if (!looked) { const char *e = getenv("HOS_MUTEX_WATCH"); addr = e ? strtoull(e, NULL, 16) : 0; looked = 1; }
+    if (!looked) { addr = strtoull(setting_str(SET_MUTEX_WATCH), NULL, 16); looked = 1; }
     return addr;
 }
 static volatile uint64_t watch_cvs[8];
@@ -498,7 +497,7 @@ static void mx_lock_slow(uint64_t key, uint32_t id, int owed, Ctx *c) {
         if (mx_take(m, w, id, 0)) return;
     }
     static int trace_ms = -1;
-    if (trace_ms < 0) { const char *e = getenv("HOS_MUTEX_TRACE"); trace_ms = e ? atoi(e) : 0; }
+    if (trace_ms < 0) trace_ms = (int)setting_int(SET_MUTEX_TRACE_MS);
     const uint32_t held = __atomic_load_n(w, __ATOMIC_RELAXED);
     const int64_t t0 = trace_ms ? hos_now_ns() : 0;
     os_mutex_lock(&m->lk);
@@ -694,12 +693,12 @@ static void event_clear(Obj *e) {
     os_mutex_unlock(&e->lk);
 }
 
-/* HOS_WAKE_LAT=1 (diagnostic): for event and message queue waits by thread, every 5 s: how many found it ready at once,
+/* log.wake_latency (diagnostic): for event and message queue waits by thread, every 5 s: how many found it ready at once,
    after spinning, or after sleeping, and for the sleepers the time from the signal to running again (a hand-off's
    cost on the frame's chain of threads) */
 static int wake_lat_on(void) {
     static int on = -1;
-    if (on < 0) on = getenv("HOS_WAKE_LAT") != NULL;
+    if (on < 0) on = setting_bool(SET_LOG_MUTEX_WAKE);
     return on;
 }
 static void wake_lat_note(int how, int64_t lat_ns) {   /* how: 0 ready, 1 spun, 2 slept */
@@ -768,14 +767,14 @@ HLE(_ZN2nn2os13FinalizeEventEPNS0_9EventTypeE) { drop(ARG(0)); }
 HLE(_ZN2nn2os11SignalEventEPNS0_9EventTypeE) { event_signal(obj(ARG(0), K_EVENT)); }
 HLE(_ZN2nn2os10ClearEventEPNS0_9EventTypeE) { event_clear(obj(ARG(0), K_EVENT)); }
 
-/* HOS_WAIT_LOG=1 (diagnostic): event waits by guest caller and thread every 5 s (count, total, longest), the
+/* log.waits (diagnostic): event waits by guest caller and thread every 5 s (count, total, longest), the
    longest first: what a thread blocks on */
 static int logged_wait(Ctx *c, Obj *e, int64_t timeout_ns, int try_only, const char *what) {
     static int on = -1, long_waits = -1;
-    if (on < 0) on = getenv("HOS_WAIT_LOG") != NULL;
-    /* HOS_LONG_WAITS=1 (diagnostic): an untimed wait still blocked after 5 s is logged (thread, caller), then goes on:
+    if (on < 0) on = setting_bool(SET_LOG_WAITS);
+    /* log.long_waits (diagnostic): an untimed wait still blocked after 5 s is logged (thread, caller), then goes on:
        what a stuck game waits for */
-    if (long_waits < 0) long_waits = getenv("HOS_LONG_WAITS") != NULL;
+    if (long_waits < 0) long_waits = setting_bool(SET_LOG_LONG_WAITS);
     if (long_waits && !try_only && timeout_ns == 0) {
         static int logged;
         if (event_wait(e, 5000000000LL, 0)) return 1;
@@ -826,19 +825,18 @@ static int logged_wait(Ctx *c, Obj *e, int64_t timeout_ns, int try_only, const c
 
 HLE(_ZN2nn2os20InitializeLightEventEPNS0_14LightEventTypeEbNS0_14EventClearModeE) { event_init(ARG(0), (int)(ARG(1) & 1), (int)ARG(2)); }
 HLE(_ZN2nn2os18FinalizeLightEventEPNS0_14LightEventTypeE) { drop(ARG(0)); }
-/* HOS_WAIT_WHO=<thread name> (diagnostic): which threads (and guest callers) signal the light events that thread
+/* wait.who=<thread name> (diagnostic): which threads (and guest callers) signal the light events that thread
    waits on, every 5 s: the other end of its waits */
 static const char *who_thread;
 static uint64_t who_keys[64];
 static int nwho_keys;
-static void who_note_wait(Ctx *c, uint64_t key) {   /* HOS_WAIT_WHO_LR=<hex>: only waits from that caller */
+static void who_note_wait(Ctx *c, uint64_t key) {   /* wait.who_lr=<hex>: only waits from that caller */
     static int on = -1;
     static uint64_t only_lr;
     if (on < 0) {
-        who_thread = getenv("HOS_WAIT_WHO");
-        on = who_thread != NULL;
-        const char *l = getenv("HOS_WAIT_WHO_LR");
-        only_lr = l ? strtoull(l, NULL, 16) : 0;
+        who_thread = setting_str(SET_WAIT_WHO);
+        on = *who_thread != 0;
+        only_lr = strtoull(setting_str(SET_WAIT_WHO_LR), NULL, 16);
     }
     if (!on || strcmp(hos_thread_name(hos_self()), who_thread) || (only_lr && c->x[30] != only_lr)) return;
     for (int i = 0; i < nwho_keys; i++)
@@ -966,11 +964,11 @@ static void queue_init(uint64_t key, int capacity) {
     q->q = (uint64_t *)calloc(q->qcap, 8);
     if (!q->q) hos_fatal(NULL, "os: message queue of %d entries", q->qcap);   /* (runtime: was written through NULL) */
 }
-/* (mkw-recomp) HOS_QUEUE_TRACE=1: the first 400 puts (thread, queue, value) */
+/* (mkw-recomp) log.queues: the first 400 puts (thread, queue, value) */
 static void queue_trace(Obj *q, uint64_t v, const char *what) {
     static int on = -1;
     static volatile int32_t n;
-    if (on < 0) on = getenv("HOS_QUEUE_TRACE") != NULL;
+    if (on < 0) on = setting_bool(SET_LOG_QUEUES);
     if (on && os_atomic_inc(&n) <= 400)
         hos_log("queue: %s %s %#llx value %#llx (len %d)", hos_thread_name(hos_self()), what, (unsigned long long)q->key,
                 (unsigned long long)v, q->qlen);

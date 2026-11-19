@@ -114,7 +114,7 @@ static void release_locked(uint64_t mutex) {
 #if (defined(__x86_64__) || defined(_M_X64)) && !defined(__EMSCRIPTEN__)
 #include <emmintrin.h>
 static int spin_for_release(uint64_t mutex, uint32_t held) {
-    const int64_t limit = hos_spin_ns();   /* (HOS_SPIN_US, runtime/nn_os_sync.c) */
+    const int64_t limit = hos_spin_ns();   /* (threads.spin_us, runtime/nn_os_sync.c) */
     static int misses[256], tries[256];
     const unsigned slot = (unsigned)(mutex >> 3 ^ mutex >> 11) & 255;
     const int m = __atomic_load_n(&misses[slot], __ATOMIC_RELAXED);

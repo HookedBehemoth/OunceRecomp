@@ -12,7 +12,6 @@
 #include "vk_api.h"
 #include "renderer.h"
 #include "crit.h"
-int rx_option(int id, int otherwise);   /* (defined below) */
 
 /* what the back end is given */
 uint8_t *hos_guest_base(void);
@@ -57,6 +56,11 @@ extern const char *hos_romfs_dir;   /* nn_fs.c, set by hos_main.c */
 static const char *host_romfs_dir(void) { return hos_romfs_dir; }
 
 #define host_take_key_press NULL
+/* (the renderer's settings: renderer/vk_settings.cpp) */
+static int64_t host_setting_int(int id) { return setting_int((setting_id)id); }
+static double host_setting_float(int id) { return setting_float((setting_id)id); }
+static const char *host_setting_str(int id) { return setting_str((setting_id)id); }
+static int host_setting_given(int id) { return setting_given((setting_id)id); }
 
 static const MkwVkHost vk_host = {
     MKWVK_API_VERSION, host_log, hos_guest_base, hos_guest_size, hos_gpu_ptr, nvn_gpu_guest, nvn_gpu_read,
@@ -65,7 +69,7 @@ static const MkwVkHost vk_host = {
     hos_gpu_maps_generation, nvn_vmap_generation, hos_reserved_cpus, host_guest_alloc,
     host_watch_guest_writes, hos_pad_raw, hos_binding, hos_bind, host_aspect_ratio, host_take_key_press,
     hos_mouse_pointer, hos_mic_count, hos_mic_name, hos_mic_select, hos_sdl_gyro_status, hos_log_flush, game_prompts_face,
-    host_romfs_dir,
+    host_romfs_dir, host_setting_int, host_setting_float, host_setting_str, host_setting_given,
 };
 
 static const MkwVkRenderer *vk;   /* the back end, once started */
@@ -179,10 +183,10 @@ const gpu_fns *rx_direct(void) {
         DIRECT_FN(measure, "gpu_measure")
 #undef DIRECT_FN
         hos_log("rx: the direct back end: %s", path);
-        {   /* (HOS_DBG=crit: the calls timed, crit.c) */
+        {   /* (debug.crit= the calls timed, crit.c) */
             void crit_wrap(gpu_fns *f);
             if (crit_wanted()) crit_wrap(&renderer_fns);
-            void bench_wrap(gpu_fns *f);   /* (HOS_BENCH: the CPU time in the back end's calls, bench.c) */
+            void bench_wrap(gpu_fns *f);   /* (bench: the CPU time in the back end's calls, bench.c) */
             if (hos_bench_on()) bench_wrap(&renderer_fns);
         }
         os_atomic_store(&renderer_state, 2);
@@ -194,14 +198,11 @@ const gpu_fns *rx_direct(void) {
 int rx_start(void *hwnd) {
     /* (loaded here too: the window's thread can reach this before the game's first call loads the library) */
     const gpu_fns *d = rx_direct();
-    {   /* RX_VK_SHOTS=<dir>, RX_VK_SHOT_EVERY=<n> (default 300): the presented frames as PNGs */
-        const char *shots = getenv("RX_VK_SHOTS"), *every = getenv("RX_VK_SHOT_EVERY");
-        if (shots && *shots) d->shots(shots, every && atoi(every) > 0 ? atoi(every) : 300);
-    }
+    if (*setting_str(SET_SHOTS)) d->shots(setting_str(SET_SHOTS), (int)setting_int(SET_SHOT_EVERY));   /* (the presented frames as PNGs) */
     mkwvk_init_fn init = (mkwvk_init_fn)os_lib_sym(renderer_module, "mkwvk_init");
     const MkwVkRenderer *r = init ? init(&vk_host) : NULL;
-    int w = 0, h = 0;   /* (no window: the offscreen image takes HOS_WINDOW_SIZE, as the window would) */
-    if (r && !hwnd && getenv("HOS_WINDOW_SIZE") && sscanf(getenv("HOS_WINDOW_SIZE"), "%dx%d", &w, &h) == 2 && w >= 64 && h >= 64)
+    int w = 0, h = 0;   /* (no window: the offscreen image takes window_size, as the window would) */
+    if (r && !hwnd && sscanf(setting_str(SET_WINDOW_SIZE), "%dx%d", &w, &h) == 2 && w >= 64 && h >= 64)
         r->resize(w, h);
     if (!r || r->version != MKWVK_API_VERSION || !r->start(hwnd)) hos_fatal(NULL, "rx: the direct back end (%s) did not start", kDirectLib);
     vk = r;
@@ -244,7 +245,7 @@ uint64_t rx_nvn_fence_q(uint64_t queue) { return vk && vk->nvn_fence_q ? vk->nvn
 uint64_t rx_nvn_pushed(void) { return vk ? vk->nvn_pushed() : 0; }
 uint64_t rx_nvn_replayed(void) { return vk ? vk->nvn_replayed() : 0; }
 int rx_nvn_wait(uint64_t fence, uint64_t timeout_ns) {
-    if (crit_rec && vk) {   /* (HOS_DBG=crit) */
+    if (crit_rec && vk) {   /* (debug.crit) */
         const uint64_t t0 = crit_tsc();
         const int r = vk->nvn_wait(fence, timeout_ns);
         crit_span(CRIT_BE_WAIT, t0, crit_tsc(), timeout_ns, (uint64_t)r);
@@ -257,7 +258,7 @@ void rx_wait_writebacks_reading(const void *p, uint64_t n) {
 }
 void rx_nvn_finish(void) { if (vk) vk->nvn_finish(); }
 void rx_nvn_present(const nvn_tex *t, const int crop[4]) {
-    if (crit_wanted()) {   /* (HOS_DBG=crit) */
+    if (crit_wanted()) {   /* (debug.crit) */
         crit_present();
         if (crit_rec && vk) {
             crit_emit_flush();
@@ -361,25 +362,15 @@ void rx_nvn_invalidate(uint64_t gpu, uint64_t size) {
     if (vk) vk->nvn_invalidate(gpu, size);
 }
 int rx_guest_imported(uint64_t lo, uint64_t hi) {
-    /* (it takes the back end's pool lock, which the replay holds at times: a block for HOS_DBG=crit) */
+    /* (it takes the back end's pool lock, which the replay holds at times: a block for debug.crit) */
     const int away = hos_block_begin(CRIT_BLOCK_OTHER, (const void *)13);
     const int r = vk && vk->guest_imported ? vk->guest_imported(lo, hi) : 0;
     if (away) hos_block_end();
     return r;
 }
 /* (nvn_native.c: the CPU set an event's value) in order with the submits, for the GPU's waits on it */
-/* HOS_GAME_STEP_PER_FRAME=1: option 0 ("game time follows the clock") answered 0 whatever the back end's menu says, so each
-   frame steps the game by 1/60 s (nn_vi.c realtime_step) and the game's clock is the frame count: picture checks compare the
-   same animation phase. Unset: as before */
-int rx_option(int id, int otherwise) {
-    static int per_frame = -1;
-    if (per_frame < 0) per_frame = (getenv("HOS_GAME_STEP_PER_FRAME") && atoi(getenv("HOS_GAME_STEP_PER_FRAME")) > 0) || hos_bench_on();
-    if (id == 0 && per_frame) return 0;
-    return vk && vk->option ? vk->option(id) : otherwise;
-}
-void rx_option_set(int id, int value) { if (vk && vk->option_set) vk->option_set(id, value); }
 void rx_nvn_event_signal(uint64_t gpu, uint32_t value) {
-    if (crit_rec && vk && vk->nvn_event_signal) {   /* (HOS_DBG=crit) */
+    if (crit_rec && vk && vk->nvn_event_signal) {   /* (debug.crit) */
         crit_emit_flush();
         const uint64_t t0 = crit_tsc();
         vk->nvn_event_signal(gpu, value);
@@ -391,7 +382,7 @@ void rx_nvn_event_signal(uint64_t gpu, uint32_t value) {
 /* (nvn_native.c: virtual pages about to be unmapped or remapped) the Vulkan back end writes what the GPU drew there into
    their memory first */
 void rx_nvn_vmap_changing(uint64_t gpu, uint64_t size) {
-    /* (it may wait for the replay and the GPU's texels: a block for HOS_DBG=crit) */
+    /* (it may wait for the replay and the GPU's texels: a block for debug.crit) */
     const int away = hos_block_begin(CRIT_BLOCK_OTHER, (const void *)14);
     if (vk && vk->nvn_vmap_changing) vk->nvn_vmap_changing(gpu, size);
     if (away) hos_block_end();

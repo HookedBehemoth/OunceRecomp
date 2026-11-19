@@ -1,7 +1,7 @@
 /* SDL3 or SDL2 behind one set of calls (runtime/media/hos_sdl.c): the window (runtime/media/display_sdl.c), the sound
    (runtime/nn_audio.c) and the controllers (runtime/media/pad_sdl.c) call these, whichever SDL loaded. One library for the whole
    process, loaded at run time: SDL3 beside the executable, else the system's, else SDL2 the same way (libSDL3.so.0,
-   libSDL2-2.0.so.0). HOS_SDL_VERSION=2 takes SDL2 even with an SDL3 there. */
+   libSDL2-2.0.so.0). sdl_version=2 takes SDL2 even with an SDL3 there. */
 #pragma once
 #include <stdint.h>
 

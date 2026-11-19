@@ -1,5 +1,5 @@
 /* nn::oe (applet), nn::account, nn::time, nn::pl, nn::err: what a game asks the system about itself.
-   The answers describe a docked console in English (HOS_LANGUAGE / language.txt: another language) with one user,
+   The answers describe a docked console in English (language / language.txt: another language) with one user,
    "Player". */
 #include "hos.h"
 #include "crit.h"
@@ -16,101 +16,28 @@ static int64_t boot_ns;
 /* ---- nn::oe ------------------------------------------------------------------------------------------------- */
 HLE(_ZN2nn2oe10InitializeEv) { if (!boot_ns) boot_ns = hos_now_ns(); }
 HLE(_ZN2nn2oe17FinishStartupLogoEv) { hos_log("oe: startup logo finished"); }
-/* GetDesiredLanguage() -> settings::LanguageCode (char[8]) by value: the language the game shows. HOS_LANGUAGE, or language.txt
-   beside the exe: its first line that is not blank or a comment. The file is written on the first start, with the choices: the 16
-   languages in romfs/Mals. After SkyboundTotk PR 16 by sardigital. */
-static const struct { const char *code, *name; } languages[] = {
-    {"en-US", "English (US)"},       {"en-GB", "English (UK)"},       {"fr", "French (France)"},     {"fr-CA", "French (Canada)"},
-    {"de", "German"},                {"it", "Italian"},               {"es", "Spanish (Spain)"},     {"es-419", "Spanish (Latin America)"},
-    {"pt-BR", "Portuguese (Brazil)"}, {"nl", "Dutch"},                {"pl", "Polish"},              {"ru", "Russian"},
-    {"ja", "Japanese"},              {"ko", "Korean"},                {"zh-Hans", "Chinese (Simplified)"}, {"zh-Hant", "Chinese (Traditional)"},
-};
+/* GetDesiredLanguage() -> settings::LanguageCode (char[8]) by value: the language the game shows, the language setting (the
+   16 languages in romfs/Mals). After SkyboundTotk PR 16 by sardigital. */
 static const char *desired_language(void) {
-    static char lang[8];
-    if (lang[0]) return lang;
-    char want[32] = "";
-    const char *from = "the default";
-    if (getenv("HOS_LANGUAGE")) {
-        snprintf(want, sizeof want, "%s", getenv("HOS_LANGUAGE"));
-        from = "HOS_LANGUAGE";
-    } else {
-        char path[300] = "language.txt";
-#if !defined(__EMSCRIPTEN__)
-        uint32_t n = hos_game_path_a(path, 260);
-        while (n > 0 && path[n - 1] != '/') n--;
-        snprintf(path + n, sizeof path - n, "language.txt");
-#endif
-        FILE *f = fopen(path, "r");
-        if (f) {
-            char line[80];
-            int whole = 1;   /* (the first line is longer than this: its second piece, "ave, and start...", was taken for the code) */
-            while (fgets(line, sizeof line, f)) {
-                const int starts = whole;
-                whole = strchr(line, 10) != NULL;
-                if (!starts) continue;
-                const char *p = line;
-                if ((unsigned char)p[0] == 0xEF && (unsigned char)p[1] == 0xBB && (unsigned char)p[2] == 0xBF) p += 3;   /* (a BOM: Notepad's UTF-8) */
-                while (*p == ' ' || *p == '\t') p++;
-                if (*p == '#' || *p == '\r' || *p == '\n' || !*p) continue;
-                /* (only a code the game has: a stray line was taken before, and the game stayed in English, issue 75) */
-                char code[32];
-                snprintf(code, sizeof code, "%s", p);
-                code[strcspn(code, " \t\r\n")] = 0;
-                int known = 0;
-                for (size_t i = 0; i < sizeof languages / sizeof *languages; i++)
-                    if (!strcasecmp(code, languages[i].code)) snprintf(code, sizeof code, "%s", languages[i].code), known = 1;
-                if (!known) continue;
-                snprintf(want, sizeof want, "%s", code);
-                from = "language.txt";
-                break;
-            }
-            fclose(f);
-        } else if ((f = fopen(path, "w")) != NULL) {
-            fputs("# The game's language. Change the line below to one of the codes listed here, save, and start the game again.\n\nen-US\n\n", f);
-            for (size_t i = 0; i < sizeof languages / sizeof *languages; i++) fprintf(f, "# %-8s %s\n", languages[i].code, languages[i].name);
-            fclose(f);
-        }
+    static char lang[16];
+    if (!lang[0]) {
+        setting_text(SET_LANGUAGE, lang, sizeof lang);
+        hos_log("oe: language %s", lang);
     }
-    want[strcspn(want, " \t\r\n")] = 0;
-    snprintf(lang, sizeof lang, "en-US");
-    int found = 0;
-    for (size_t i = 0; want[0] && i < sizeof languages / sizeof *languages; i++)
-        if (!strcasecmp(want, languages[i].code)) snprintf(lang, sizeof lang, "%s", languages[i].code), found = 1;   /* (HOS_LANGUAGE=pt-br too, as language.txt) */
-    if (want[0] && !found) hos_log("oe: language \"%s\" (%s) is not one the game has: English (US)", want, from);
-    else hos_log("oe: language %s (%s)", lang, from);
     return lang;
 }
-const char *hos_language(void) { return desired_language(); }   /* (nn_hid.c: the input record's header) */
 HLE(_ZN2nn2oe18GetDesiredLanguageEv) {
     uint64_t v = 0;
     memcpy(&v, desired_language(), strlen(desired_language()));
     RET(v);
 }
-/* HOS_HANDHELD=1: handheld (the 1080p screen: 1080p output and the game's handheld resolutions) instead of docked
-   (MKW docked composes 3840 x 2160) */
-int hos_ini_option(const char *key, int otherwise);
-#define ini_option hos_ini_option
-int hos_ini_option(const char *key, int otherwise) {   /* (runtime: the Insert menu's choice, gpu/legacy/vk/vk_menu.cpp; nn_vi.c reads it too) */
-    char path[OS_PATH_MAX];
-    const uint32_t n = hos_game_path_a(path, OS_PATH_MAX);
-    char *slash = n ? strrchr(path, '/') : NULL;   /* (the game folder's) */
-    if (!slash) return otherwise;
-    snprintf(slash + 1, (size_t)(path + OS_PATH_MAX - slash - 1), "ounce_options.ini");
-    FILE *f = fopen(path, "r");
-    if (!f) return otherwise;
-    char line[80];
-    const size_t len = strlen(key);
-    while (fgets(line, sizeof line, f))
-        if (!strncmp(line, key, len) && line[len] == '=') otherwise = atoi(line + len + 1);
-    fclose(f);
-    return otherwise;
-}
+/* handheld_profile: handheld (the 1080p screen: 1080p output and the game's handheld resolutions) instead of docked */
 static int handheld(void) {
     static int v = -1;
-    if (v < 0) v = getenv("HOS_HANDHELD") ? atoi(getenv("HOS_HANDHELD")) != 0 : ini_option("handheld_profile", 0) != 0;
+    if (v < 0) v = setting_bool(SET_HANDHELD);
     return v;
 }
-/* (runtime) The Insert menu's Output resolution (output_res=, HOS_OUTPUT_RES over it), docked only: 0 the game's 2048 x 1152,
+/* (runtime) The output_res setting, docked only: 0 the game's 2048 x 1152,
    1 2560 x 1440, 2 3840 x 2160, 3 1920 x 1080, 4 5120 x 1440. The game's frame is its display size (2560 x 1440 as shipped;
    games/oot/patches/oot_probes.c asks hos_output_size) times its graphics scale (GetCurrentGraphicsScale: 0 x1, 1 x0.8,
    2 x0.667). Here it saw scale 1 (x0 left at the call before's answer), so 2048 x 1152; each explicit size uses x1. */
@@ -118,15 +45,13 @@ static int output_mode(void) {
     static int v = -1;
     if (v < 0) {
         static const char *const names[] = {"2048x1152 (the game's)", "2560x1440", "3840x2160", "1920x1080", "5120x1440"};
-        v = getenv("HOS_OUTPUT_RES") ? atoi(getenv("HOS_OUTPUT_RES")) : ini_option("output_res", 0);
-        if ((unsigned)v >= sizeof names / sizeof *names || handheld()) v = 0;
+        v = handheld() ? 0 : (int)setting_int(SET_OUTPUT_RES);
         hos_log("oe: output resolution %s", names[v]);
     }
     return v;
 }
-int hos_output_res(void) { return output_mode(); }   /* (nn_hid.c: the input record's header) */
-/* (runtime/hos_main.c) an Output resolution was chosen (HOS_OUTPUT_RES, output_res): the frame does not follow the window */
-int hos_output_res_set(void) { return getenv("HOS_OUTPUT_RES") || ini_option("output_res", -1) >= 0; }
+/* (runtime/hos_main.c) an Output resolution was chosen (output_res set): the frame does not follow the window */
+int hos_output_res_set(void) { return setting_given(SET_OUTPUT_RES); }
 uint32_t hos_output_size(int height) {
     switch (output_mode()) {
     case 2: return height ? 2160 : 3840;
@@ -140,9 +65,9 @@ uint32_t hos_output_size(int height) {
    hos_wide_out, the output's height at the screen's shape: 7680 x 2160 for a 32:9 screen at the 4K output, twice the pixels the pool
    was scaled for, and the game crashed as Kokiri Forest loaded, a null pointer or "texture handle ids -1", issue 1031);
    Castle Town's guard-house conversation/camera test crashed with 305 MB at 2560 x 1440 and passed with 512 MB.
-   Keep at least 512 MB by default; larger scaled pools and an explicit HOS_RT_POOL_MB=<MB> still win. */
+   Keep at least 512 MB by default; larger scaled pools and an explicit rt_pool_mb still win. */
 uint64_t hos_rt_pool_size(uint64_t game) {
-    const char *e = getenv("HOS_RT_POOL_MB");
+    const uint64_t e = (uint64_t)setting_int(SET_RT_POOL_MB);
     extern volatile uint64_t hos_wide_out;
     const uint64_t wide = hos_wide_out, wide_px = (wide >> 32) * (wide & 0xffffffffULL);
     uint64_t px = (uint64_t)hos_output_size(0) * hos_output_size(1);
@@ -150,7 +75,7 @@ uint64_t hos_rt_pool_size(uint64_t game) {
     if (px > 3840 * 2160) px = 3840 * 2160;   /* (the frame's largest: a larger picture is only the room it is drawn in) */
     const uint64_t scaled = px > 2560 * 1440 ? (game * px / (2560 * 1440) + 0xfffff) & ~0xfffffULL : game;
     const uint64_t minimum = 512ULL << 20;
-    const uint64_t v = e ? strtoull(e, NULL, 0) << 20 : scaled < minimum ? minimum : scaled;
+    const uint64_t v = e ? e << 20 : scaled < minimum ? minimum : scaled;
     static int logged;
     if (!logged++) hos_log("applet: render target pool %llu MB (the game's %llu MB)", (unsigned long long)(v >> 20), (unsigned long long)(game >> 20));
     return v;
@@ -213,11 +138,11 @@ HLE(_ZN2nn7account16GetUserExistenceEPbRKNS0_3UidE) {
 HLE(_ZN2nn4time10InitializeEv) { RET(0); }
 HLE(_ZN2nn4time8FinalizeEv) { RET(0); }
 HLE(_ZN2nn4time13IsInitializedEv) { RET(1); }
-/* HOS_FIXED_TIME=<POSIX seconds>: the clock starts there at boot (runs that can be compared: what the title shows
+/* fixed_time=<POSIX seconds>: the clock starts there at boot (runs that can be compared: what the title shows
    follows the time) */
 static uint64_t now_posix(void) {
     static int64_t fixed = -1;
-    if (fixed < 0) fixed = getenv("HOS_FIXED_TIME") ? atoll(getenv("HOS_FIXED_TIME")) : 0;
+    if (fixed < 0) fixed = setting_int(SET_FIXED_TIME);
     return fixed ? (uint64_t)(fixed + hos_now_ns() / 1000000000LL) : (uint64_t)time(NULL);
 }
 HLE(_ZN2nn4time23StandardUserSystemClock14GetCurrentTimeEPNS0_9PosixTimeE) { G64(ARG(0)) = now_posix(); RET(0); }
@@ -378,13 +303,7 @@ HLE(_ZN2nn7account26GetNetworkServiceAccountIdEPNS0_23NetworkServiceAccountIdERK
 }
 /* nn::oe::GetCurrentGraphicsScale() -> float (docked/handheld render scale): 1.0 */
 HLE(_ZN2nn2oe23GetCurrentGraphicsScaleEv) {
-    /* (runtime) HOS_GRAPHICS_SCALE=<f>: another scale, a test of whether the game sizes its picture by it (4K, issue 68) */
-    static float scale = 0;
-    static volatile int32_t told;
-    if (scale == 0) scale = getenv("HOS_GRAPHICS_SCALE") ? (float)atof(getenv("HOS_GRAPHICS_SCALE")) : 1.0f;
-    if (scale <= 0) scale = 1.0f;
-    if (os_atomic_inc(&told) <= 3) hos_log("oe: GetCurrentGraphicsScale -> %.2f", scale);
-    const float one = scale;
+    const float one = 1.0f;
     uint32_t bits;
     memcpy(&bits, &one, 4);
     c->vreg[0][0] = bits, c->vreg[0][1] = 0;

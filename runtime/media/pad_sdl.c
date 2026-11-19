@@ -5,10 +5,10 @@
    A thread of its own (on Linux the window's, which runs SDL there too) opens every controller SDL knows (and ones
    plugged in later), polls them every 4 ms and keeps
    the merged state; nn_hid.c ORs it into the input with XInput, keyboard and mouse. Without SDL nothing
-   changes. HOS_NO_SDL=1 leaves SDL out. The inputs go by position (HOS_PAD_*, SDL's own order: the bottom face button
+   changes. no_sdl leaves SDL out. The inputs go by position (HOS_PAD_*, SDL's own order: the bottom face button
    first, cross on a DualSense, A on an Xbox pad); nn_hid.c's controls make them the Switch's buttons.
 
-   (runtime) Motion: with the Insert menu's Motion controls on (the default), the open pad with a gyroscope and an
+   (runtime) Motion: with the motion setting on (the default), the open pad with a gyroscope and an
    accelerometer (Switch Pro and pads in Switch mode, DualSense, DualShock 4, others) that was used last has them read
    each poll and turned into the six-axis state OoT aims with (runtime/media/hos_motion.h), which nn_hid.c's
    GetSixAxisSensorStates gives the game; Motion sensitivity X/Y and Invert motion X/Y apply there. Off, or with no such pad, the game sees the pad
@@ -93,7 +93,7 @@ static int pads_start(void) {
     hos_sdl_hint("SDL_GAMECONTROLLER_USE_BUTTON_LABELS", "0");
     /* (with no window nothing reads SDL's quit event: SDL's own SIGINT/SIGTERM handlers turned a timeout's or a service
        manager's SIGTERM into that event, and the run went on until SIGKILL. Without them the signals end it as usual) */
-    if (getenv("HOS_HEADLESS")) hos_sdl_hint("SDL_NO_SIGNAL_HANDLERS", "1");
+    if (setting_bool(SET_HEADLESS)) hos_sdl_hint("SDL_NO_SIGNAL_HANDLERS", "1");
     if (!hos_sdl_init(HOS_SDL_GAMEPAD)) {
         hos_log("hid: SDL could not start its controller support: %s", hos_sdl_error());
         return 0;
@@ -110,7 +110,7 @@ static int rumble_due(unsigned lo, unsigned hi, unsigned sent_lo, unsigned sent_
     return 0;
 }
 
-/* The Insert menu's Rumble strength (percent; 0 Off) on the motors' 0..65535, heavy and light together: up to 100 each
+/* The rumble setting (percent; 0 Off) on the motors' 0..65535, heavy and light together: up to 100 each
    motor is scaled on its own (100 sends them as they are); above, when the stronger would pass the motor's top, both
    are scaled by the same factor so that it just reaches it, keeping the balance between the motors that the frequency
    split chose. Off stops a rumble that is playing (the poll sends the change). */
@@ -131,13 +131,9 @@ static void rumble_strength(unsigned heavy, unsigned light, int percent, uint16_
 }
 
 /* A pad SDL just opened: HD rumble when it is a Switch Pro Controller or a Joy-Con and the SDL has the effect call
-   (HOS_HD_RUMBLE=0: never); whether SDL's driver takes it shows with the first packet. */
+   (hd_rumble off: never); whether SDL's driver takes it shows with the first packet. */
 static void hd_open(int i, void *gc) {
-    static int env_off = -1;
-    if (env_off < 0) {
-        const char *e = getenv("HOS_HD_RUMBLE");
-        env_off = e && !strcmp(e, "0");
-    }
+    const int env_off = !setting_bool(SET_HD_RUMBLE);
     pads[i].hd_kind = (uint8_t)hd_rumble_kind(hos_sdl_load(), hos_sdl_pad_type(gc));
     pads[i].hd = (uint8_t)hd_rumble_start(pads[i].hd_kind, hos_sdl_pad_has_effect(), env_off);
     pads[i].hd_ever = 0;
@@ -173,13 +169,12 @@ static int hd_poll(int i, const uint8_t side[3][4], long long now) {
     return 1;
 }
 
-/* (motion) the sensors on while Motion controls is on (HOS_OPT_GYRO, on without the menu), off otherwise; the pad with
-   them that was used last read into the filter. count: the pads open */
+/* (motion) the sensors on while the motion setting is on, off otherwise; the pad with them that was used last read into
+   the filter. count: the pads open */
 static void motion_poll(int64_t now, int count) {
-    int rx_option(int id, int otherwise);
-    static int debug = -1;   /* (HOS_MOTION_DEBUG, read once) */
-    if (debug < 0) debug = getenv("HOS_MOTION_DEBUG") != NULL;
-    const int want = rx_option(HOS_OPT_GYRO, 1) != 0;
+    static int debug = -1;   /* (log.motion, read once) */
+    if (debug < 0) debug = setting_bool(SET_LOG_MOTION);
+    const int want = setting_bool(SET_MOTION);
     int pick = -1, any = 0;
     for (int i = 0; i < MAX_PADS; i++) {
         if (!pads[i].gc || !pads[i].motion) continue;
@@ -233,14 +228,13 @@ static void motion_poll(int64_t now, int count) {
     /* the filter runs outside the lock (the game's input calls take it); a repeat of the last reading is no reading */
     const int64_t dt_ns = now - motion_ns;
     motion_ns = now;
-    {   /* (the Motion deadzone row: the console's tight, standard and loose zero-drift thresholds, turns a second) */
+    {   /* (motion_dead_zone: the console's tight, standard and loose zero-drift thresholds, turns a second) */
         static const float zone[3] = {HOS_MOTION_THRESHOLD_TIGHT, HOS_MOTION_THRESHOLD, HOS_MOTION_THRESHOLD_LOOSE};
-        const int z = rx_option(HOS_OPT_GYRO_DEADZONE, 1);
-        motion.threshold = zone[z < 0 ? 0 : z > 2 ? 2 : z];
+        motion.threshold = zone[setting_int(SET_MOTION_DEAD_ZONE)];
     }
-    if (!hos_motion_update(&motion, a, g, (float)(dt_ns / 1e9), rx_option(HOS_OPT_GYRO_SENS_X, 100) / 100.0f,
-                           rx_option(HOS_OPT_GYRO_SENS_Y, 100) / 100.0f, rx_option(HOS_OPT_GYRO_INV_X, 0),
-                           rx_option(HOS_OPT_GYRO_INV_Y, 0)) && !fresh)
+    if (!hos_motion_update(&motion, a, g, (float)(dt_ns / 1e9), setting_int(SET_MOTION_SENS_X) / 100.0f,
+                           setting_int(SET_MOTION_SENS_Y) / 100.0f, setting_bool(SET_MOTION_INVERT_X),
+                           setting_bool(SET_MOTION_INVERT_Y)) && !fresh)
         return;
     if (!motion_warned && motion.learned_t <= 0 && now - motion_start_ns > 30000000000LL) {
         motion_warned = 1;   /* (a pad noisier than the stillness test allows: its drift is never taken off) */
@@ -322,8 +316,7 @@ static void pads_poll(void) {
         uint64_t b = 0;
         int32_t s[4] = {0};
         int count = 0;
-        int rx_option(int id, int otherwise);
-        const int strength = rx_option(9, 100);   /* (the menu's Rumble strength: the motors' and HD rumble's) */
+        const int strength = (int)setting_int(SET_RUMBLE);   /* (the motors' and HD rumble's) */
         uint16_t motors[2];
         rumble_strength((uint16_t)rumble_low, (uint16_t)rumble_high, strength, motors);
         const uint16_t lo = motors[0], hi = motors[1];
@@ -348,9 +341,9 @@ static void pads_poll(void) {
                 if (hos_sdl_pad_button(gc, k)) b |= 1ULL << k;
             if (hos_sdl_pad_axis(gc, AX_LT) > 8000) b |= 1ULL << HOS_PAD_LTRIGGER;
             if (hos_sdl_pad_axis(gc, AX_RT) > 8000) b |= 1ULL << HOS_PAD_RTRIGGER;
-            const int inv_x = rx_option(16, 0);
-            const int inv_y = rx_option(17, 0);
-            const int z = rx_option(11, 0);   /* (the menu's Stick dead zone: nn_hid.c's hos_stick_axis) */
+            const int inv_x = setting_bool(SET_STICK_INVERT_X);
+            const int inv_y = setting_bool(SET_STICK_INVERT_Y);
+            const int z = (int)setting_int(SET_STICK_DEAD_ZONE);   /* (nn_hid.c's hos_stick_axis) */
             int32_t v[4] = {stick_value(hos_sdl_pad_axis(gc, AX_LX), 0, z),
                             stick_value(hos_sdl_pad_axis(gc, AX_LY), 1, z),
                             stick_value(hos_sdl_pad_axis(gc, AX_RX), inv_x, z),
@@ -424,7 +417,7 @@ int hos_sdl_pads(uint64_t *buttons, int32_t stick[4]) {
     static volatile int32_t started;
     if (!started && !os_atomic_xchg(&started, 1)) {
         /* (a headless run never opens the PC's controllers: no rumble, and no stray input from a pad in someone's hand) */
-        if (getenv("HOS_NO_SDL") || getenv("HOS_HEADLESS")) return 0;
+        if (setting_bool(SET_NO_SDL) || setting_bool(SET_HEADLESS)) return 0;
         if (!hos_sdl_load()) {
             hos_log("hid: no SDL beside the exe or on the system: only XInput controllers (Xbox pads) work");
             return 0;

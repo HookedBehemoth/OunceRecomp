@@ -1,9 +1,9 @@
-/* HOS_DBG=crit[:<first present>[:<presents>]] (measurement only, direct mode): a trace of what every guest
+/* debug.crit[:<first present>[:<presents>]] (measurement only, direct mode): a trace of what every guest
    thread does over a window of presents, for the frame's critical path. Each guest thread's
    blocks (hos_block_begin/end: what it waited on, its guest caller), the wakes of
    the objects it waits on, and every call into the direct back end (the record emits merged into bursts) are spans
    with TSC times. At the window's end they go to crit.bin in the working directory (the run folder), the thread names to
-   crit_threads.txt; tools/crit_path.py reads them. With HOS_DBG unset, or without "crit", nothing is recorded and the
+   crit_threads.txt; tools/crit_path.py reads them. Without debug.crit nothing is recorded and the
    back end's calls are not wrapped. */
 #ifndef OUNCE_DIRECT_CRIT_H
 #define OUNCE_DIRECT_CRIT_H
@@ -29,7 +29,7 @@ enum {
 };
 
 extern volatile int crit_rec;   /* recording now */
-int crit_wanted(void);          /* HOS_DBG names crit (read once) */
+int crit_wanted(void);          /* debug.crit is given (read once) */
 void crit_span(int kind, uint64_t t0, uint64_t t1, uint64_t a, uint64_t b);
 static inline void crit_wake(const void *key) {
     if (crit_rec) { const uint64_t t = crit_tsc(); crit_span(CRIT_WAKE, t, t, (uint64_t)(uintptr_t)key, 0); }

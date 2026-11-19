@@ -19,10 +19,10 @@ static HostCall calls[HOS_HOSTCALL_MAX];
 static volatile int32_t ncalls;
 static os_mutex lock = OS_MUTEX_INIT;
 
-/* HOS_HOSTCALL_STATS, tracing or HOS_HOSTCALL_SLOW=1: every host call through a64_call_miss (it counts there) */
+/* hostcall.stats, tracing or hostcall.slow: every host call through a64_call_miss (it counts there) */
 static int slow_calls(void) {
     static int slow = -1;
-    if (slow < 0) slow = getenv("HOS_HOSTCALL_STATS") != NULL || hos_trace || getenv("HOS_HOSTCALL_SLOW") != NULL;
+    if (slow < 0) slow = setting_bool(SET_HOSTCALL_STATS) || hos_trace || setting_bool(SET_HOSTCALL_SLOW);
     return slow;
 }
 
@@ -80,8 +80,8 @@ uint64_t a64_guest_of_host(uint64_t v) {
 }
 
 /* rt/a64_rt.c a64_lookup: a host call without user data as a plain function, called as fn(c) (its user argument, which
-   such handlers do not read, is then whatever the register holds). Not with HOS_HOSTCALL_STATS or tracing (they count
-   in a64_call_miss) or HOS_HOSTCALL_SLOW=1. Not on the web: wasm checks an indirect call's type, and a HostFn
+   such handlers do not read, is then whatever the register holds). Not with hostcall.stats or tracing (they count
+   in a64_call_miss) or hostcall.slow. Not on the web: wasm checks an indirect call's type, and a HostFn
    (two parameters) called as an A64Fn (one) traps with "function signature mismatch". */
 A64Fn a64_lookup_host(uint64_t addr) {
 #ifdef __EMSCRIPTEN__
@@ -94,7 +94,7 @@ A64Fn a64_lookup_host(uint64_t addr) {
     return slow_calls() ? NULL : (A64Fn)(void *)calls[i].fn;
 }
 
-/* The last host calls, for HOS_HOSTCALL_STATS: what a stalled thread was doing. */
+/* The last host calls, for hostcall.stats: what a stalled thread was doing. */
 #define RING 256
 typedef struct { uint32_t call; uint32_t thread; uint64_t x[4], lr; } Recent;
 static Recent ring[RING];
@@ -116,10 +116,10 @@ int a64_call_miss(Ctx *c, uint64_t target) {
     uint64_t i = (target - HOS_HOSTCALL_BASE) / 16;
     if (i >= (uint64_t)ncalls) return 0;
     HostCall *h = &calls[i];
-    /* (the ring and the counts only for HOS_HOSTCALL_STATS / tracing: every NVN call took two interlocked increments
+    /* (the ring and the counts only for hostcall.stats / tracing: every NVN call took two interlocked increments
        on lines all game threads share) */
     static int stats = -1;
-    if (stats < 0) stats = getenv("HOS_HOSTCALL_STATS") != NULL || hos_trace;
+    if (stats < 0) stats = setting_bool(SET_HOSTCALL_STATS) || hos_trace;
     if (!stats) {
         h->fn(c, h->user);
         return 1;
@@ -182,9 +182,9 @@ uint64_t guest_call8(GuestCall *g, uint64_t sp, uint64_t fn, uint64_t a0, uint64
     return call_restoring((Ctx *)g, sp, fn, a, 8);
 }
 
-/* HOS_HOSTCALL_STATS=1: at exit, how often each host call ran (the NVN surface a game really uses). */
+/* hostcall.stats: at exit, how often each host call ran (the NVN surface a game really uses). */
 void hos_hostcall_stats(void) {
-    if (!getenv("HOS_HOSTCALL_STATS")) return;
+    if (!setting_bool(SET_HOSTCALL_STATS)) return;
     fprintf(stderr, "[hos] host calls:\n");
     for (int32_t i = 0; i < ncalls; i++) fprintf(stderr, "  %10ld  %s\n", calls[i].calls, calls[i].name);
     int32_t end = ring_pos, start = end > RING ? end - RING : 0;

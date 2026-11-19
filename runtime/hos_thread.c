@@ -55,7 +55,7 @@ int hos_thread_prio(HosThread *t) { return t->priority; }
 int hos_trace;
 extern const uint64_t hos_thread_start_hook, hos_thread_exit_hook;   /* gen/hos_image.c */
 static _Thread_local HosThread *cur;
-/* (HOS_DBG=crit: crit.h) what the block that gives the core up waits on, set by the blocking call before it */
+/* (debug.crit= crit.h) what the block that gives the core up waits on, set by the blocking call before it */
 static _Thread_local int crit_why = CRIT_BLOCK_OTHER;
 static _Thread_local uint64_t crit_key, crit_away_t, crit_away_lr;
 static os_rwlock threads_lock = OS_RWLOCK_INIT;
@@ -125,7 +125,7 @@ static void log_flush(void) {}
 void hos_log_flush(void) { log_flush(); }
 
 /* Every line starts "[hos 12.345 p600 <thread>]": seconds since the process started (taken before main) and the present
-   the game is at. HOS_LOG_TIME=0 leaves both out. A line cut at the buffer's end ends in "~" */
+   the game is at. log.time=0 leaves both out. A line cut at the buffer's end ends in "~" */
 static int64_t log_t0;
 static int log_time = -1;
 __attribute__((constructor)) static void log_time_start(void) { log_t0 = os_now_ns(); }
@@ -133,21 +133,13 @@ __attribute__((constructor)) static void log_time_start(void) { log_t0 = os_now_
 double hos_log_seconds(void) { return (double)(os_now_ns() - log_t0) / 1e9; }
 
 static int log_stamp(char *out, size_t cap) {
-    if (log_time < 0) log_time = !getenv("HOS_LOG_TIME") || atoi(getenv("HOS_LOG_TIME")) > 0;
+    if (log_time < 0) log_time = setting_bool(SET_LOG_TIME);
     const char *name = cur ? cur->name : "host";
     if (!log_time) return snprintf(out, cap, "[hos %s] ", name);
     return snprintf(out, cap, "[hos %.3f p%lld %s] ", hos_log_seconds(), (long long)hos_vi_present_number(), name);
 }
 
-/* An item of HOS_DBG ("name" or "name:value"), and a log switch (docs/switches.md, "Turn on debug aids with HOS_DBG"): its item or logall */
-int hos_dbg_item(const char *item) {
-    const char *d = getenv("HOS_DBG");
-    const size_t n = strlen(item);
-    for (; d && *d; d = strchr(d, ',') ? strchr(d, ',') + 1 : NULL)
-        if (!strncmp(d, item, n) && (d[n] == ',' || d[n] == ':' || !d[n])) return 1;
-    return 0;
-}
-int hos_log_switch(const char *item) { return hos_dbg_item(item) || hos_dbg_item("logall"); }
+int hos_log_switch(setting_id id) { return setting_bool(id) || setting_bool(SET_DBG_LOGALL); }
 
 #define LOG_BUF 4096
 void hos_log(const char *fmt, ...) {
@@ -231,7 +223,7 @@ static void track(HosThread *t) {
 }
 
 /* (mkw-recomp) Every guest thread's name and guest registers as of its last call out of lifted code, with its
-   frame chain from x29: what each thread of a stalled game waits in (hos_process.c, HOS_STATS_AFTER). */
+   frame chain from x29: what each thread of a stalled game waits in (hos_process.c, stats_after). */
 void hos_thread_dump(void) {
     os_rwlock_lock_shared(&threads_lock);
     for (int i = 0; i < nthreads; i++)   /* (placement: masks and the core number it is told) */
@@ -272,7 +264,7 @@ void hos_thread_dump(void) {
     os_rwlock_unlock_shared(&threads_lock);
 }
 
-/* HOS_FP_LOG=1 (debugging, nn_vi.c at presents 1, 60 and 600): the presenting thread's guest FPCR and the host's MXCSR,
+/* log.fp (debugging, nn_vi.c at presents 1, 60 and 600): the presenting thread's guest FPCR and the host's MXCSR,
    which runtime/hos_fp.c keeps equal to it (FZ: 0x9FC0 plus sticky bits) */
 extern void (*hos_fp_log_hook)(unsigned long long fpcr, unsigned from, unsigned to);
 static void fp_mode_log(unsigned long long fpcr, unsigned from, unsigned to) {
@@ -328,7 +320,7 @@ HosThread *hos_thread_of(uint64_t guest_tt) {
 }
 
 Ctx *hos_boot_main_thread(uint64_t stack_size) {
-    if (getenv("HOS_FP_LOG")) hos_fp_log_hook = fp_mode_log;
+    if (setting_bool(SET_LOG_FP)) hos_fp_log_hook = fp_mode_log;
     HosThread *t = (HosThread *)calloc(1, sizeof *t);
     t->guest_tt = hos_sys_alloc(0x400, 0x10);      /* a ThreadType for the main thread; the SDK never made one */
     t->stack_size = stack_size;
@@ -368,7 +360,7 @@ static void thread_main(void *p) {
         c->x[0] = t->guest_tt;
         a64_call_received(c, hook);
         if (G64(t->tlr + 0x1F0)) c->tpidr_el0 = G64(t->tlr + 0x1F0);
-        if (hos_trace || getenv("HOS_TLS_TRACE"))
+        if (hos_trace || setting_bool(SET_LOG_TLS))
             hos_log("thread %s: TLS hook gave TP %#llx, DTV %#llx; ideal core %d mask %#llx priority %d", t->name,
                     (unsigned long long)c->tpidr_el0, (unsigned long long)G64(c->tpidr_el0 + 8), t->ideal_core,
                     (unsigned long long)t->core_mask, t->priority);
@@ -441,11 +433,11 @@ void hos_thread_set_name(HosThread *t, const char *name) {
     }
 }
 
-/* HOS_PIN=<name part>=<hex mask>,...[,*=<hex mask>] (experiment): host CPU affinity by thread name (game threads as
+/* threads.pin=<name part>=<hex mask>,...[,*=<hex mask>] (experiment): host CPU affinity by thread name (game threads as
    they are named or started, host threads as they register); "*" for every other named thread. The first matching
    entry wins. (2026-10-20: the castle's MainThread and ModuleSystem workers each on a physical core of their own, the
    rest elsewhere, was slower than Windows' own scheduling: 63-68 against 69-71 fps.) */
-/* HOS_PRIO=<name part>=<level>,... (experiment, same matching): host thread priority, -2 (lowest) to 2 (highest).
+/* threads.prio=<name part>=<level>,... (experiment, same matching): host thread priority, -2 (lowest) to 2 (highest).
    (10-20: MainThread, ModuleSystem workers and BaseProc executors above normal: no change at the castle) */
 typedef struct { char pat[40]; long long value; } NameSpec;
 static int parse_name_specs(const char *e, NameSpec *out, int max, int base) {
@@ -467,7 +459,7 @@ static const NameSpec *match_name_spec(const NameSpec *s, int n, const char *nam
 }
 /* The last physical core (its logical processors' mask), kept for the back end's replay thread: the game's threads run on the others. The replay is on the frame's critical path
    (MKW waits for the last frame's GPU work before it submits the next), and on a core shared with game threads
-   it ran ~1.7x slower than alone. Only on machines with 8+ logical processors; HOS_RESERVE_CORE=0: none.
+   it ran ~1.7x slower than alone. Only on machines with 8+ logical processors.
    (runtime) On a CPU with cores of more than one kind, the last core of the fastest kind: the last core of all is an
    efficiency core on Intel's hybrid CPUs (an i7-12700K's logical processors 16-19), the slowest place for the replay
    (an i7-13700K's Kokiri Forest: 48.7 fps with it there, 60 on a performance core). EfficiencyClass is higher the faster
@@ -497,7 +489,6 @@ uint64_t hos_reserved_cpus(void) {
     static uint64_t mask = ~0ull;
     if (mask != ~0ull) return mask;
     mask = 0;
-    if (getenv("HOS_RESERVE_CORE") && !atoi(getenv("HOS_RESERVE_CORE"))) return mask;
     uint64_t cores[64];
     const int n = os_cpu_cores(cores, 64);
     int logical = 0;
@@ -521,19 +512,19 @@ void hos_thread_pin(os_thread *h, const char *name) {
     static os_mutex lk = OS_MUTEX_INIT;
     os_mutex_lock(&lk);
     if (npins < 0) {
-        npins = parse_name_specs(getenv("HOS_PIN"), pins, 24, 16);
-        nprios = parse_name_specs(getenv("HOS_PRIO"), prios, 24, 10);
+        npins = parse_name_specs(setting_str(SET_PIN), pins, 24, 16);
+        nprios = parse_name_specs(setting_str(SET_PRIO), prios, 24, 10);
     }
     os_mutex_unlock(&lk);
     const NameSpec *p = match_name_spec(pins, npins, name);
     if (p && p->value) os_thread_set_affinity(h, (uint64_t)p->value);
     if ((p = match_name_spec(prios, nprios, name)) && p->value >= -2 && p->value <= 2)
         os_thread_set_priority(h, (int)p->value);   /* (OS_PRIO_LOWEST -2 .. OS_PRIO_HIGHEST 2) */
-    else if (strstr(name, "OptimizeChange") && !getenv("HOS_OCB_NORMAL")) {
+    else if (strstr(name, "OptimizeChange")) {
         /* (OoT's OptimizeChangeBank (guest priority 27, a background thread) walks every placed object of the
            area by name, again and again (Kokiri: ~344 names, ~250k lookups a second). On the console it only gets the
            time nothing more important wants; at the host's normal priority it took the renderer's and the driver's
-           cores and the frame waited (Kokiri, RX 6600 + 5600G: 17-20 fps; lowest: 21-28). HOS_OCB_NORMAL=1: as before) */
+           cores and the frame waited (Kokiri, RX 6600 + 5600G: 17-20 fps; lowest: 21-28)) */
         os_thread_set_priority(h, OS_PRIO_LOWEST);
     }
 }
@@ -543,25 +534,14 @@ uint64_t hos_ticks(void) { return recomp_cntpct(NULL); }
 
 int64_t hos_now_ns(void) { return os_now_ns(); }
 
-/* HOS_SLEEP_SPIN=1 (comparison): a sleep under a millisecond yields until its time, as the Windows build had to (its
-   timers are ~0.5 ms coarse), instead of a timed sleep (os.h's: no rounding, a 1 ns timer slack) */
-static int sleep_spin(void) {
-    static int on = -1;
-    if (on < 0) on = getenv("HOS_SLEEP_SPIN") && atoi(getenv("HOS_SLEEP_SPIN")) != 0;
-    return on;
-}
+/* a timed sleep (os.h's: no rounding, a 1 ns timer slack) */
 void hos_sleep_ns(int64_t ns) {
     if (ns <= 0) {   /* (the three yield variants: every guest thread has a host thread of its own) */
         os_yield();
         return;
     }
     const int away = hos_block_begin(CRIT_BLOCK_SLEEP, (const void *)(uintptr_t)ns);
-    if (ns < 1000000 && sleep_spin()) {
-        const int64_t until = os_now_ns() + ns;
-        while (os_now_ns() < until) os_yield();
-    } else {
-        os_sleep_ns(ns);
-    }
+    os_sleep_ns(ns);
     if (away) hos_block_end();
 }
 
@@ -633,10 +613,10 @@ HLE(_ZN2nn2os19GetCurrentStackInfoEPmS1_) {
 }
 
 HLE(_ZN2nn2os11YieldThreadEv) { os_yield(); }
-/* HOS_SLEEP_LOG=1 (diagnostic): guest sleeps by caller (LR) every 5 s: count, asked, slept */
+/* log.sleep (diagnostic): guest sleeps by caller (LR) every 5 s: count, asked, slept */
 void hos_sleep_logged(int64_t ns, uint64_t lr) {
     static int on = -1;
-    if (on < 0) on = getenv("HOS_SLEEP_LOG") != NULL;
+    if (on < 0) on = setting_bool(SET_LOG_SLEEP);
     if (!on) { hos_sleep_ns(ns); return; }
     const int64_t t0 = hos_now_ns();
     hos_sleep_ns(ns);
@@ -688,7 +668,7 @@ HLE(_ZN2nn2os11GetTlsValueENS0_7TlsSlotE) { RET((uint32_t)ARG(0) < HOS_TLS_SLOTS
 HLE(_ZN2nn2os11SetTlsValueENS0_7TlsSlotEm) { if ((uint32_t)ARG(0) < HOS_TLS_SLOTS) cur->tls_slots[(uint32_t)ARG(0)] = ARG(1); }
 
 /* ---- ticks ------------------------------------------------------------------------------------------------- */
-/* HOS_TICK_LOG=1 (diagnostic): who reads the clock, by caller (LR), every 5 s */
+/* log.tick (diagnostic): who reads the clock, by caller (LR), every 5 s */
 static void tick_log(uint64_t lr) {
     static os_mutex lk = OS_MUTEX_INIT; static uint64_t lrs[512]; static uint32_t counts[512]; static int64_t next;
     os_mutex_lock(&lk);
@@ -710,10 +690,10 @@ static void tick_log(uint64_t lr) {
     }
     os_mutex_unlock(&lk);
 }
-/* the tick, as GetSystemTick, read by the guest code at lr (HOS_TICK_LOG=1: logged by caller) */
+/* the tick, as GetSystemTick, read by the guest code at lr (log.tick: logged by caller) */
 uint64_t hos_tick_read(uint64_t lr) {
     static int on = -1;
-    if (on < 0) on = getenv("HOS_TICK_LOG") != NULL;
+    if (on < 0) on = setting_bool(SET_LOG_TICK);
     if (on) tick_log(lr);
     return hos_ticks();
 }
@@ -873,7 +853,7 @@ void hos_thread_log_handles(void) {
    the actor job system's per-core rings (pushed and popped without a lock); games/oot/patches/oot_probes.c asserts that each ring has
    one writer (hos_oot_ring_write). */
 
-/* A block (HOS_DBG=crit: crit.h): its start, what it waits on and its guest caller; 1 if recorded, and then
+/* A block (debug.crit= crit.h): its start, what it waits on and its guest caller; 1 if recorded, and then
    hos_block_end records the span */
 int hos_block_begin(int why, const void *key) {
     HosThread *t = cur;
@@ -887,7 +867,7 @@ void hos_block_end(void) {
     if (crit_away_t) crit_span(crit_why, crit_away_t, crit_tsc(), crit_key, crit_away_lr);
     crit_why = CRIT_BLOCK_OTHER, crit_away_t = 0;
 }
-/* os_cond_wait for guest threads (the block recorded for HOS_DBG=crit) */
+/* os_cond_wait for guest threads (the block recorded for debug.crit) */
 int hos_cv_sleep(os_cond *cv, os_mutex *lk, int64_t timeout_ns) {
     const int rec = hos_block_begin(CRIT_BLOCK_CV, cv);
     const int r = os_cond_wait(cv, lk, timeout_ns);

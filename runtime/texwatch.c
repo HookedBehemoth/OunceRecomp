@@ -1,4 +1,4 @@
-/* HOS_DBG=texwatch (direct mode, diagnosis only): which code writes texels into a texture's storage with
+/* debug.texwatch (direct mode, diagnosis only): which code writes texels into a texture's storage with
    the CPU. The direct back end never reads texture storage (docs/direct/architecture.md, "Textures"), so a texture whose
    texels the CPU stores there, with no NVN call, never gets them: each such writer needs a game patch that hands the
    bytes to the back end (gpu_texels), as the glyph writer has (docs/direct/terrain-texels.md).
@@ -8,7 +8,7 @@
    page is made writable again; every 2 s the live textures' pages are protected again, so later writers are seen too.
    File reads straight into a texture's storage (the kernel's writes cannot fault) are noted from nn_fs.c. New pairs are
    logged by a thread of their own ("texwatch: ..."), and a summary every 600 presents. The fault costs a page's
-   protection change: a debug run only. With HOS_DBG unset nothing here runs. */
+   protection change: a debug run only. Without debug.texwatch nothing here runs. */
 #include "hos.h"
 #include "renderer.h"
 #include "rx_nvn.h"
@@ -20,33 +20,10 @@
 extern volatile int64_t hos_present_count;
 uint64_t nvn_gpu_guest(uint64_t gpu);
 
-static int dbg_has(const char *name) {
-    const char *d = getenv("HOS_DBG");
-    if (!d) return 0;
-    const size_t n = strlen(name);
-    for (const char *p = d; (p = strstr(p, name)); p += n)
-        if ((p == d || p[-1] == ',') && (p[n] == 0 || p[n] == ',' || p[n] == ':')) return 1;
-    return 0;
-}
 
-/* the text after "<name>:" in HOS_DBG, up to the next comma (into out); 0: not there */
-static int dbg_val(const char *name, char *out, size_t cap) {
-    const char *d = getenv("HOS_DBG");
-    if (!d) return 0;
-    const size_t n = strlen(name);
-    for (const char *p = d; (p = strstr(p, name)); p += n)
-        if ((p == d || p[-1] == ',') && p[n] == ':') {
-            const char *v = p + n + 1, *e = strchr(v, ',');
-            const size_t k = e ? (size_t)(e - v) : strlen(v);
-            snprintf(out, cap, "%.*s", (int)k, v);
-            return 1;
-        }
-    return 0;
-}
-
-/* HOS_DBG=memwatch:<hex>[+<hex>...] (diagnosis): the pages of those guest addresses watched the same way from the first
+/* debug.memwatch=<hex>[+<hex>...] (diagnosis): the pages of those guest addresses watched the same way from the first
    texture on, every write to the 64-byte line of the address named with its writer (at most 40 lines a watch);
-   HOS_DBG=memfind:<hex>[+<hex>...]@<present>: at that present the resident pages of the heap are searched for those 64-bit
+   debug.memfind=<hex>[+<hex>...]@<present>: at that present the resident pages of the heap are searched for those 64-bit
    values (8-byte aligned), each place logged (at most 64): which object holds an address */
 #define NMW 8
 static uint64_t mw_addr[NMW], mf_val[NMW];
@@ -66,17 +43,19 @@ static int on_ = -1;
 int texwatch_on(void) {
     if (on_ < 0) {
         char v[512];
-        if (rx_direct() && dbg_val("memwatch", v, sizeof v)) parse_list(v, mw_addr, &n_mw);
-        if (rx_direct() && dbg_val("memfind", v, sizeof v)) {
+        snprintf(v, sizeof v, "%s", setting_str(SET_DBG_MEMWATCH));
+        if (rx_direct() && *v) parse_list(v, mw_addr, &n_mw);
+        snprintf(v, sizeof v, "%s", setting_str(SET_DBG_MEMFIND));
+        if (rx_direct() && *v) {
             parse_list(v, mf_val, &n_mf);
             const char *at = strchr(v, '@');
             mf_present = at ? atoll(at + 1) : 1200;
         }
-        on_ = rx_direct() && (dbg_has("texwatch") || n_mw || n_mf);
+        on_ = rx_direct() && (setting_bool(SET_DBG_TEXWATCH) || n_mw || n_mf);
     }
     return on_;
 }
-static int textures_on(void) { return texwatch_on() && dbg_has("texwatch"); }
+static int textures_on(void) { return texwatch_on() && setting_bool(SET_DBG_TEXWATCH); }
 
 #define NTEX 65536
 typedef struct {
@@ -209,7 +188,7 @@ static void start(void) {
     exe_base = os_exe_base();
     os_fault_add(handler, true);
     os_thread_release(os_thread_start(rearm, NULL, 0, "texwatch"));
-    hos_log("texwatch: CPU writes into texture storage are watched (HOS_DBG=texwatch; writers named as exe+offset: "
+    hos_log("texwatch: CPU writes into texture storage are watched (debug.texwatch; writers named as exe+offset: "
             "tools/re/samap.py)");
 }
 

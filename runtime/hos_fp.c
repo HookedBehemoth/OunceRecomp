@@ -26,7 +26,7 @@ unsigned hos_fp_mxcsr(uint64_t fpcr) {
 }
 
 /* MXCSR = the context's FPCR, keeping the sticky exception bits */
-/* HOS_FP_LOG=1 (diagnostic): hos_thread.c sets this to log changes of a thread's FP mode */
+/* log.fp (diagnostic): hos_thread.c sets this to log changes of a thread's FP mode */
 void (*hos_fp_log_hook)(unsigned long long fpcr, unsigned from, unsigned to);
 
 void a64_fpcr_sync(Ctx *A64_NOESC c) {
