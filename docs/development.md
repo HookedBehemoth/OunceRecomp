@@ -18,7 +18,9 @@ Install these from your distribution:
 - clang and lld from LLVM 23 (the lifter refuses another major version), Rust, and ISPC (the texture encoder's
   compiler; `ISPC=<path>` picks another one, as `CC` does);
 - Meson, Ninja and `glslangValidator`, for the renderer;
-- the Vulkan headers, FFmpeg with dav1d, and SDL2 or SDL3.
+- the Vulkan headers, and SDL2 or SDL3;
+- curl, NASM, Make and pkg-config, for the FFmpeg the game links, which the first build makes from source
+  ([FFmpeg](builder-plan.md#ffmpeg)).
 
 The renderer needs a GPU with Vulkan 1.3 and shader objects, descriptor indexing and extended dynamic state 3. To
 check yours, run `ounce probe` once `ounce` is built; [the device check](builder-plan.md#the-device-check) lists

@@ -1,5 +1,5 @@
-/* nn::codec's hardware video decoders (VP8/VP9 here) and their image pools, on FFmpeg's libavcodec (the static
-   libraries in Eglantine's package cache: work/eg/.cache/cpm/ffmpeg). MKW's movie library (subsdk0, movie::) plays
+/* nn::codec's hardware video decoders (VP9 and AV1 here) and their image pools, on the FFmpeg linked into the game
+   (ounce tool ffmpeg: FFmpeg's VP9 decoder, dav1d for AV1, libswscale for RGBA). MKW's movie library (subsdk0, movie::) plays
    its WebM movies through them: the cup openings, the courses' billboards, the emblems. DKB's movie player (main,
    SDK 20: the forms tagged sdk(20, 21)) plays its VP9 WebM movies the same way.
 
@@ -284,24 +284,19 @@ static void dec_init_sized(Ctx *c, enum AVCodecID id, const char *what, int w, i
 static void worker_main(void *arg);
 static void dec_init(Ctx *c, enum AVCodecID id, const char *what) { dec_init_sized(c, id, what, 0, 0); }
 static void dec_init_sized(Ctx *c, enum AVCodecID id, const char *what, int w, int h) {
-    const AVCodec *codec = NULL;
-    /* (FFmpeg's own AV1 decoder needs a hardware context: dav1d, else libaom, by name) */
-    if (id == AV_CODEC_ID_AV1) codec = avcodec_find_decoder_by_name("libdav1d");
-    if (!codec && id == AV_CODEC_ID_AV1) codec = avcodec_find_decoder_by_name("libaom-av1");
-    if (!codec) codec = avcodec_find_decoder(id);
+    /* (the FFmpeg linked in has exactly these two: its own VP9 decoder, and dav1d for AV1, whose FFmpeg decoder needs a
+       hardware one) */
+    const AVCodec *codec = id == AV_CODEC_ID_AV1 ? avcodec_find_decoder_by_name("libdav1d") : avcodec_find_decoder(id);
     Dec *d = (Dec *)calloc(1, sizeof *d);
-    if (codec) {
-        d->ctx = avcodec_alloc_context3(codec);
-        d->ctx->thread_count = id == AV_CODEC_ID_AV1 ? 4 : 2;   /* (1080p AV1 in software) */
-        if (avcodec_open2(d->ctx, codec, NULL) < 0) avcodec_free_context(&d->ctx);
-    }
+    d->ctx = codec ? avcodec_alloc_context3(codec) : NULL;
+    if (d->ctx) d->ctx->thread_count = id == AV_CODEC_ID_AV1 ? 4 : 2;   /* (1080p AV1 in software) */
+    if (!d->ctx || avcodec_open2(d->ctx, codec, NULL) < 0) hos_fatal(c, "video: the %s decoder did not open", what);
     d->pkt = av_packet_alloc();
     d->frame = av_frame_alloc();
-    if (d->ctx) d->worker = os_thread_start(worker_main, d, 0, "video");
+    d->worker = os_thread_start(worker_main, d, 0, "video");
     set_host(ARG(0), DEC_MAGIC, d);
     static int logged;
-    if (logged++ < 4)
-        hos_log("video: %s decoder %s (%dx%d)", what, d->ctx ? "ready" : "not available in this FFmpeg", w, h);
+    if (logged++ < 4) hos_log("video: %s decoder %s ready (%dx%d)", what, codec->name, w, h);
     RET(0);
 }
 /* the decoders' submission-ready events (manual-clear system events in guest memory, which is never freed: a finalized
@@ -627,7 +622,7 @@ static void dec_unwait(Dec *d, int slot) {
    instead of reading the whole file ahead of it */
 static void dec_submit(Ctx *c) {
     Dec *d = (Dec *)host_of(ARG(1), DEC_MAGIC);
-    if (d && d->ctx) {
+    if (d) {
         os_mutex_lock(&d->lock);
         const int full = ARG(3) && !dec_room(d);
         os_mutex_unlock(&d->lock);
@@ -635,7 +630,7 @@ static void dec_submit(Ctx *c) {
     }
     const uint64_t id = submitted();
     if (ARG(0)) G64(ARG(0)) = id;
-    if (!d || !d->ctx) { RET(0); return; }
+    if (!d) { RET(0); return; }
     os_mutex_lock(&d->lock);
     /* (runtime) the size is 64-bit: one past what an AVPacket holds was cut to a small packet and copied in whole; and
        the data must lie in guest memory */
@@ -666,7 +661,7 @@ static void dec_submit(Ctx *c) {
 }
 static void dec_flush(Ctx *c, const char *what) {
     Dec *d = (Dec *)host_of(ARG(0), DEC_MAGIC);
-    if (d && d->ctx) {
+    if (d) {
         os_mutex_lock(&d->lock);
         if (video_log())
             hos_log("video: %s after %lld submits and %lld acquires (%d queued, %s, lr %#llx)", what, (long long)d->submits,
@@ -799,7 +794,7 @@ HLE(_ZN2nn5codec29AcquireVp9DecoderOutputBufferEPjPNS_2gs16NativeSyncHandleEPNS0
 HLE(_ZN2nn5codec29ReleaseVp9DecoderOutputBufferEPNS0_14Vp9DecoderTypeEjNS_2gs16NativeSyncHandleE) { dec_release(c); }
 HLE(_ZN2nn5codec35GetVp9DecoderOutputBufferPropertiesEPtS1_S1_S1_PNS_8TimeSpanEPbPNS0_14Vp9DecoderTypeEj) { dec_properties(c); }
 
-/* (runtime) AV1: OoT's movies. FFmpeg's AV1 decoder (dav1d or libaom).
+/* (runtime) AV1: OoT's movies, on dav1d.
    Initialize...ByTransferMemory(decoder, memory, size, ?, u16 width, u16 height, ...), ...ByRemoteMemory(decoder,
    size, u16 width, u16 height, ...) */
 HLE(_ZN2nn5codec36InitializeAv1DecoderByTransferMemoryEPNS0_14Av1DecoderTypeEPvmmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatENS0_22VideoDecoderOutputModeE, sdk(22)) {
@@ -818,21 +813,6 @@ HLE(_ZN2nn5codec27SubmitAv1DecoderInputBufferEPmPNS0_14Av1DecoderTypeEPKvmNS_8Ti
 HLE(_ZN2nn5codec29AcquireAv1DecoderOutputBufferEPjPNS_2gs16NativeSyncHandleEPNS0_14Av1DecoderTypeE) { dec_acquire(c); }
 HLE(_ZN2nn5codec29ReleaseAv1DecoderOutputBufferEPNS0_14Av1DecoderTypeEjNS_2gs16NativeSyncHandleE) { dec_release(c); }
 HLE(_ZN2nn5codec35GetAv1DecoderOutputBufferPropertiesEPtS1_S1_S1_PNS_8TimeSpanEPbPNS0_14Av1DecoderTypeEj) { dec_properties(c); }
-
-/* VP8 */
-HLE(_ZN2nn5codec36InitializeVp8DecoderByTransferMemoryEPNS0_14Vp8DecoderTypeEPvmmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatENS0_22VideoDecoderOutputModeE, sdk(22)) { dec_init(c, AV_CODEC_ID_VP8, "VP8"); }
-HLE(_ZN2nn5codec34InitializeVp8DecoderByRemoteMemoryEPNS0_14Vp8DecoderTypeEmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatENS0_22VideoDecoderOutputModeE, sdk(22)) { dec_init(c, AV_CODEC_ID_VP8, "VP8"); }
-HLE(_ZN2nn5codec18FinalizeVp8DecoderEPNS0_14Vp8DecoderTypeE) { dec_finalize(c); }
-HLE(_ZN2nn5codec24RegisterVp8DecoderBufferEPNS0_14Vp8DecoderTypeEjPNS0_25VideoDecoderImagePoolTypeEj) { dec_register(c); }
-HLE(_ZN2nn5codec26UnregisterVp8DecoderBufferEPNS0_14Vp8DecoderTypeEj) { dec_unregister(c); }
-HLE(_ZN2nn5codec15StartVp8DecoderEPNS0_14Vp8DecoderTypeE) { RET(0); }
-HLE(_ZN2nn5codec14StopVp8DecoderEPNS0_14Vp8DecoderTypeE) { dec_flush(c, "Stop"); }
-HLE(_ZN2nn5codec15FlushVp8DecoderEPNS0_14Vp8DecoderTypeE) { dec_flush(c, "Flush"); }
-HLE(_ZN2nn5codec33GetVp8DecoderSubmissionReadyEventEPNS0_14Vp8DecoderTypeE, sdk(22)) { RET(ready_event(ARG(0))); }
-HLE(_ZN2nn5codec27SubmitVp8DecoderInputBufferEPmPNS0_14Vp8DecoderTypeEPKvmNS_8TimeSpanEb) { dec_submit(c); }
-HLE(_ZN2nn5codec29AcquireVp8DecoderOutputBufferEPjPNS_2gs16NativeSyncHandleEPNS0_14Vp8DecoderTypeE) { dec_acquire(c); }
-HLE(_ZN2nn5codec29ReleaseVp8DecoderOutputBufferEPNS0_14Vp8DecoderTypeEjNS_2gs16NativeSyncHandleE) { dec_release(c); }
-HLE(_ZN2nn5codec35GetVp8DecoderOutputBufferPropertiesEPtS1_S1_S1_PNS_8TimeSpanEPbPNS0_14Vp8DecoderTypeEj) { dec_properties(c); }
 
 /* before SDK 22: Initialize(decoder, memory, size, ?, u16 width, u16 height, ...) and (decoder, size, u16 width, u16
    height, ...); the work buffer CalculateXDecoderWorkBuffer(u64* size, u64* alignment, ?, u16, u16) sizes as the SDK's
@@ -854,14 +834,6 @@ HLE(_ZN2nn5codec20InitializeVp9DecoderEPNS0_14Vp9DecoderTypeEmttjNS0_23VideoDeco
 }
 HLE(_ZN2nn5codec33GetVp9DecoderSubmissionReadyEventEPPNS_2os15SystemEventTypeEPNS0_14Vp9DecoderTypeE, sdk(20, 21)) { ready_event_out(c); }
 HLE(_ZN2nn5codec29CalculateVp9DecoderWorkBufferEPmS1_mtt, sdk(20, 21)) { work_buffer(c); }
-HLE(_ZN2nn5codec20InitializeVp8DecoderEPNS0_14Vp8DecoderTypeEPvmmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatE, sdk(20, 21)) {
-    dec_init_sized(c, AV_CODEC_ID_VP8, "VP8", (int)(uint16_t)ARG(4), (int)(uint16_t)ARG(5));
-}
-HLE(_ZN2nn5codec20InitializeVp8DecoderEPNS0_14Vp8DecoderTypeEmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatE, sdk(20, 21)) {
-    dec_init_sized(c, AV_CODEC_ID_VP8, "VP8", (int)(uint16_t)ARG(2), (int)(uint16_t)ARG(3));
-}
-HLE(_ZN2nn5codec33GetVp8DecoderSubmissionReadyEventEPPNS_2os15SystemEventTypeEPNS0_14Vp8DecoderTypeE, sdk(20, 21)) { ready_event_out(c); }
-HLE(_ZN2nn5codec29CalculateVp8DecoderWorkBufferEPmS1_mtt, sdk(20, 21)) { work_buffer(c); }
 HLE(_ZN2nn5codec20InitializeAv1DecoderEPNS0_14Av1DecoderTypeEPvmmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatE, sdk(20, 21)) {
     dec_init_sized(c, AV_CODEC_ID_AV1, "AV1", (int)(uint16_t)ARG(4), (int)(uint16_t)ARG(5));
 }

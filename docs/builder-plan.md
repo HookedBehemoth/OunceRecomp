@@ -21,7 +21,8 @@ The AppImage's layout is the one `ounce` looks for:
 - `usr/bin/ounce` and `usr/bin/ounce-gui`; the window runs the `ounce` beside it.
 - `usr/share/ounce/`: the sources above (`games/`, `runtime/`, ...), found as the checkout is (`games/` and
   `runtime/sources.txt`), a `VERSION` file with the release name, and `prebuilt/ounce_renderer.so`, which `ounce build`
-  takes instead of building the renderer with Meson.
+  takes instead of building the renderer with Meson, and `prebuilt/ffmpeg/`, the FFmpeg the game links
+  ([FFmpeg](#ffmpeg)).
 - Without `.git` in it, a build's own files (objects, the log) go to `~/.cache/ounce/work/<game>/`, not into the
   read-only image.
 
@@ -33,6 +34,7 @@ The target is 15 minutes on a 16-thread PC. Measured on a Ryzen 7 5800X3D (16 th
 |---|---|---|
 | Read the dump | `.nup` or folder (`ounce/dump`); the exefs into memory first, then the romfs into the game folder on a thread while the lift runs | exefs under 1 s; romfs 30 s (folder) |
 | Lift and compile | `ounce-lift` as a library (`ounce/lift/src/pipeline.rs`), each partition and generated module compiled as it is made (`ounce/builder/src/lift.rs`), byte for byte the objects of `opt \| clang` with the same flags | 164 s at 16 jobs |
+| FFmpeg | the movies' decoders, built from source once per recipe and kept in the cache ([FFmpeg](#ffmpeg)) | 45 s once (with the download), then none |
 | Host C | `runtime/*.c`, libopus and the runtime by clang in this process (`ounce/builder/src/host.rs`) | 4 s |
 | Link | lld in this process (`ounce/builder/src/link.rs`), against the prebuilt host and the sysroot; then the labels | 1 s |
 | Textures | `ounce/tex`: every BNTX texture deswizzled, ASTC re-encoded to BC7 and BC5, packed (`ounce tool textures`); the romfs copy's texture files written with their texels zeroed | 258 s (fast, the default); 1055 s with `--quality high` (16,000 CPU-s, 2.6 GB peak) |
@@ -108,7 +110,7 @@ holds everything the lift took from it (the modules, and `main.npdm`'s program i
 
 ## The build
 
-`ounce tool build <out> --direct <ounce_renderer.so>` builds the game in one process: the host's C
+`ounce tool build <out> --direct <ounce_renderer.so> --ffmpeg <dir>` builds the game in one process: the host's C
 (`runtime/*.c`, libopus and `rt64/a64_rt.c`, each with its flags and `-fstack-protector-strong`), the lift and its
 compile, the link and the labels. `<out>` holds the game's executable (game.toml's `exe`, `Ocarina of Time`), `ounce_renderer.so` and `image.bin`, where the game
 looks without an argument; `ounce run` takes the image from beside the executable. With `--dump`, `<out>` is a whole game folder (below).
@@ -151,6 +153,33 @@ looks without an argument; `ounce run` takes the image from beside the executabl
 - The labels rename `f_<address>` to `<label>.f_<address>` in the symbol table only.
 - `ounce tool link <out> <objs.rsp> --order <hot_order.bin> --labels <labels.txt> -- <libs>` links a list of
   objects alone.
+
+## FFmpeg
+
+The game links a small FFmpeg statically for its movies (`runtime/nn_video.c`, [the movie player](direct/movie-player.md)),
+so the executable needs no system FFmpeg. The games' movies are WebM files with video only:
+
+| Game | Movies | Codec |
+|---|---|---|
+| OoT | 26 | AV1 Main, 1920x1080, 8-bit 4:2:0 |
+| DKB | 101 | VP9 profile 0, 8-bit 4:2:0 |
+| MKW | 57 | VP9 profile 0, 8-bit 4:2:0 |
+
+The game's movie library reads the WebM file and hands the decoder one frame at a time, and the sound is a separate
+stream, so FFmpeg needs no demuxer and no audio. It holds libavcodec with FFmpeg's VP9 decoder and dav1d for AV1
+(FFmpeg's own AV1 decoder needs a hardware decoder), libswscale for the pictures read as RGBA, and libavutil: 10.7 MB
+of archives, of which the link keeps 5.0 MB (swscale 1.9, avcodec 1.8, dav1d 1.1, avutil 0.2).
+
+- `ounce tool ffmpeg [<dir>]` builds it: FFmpeg 9.0.2 and dav1d 1.5.4, pinned release tarballs fetched once and
+  checked by SHA-256, unmodified, built by clang at the host C's target flags, static and PIC, with nothing
+  detected from the system (`ounce/builder/src/ffmpeg.rs`). The result is `<dir>/<recipe>/` (headers, archives,
+  licenses and `ffmpeg.txt`, the sources and configure lines); the default `<dir>` is the cache folder's `ffmpeg/`,
+  shared by every checkout.
+- `ounce build` takes `prebuilt/ffmpeg/` when the sources have one (a release: the recipe's folder, copied), else the
+  cache's, which the first build makes.
+- FFmpeg is LGPL 2.1 or later, dav1d BSD. Linking it statically meets the LGPL here because the player's PC links
+  the game from its objects: another build of the libraries can be linked in the same way. A release ships the
+  licenses and `ffmpeg.txt` with the folder.
 
 ## The generated code
 
@@ -324,3 +353,4 @@ user open the device (the group that owns it, often `kvm`).
 6. The texture converter in Rust (done: `ounce/tex`).
 7. The game folder and the host's defaults for it (done); the AppImage.
 8. Shaders ahead of time (graphics done; compute at its first dispatch).
+9. FFmpeg linked into the game, built from source (done); the release copies it to `prebuilt/ffmpeg/`.

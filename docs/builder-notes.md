@@ -17,7 +17,7 @@ A builder is a thin front end over the developer path ([Development guide](devel
    game then leaves out walls and floors. The reader replaces each in the `romfs/` it writes with a whole file of the
    same kind and prints what it did; tell the player. A player's own folder is never written to.
 3. **Lift and build.** `ounce tool build <folder> --direct <ounce_renderer.so>` lifts, compiles and links
-   in one process ([the plan](builder-plan.md)). It needs the FFmpeg and glibc development files.
+   in one process ([the plan](builder-plan.md)) with `--ffmpeg <dir>`, the FFmpeg it links ([FFmpeg](builder-plan.md#ffmpeg)). It needs the glibc development files.
 4. **Prepare assets.** `ounce tool build ... --dump` writes the game folder's `prepared/tex` (or
    `ounce tool textures` alone), the direct back end's texture store ([the converters](direct/converters.md)). Without it every asset texture is a
    placeholder.

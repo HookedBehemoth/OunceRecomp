@@ -11,6 +11,7 @@ mod commands;
 mod compile;
 mod dump;
 mod exclusive;
+mod ffmpeg;
 mod gate;
 #[cfg(feature = "clang")]
 mod host;
@@ -73,7 +74,7 @@ const TOOL_HELP: &str = "ounce tool <command> ...
   compile-all <lift dir> <out dir> [-j N] [--check <obj dir>]
   lift-compile <out dir> --game <dir> [-j N] [--check <obj dir>] [--cache <dir>] [--root <dir>] [--exefs <dir>]
                                        the lift and the compile of every partition and generated module, in memory
-  build <out dir> --direct <ounce_renderer.so> --game <dir> --obj <dir> [-j N] [--cache <dir>] [--version <text>]
+  build <out dir> --direct <ounce_renderer.so> --ffmpeg <dir> --game <dir> --obj <dir> [-j N] [--cache <dir>] [--version <text>]
         [--check <obj dir>] [--gen <lift dir> [--gen-parts]] [--map <file>] [--progress] [--root <dir>] [--exefs <dir>]
         [--dump <file.nup|folder> [--title <t>] [--dump-dir <dir>]] [--no-textures] [--quality fast|high] [--shaders]
                                        the lift, every compile and the link in this process (feature clang), then
@@ -100,7 +101,10 @@ const TOOL_HELP: &str = "ounce tool <command> ...
   version [<root>]                     the version text a build stamps (feature clang)
   llvm-version                         the libLLVM this process uses
   static-llvm [<dir>] [-j N]           the static LLVM, clang and lld a release links (default work/llvm-static; needs
-                                       git, cmake, ninja, clang and lld)";
+                                       git, cmake, ninja, clang and lld)
+  ffmpeg [<dir>] [-j N]                the FFmpeg the game links (VP9, dav1d's AV1, swscale; static) in <dir>/<recipe>
+                                       (default the cache folder's ffmpeg/; a release ships it as prebuilt/ffmpeg; needs
+                                       curl, tar, clang, meson, ninja, nasm, make and pkg-config)";
 
 /// `--progress`: the `@@` lines a front end reads are printed
 pub static PROGRESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -237,6 +241,7 @@ fn tool(argv: &[String]) {
         #[cfg(feature = "clang")]
         Some("version") => println!("{}", version::describe(std::path::Path::new(argv.get(1).map_or(".", |s| s.as_str())))),
         Some("static-llvm") => static_llvm::command(&argv[1..]),
+        Some("ffmpeg") => ffmpeg::command(&argv[1..]),
         Some("llvm-version") => println!("{}", llvm::version()),
         _ => println!("{TOOL_HELP}"),
     }
@@ -435,6 +440,7 @@ fn build(args: &[String]) {
     let (mut dump_src, mut dump_dir, mut title) = (None::<PathBuf>, None::<PathBuf>, None::<String>);
     let mut settings = ounce_tex::convert::Settings::FAST;
     let (mut obj_dir, mut no_textures, mut map_file, mut with_shaders) = (None::<PathBuf>, false, None::<PathBuf>, false);
+    let mut ffmpeg = None::<PathBuf>;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut val = || it.next().cloned().unwrap_or_else(|| fail(format!("{a} wants a value")));
@@ -442,6 +448,7 @@ fn build(args: &[String]) {
             "-j" => cjobs = val().parse().unwrap_or_else(|_| fail("-j N")),
             "--check" => check = Some(val().into()),
             "--direct" => direct = Some(val().into()),
+            "--ffmpeg" => ffmpeg = Some(val().into()),
             "--cache" => cache_dir = Some(val().into()),
             "--version" => version = Some(val()),
             "--resource-dir" => resource = val().into(),
@@ -471,7 +478,9 @@ fn build(args: &[String]) {
             hook(info)
         }));
     }
-    let (Some(out), Some(direct), Some(obj)) = (out, direct, obj_dir) else { fail("build <out dir> --direct <ounce_renderer.so> --game <dir> --obj <dir> [...]") };
+    let (Some(out), Some(direct), Some(ffmpeg), Some(obj)) = (out, direct, ffmpeg, obj_dir) else {
+        fail("build <out dir> --direct <ounce_renderer.so> --ffmpeg <dir> --game <dir> --obj <dir> [...]")
+    };
     let major = llvm::version().split('.').next().and_then(|m| m.parse::<u32>().ok());
     if major != Some(LLVM_MAJOR) {
         fail(format!("this process runs LLVM {}, but the lifter's IR is written for LLVM {LLVM_MAJOR}", llvm::version()));
@@ -529,7 +538,7 @@ fn build(args: &[String]) {
     stage("host", "compiling the host's C");
     let t = Instant::now();
     let sources = game.sources(&root).unwrap_or_else(|e| fail(e));
-    let host_jobs = host::host_jobs(&root, &rt64, &sources, &version).unwrap_or_else(|e| fail(e));
+    let host_jobs = host::host_jobs(&root, &rt64, &sources, &version, &ffmpeg).unwrap_or_else(|e| fail(e));
     let rt = host::rt_job(&root, &rt64);
     let hits = host::compile(&host_jobs, &obj, cjobs, Some(&cache), &resource, &aux).unwrap_or_else(|e| fail(e))
         + host::compile(std::slice::from_ref(&rt), &obj, 1, Some(&cache), &resource, &aux).unwrap_or_else(|e| fail(e));
@@ -568,7 +577,7 @@ fn build(args: &[String]) {
     let game_dir = if run.opts.game.is_dir() { run.opts.game.clone() } else { run.opts.game.parent().unwrap().to_path_buf() };
     let order_bin = game_dir.join("hot_order.bin");
     let order = order_bin.exists().then(|| link::order_file(&order_bin, &obj).unwrap_or_else(|e| fail(e)));
-    let libs: Vec<String> = ["-lavcodec", "-lswscale", "-lswresample", "-lavutil"].map(String::from).to_vec();
+    let libs: Vec<String> = ffmpeg::LIBS.iter().map(|l| ffmpeg.join("lib").join(l).to_string_lossy().into_owned()).collect();
     let sys = link::Sysroot::find().unwrap_or_else(|e| fail(e));
     let x = link::Exe { out: &exe, map: Some(&map), objects: &objects, order: order.as_deref(), libs: &libs };
     stage("link", "linking");

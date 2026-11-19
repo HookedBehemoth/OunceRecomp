@@ -1,5 +1,5 @@
 //! The host's C, compiled in this process by clang's libraries: the runtime's files and the game's patch files
-//! (Game::sources), libopus 1.5.2 and the guest model's runtime (rt64/a64_rt.c), each with its flags, -fstack-protector-strong explicit (the distribution's clang has it on by default; ours does not).
+//! (Game::sources) against the bundled FFmpeg's headers (ffmpeg.rs), libopus 1.5.2 and the guest model's runtime (rt64/a64_rt.c), each with its flags, -fstack-protector-strong explicit (the distribution's clang has it on by default; ours does not).
 //! Objects are cached by the files the compile read (its dependency list) and the flags.
 
 use crate::cache::{Cache, Key};
@@ -17,7 +17,7 @@ pub struct CJob {
 const CPU: [&str; 2] = ["-march=x86-64-v3", "-ffp-contract=off"];
 
 /// the target flags every C compile starts with: the CPU, and OUNCE_SYSROOT's --sysroot (the AppImage's glibc)
-fn target() -> Vec<String> {
+pub fn target() -> Vec<String> {
     let mut f: Vec<String> = CPU.iter().map(|x| x.to_string()).collect();
     if let Some(r) = std::env::var_os("OUNCE_SYSROOT").filter(|v| !v.is_empty()) {
         f.push(format!("--sysroot={}", r.to_string_lossy()));
@@ -30,8 +30,8 @@ fn s(p: &Path) -> String {
 }
 
 /// the runtime's and the patches' C (`sources`, Game::sources) and libopus, in the link's order; `version` is
-/// hos_main.c's OUNCE_VERSION
-pub fn host_jobs(root: &Path, rt64: &Path, sources: &[PathBuf], version: &str) -> Result<Vec<CJob>, String> {
+/// hos_main.c's OUNCE_VERSION, `ffmpeg` the FFmpeg the game links (ffmpeg.rs)
+pub fn host_jobs(root: &Path, rt64: &Path, sources: &[PathBuf], version: &str, ffmpeg: &Path) -> Result<Vec<CJob>, String> {
     let rt = root.join("runtime");
     let opus = root.join("third_party/opus");
     let mut fl = target();
@@ -39,6 +39,7 @@ pub fn host_jobs(root: &Path, rt64: &Path, sources: &[PathBuf], version: &str) -
     fl.extend([format!("-I{}", s(&root.join("renderer/api"))), format!("-I{}", s(&root.join("third_party"))), format!("-I{}", s(rt64))]);
     fl.extend(["-Wno-everything", "-O2", "-g0", "-mcx16", "-Werror=implicit-function-declaration", "-Werror=incompatible-pointer-types"].map(String::from));
     fl.push(format!("-I{}", s(&opus.join("include"))));
+    fl.push(format!("-I{}", s(&ffmpeg.join("include"))));
     let mut jobs: Vec<CJob> = sources
         .iter()
         .cloned()

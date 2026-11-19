@@ -86,7 +86,7 @@ fn renderer(layout: &Layout, log: &Path) -> PathBuf {
 }
 
 /// `ounce build <game> [-j N] [--gen-parts]`, or `ounce build <game> --out <dir> --dump <src> [--quality q]`: the
-/// renderer, then the lift, the compiles and the link (`ounce tool build` as a child, its output in build.log).
+/// renderer and FFmpeg (ffmpeg.rs), then the lift, the compiles and the link (`ounce tool build` as a child, its output in build.log).
 pub fn build(args: &[String]) {
     let (layout, game, rest) = game_args("build", args);
     let config = config();
@@ -113,6 +113,7 @@ pub fn build(args: &[String]) {
     let log = layout.build_log();
     std::fs::write(&log, "").unwrap_or_else(|e| fail(format!("{}: {e}", log.display())));
     let so = renderer(&layout, &log);
+    let ffmpeg = crate::ffmpeg::find(&layout.root, &config.cache_dir(), jobs.unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get())));
     let s = |p: &Path| p.to_string_lossy().into_owned();
     let mut a: Vec<String> = vec!["tool".into(), "build".into()];
     match (&out, &dump) {
@@ -123,7 +124,7 @@ pub fn build(args: &[String]) {
             a.extend(["--map".into(), s(&lift.join(format!("{}.map", game.exe)))]);
         }
     }
-    a.extend(["--direct".into(), s(&so), "--game".into(), s(&game.dir), "--root".into(), s(&layout.root)]);
+    a.extend(["--direct".into(), s(&so), "--ffmpeg".into(), s(&ffmpeg), "--game".into(), s(&game.dir), "--root".into(), s(&layout.root)]);
     a.extend(["--obj".into(), s(&layout.obj_dir())]);
     if let Some(j) = jobs {
         a.extend(["-j".into(), j.to_string()]);

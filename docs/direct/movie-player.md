@@ -5,7 +5,10 @@ are chosen, and how they are drawn. Read it when a movie stutters, jumps or show
 `runtime/nn_video.c` or `games/oot/patches/movie.c`. The player's functions carry the prefixes `movie_` and `ndve_` in
 `games/oot/labels.txt`.
 
-The movie files are AV1, video only. Their sound is a separate stream file that the sound system plays.
+The movie files are AV1 in WebM, video only. Their sound is a separate stream file that the sound system plays. The
+game reads the WebM file itself; the host decodes the frames with dav1d, in the FFmpeg linked into the game
+([FFmpeg](../builder-plan.md#ffmpeg)). DKB's and MKW's movies are VP9, on FFmpeg's own decoder, through the same
+host code.
 
 ## How the file reaches the decoder
 
