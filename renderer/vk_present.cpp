@@ -378,6 +378,31 @@ void log_line() {
 
 }  // namespace
 
+/// stats_after=<seconds>: the memory lines and the images', assets' and layer 0's lines at that time, for a run that
+/// presents nothing yet (the 600-present lines never come); from a thread of its own (the lines read atomics and take
+/// their own locks)
+void stats_after_start() {
+    const int64_t after = setting_int(SET_STATS_AFTER);
+    if (after <= 0) return;
+    std::thread([after] {
+        std::this_thread::sleep_for(std::chrono::seconds(after));
+        static char b[8192];
+        logf("direct: stats after %lld s (presents %lld)", (long long)after, (long long)presents);
+        // (the lines that take no image lock first: a thread stuck making an image holds it)
+        mem_stats(b, sizeof b);
+        logf("direct: %s", b);
+        layer0_stats(b, sizeof b);
+        logf("direct: %s", b);
+        assets_stats(b, sizeof b, 1);
+        logf("direct: %s", b);
+        memory_lines();
+        image_stats(b, sizeof b);
+        logf("direct: %s", b);
+        image_pool_stats(b, sizeof b);
+        logf("direct: %s", b);
+    }).detach();
+}
+
 int present_start(void* hwnd) {
     VkCommandPoolCreateInfo pi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pi.queueFamilyIndex = dev.queue_family;

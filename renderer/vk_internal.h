@@ -177,6 +177,7 @@ void regs_stats(char* out, size_t cap);
 
 // ---- vk_present.cpp ----
 int present_start(void* hwnd);
+void stats_after_start();   // (stats_after: the back end's lines at that time)
 void present_resize(int width, int height);
 void present(const nvn_tex* t, const int crop[4]);   // (the host's call: noted, run in the queue's order)
 /// The present's GPU work, when every submission handed to its queue before it has been sent (vk_sync.cpp's mu held)

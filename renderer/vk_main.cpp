@@ -286,6 +286,7 @@ int start(void* hwnd) {
     if (!sync_init()) return 0;
     layer0_on();
     shader_warm();
+    stats_after_start();
     return present_start(hwnd);
 }
 const char* describe() {
