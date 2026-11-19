@@ -1768,6 +1768,7 @@ NV(nvnCommandBufferBeginRecording,
     nvn_cmd *o = CB(P(0));
     if (o->recording) hos_log("nvn: BeginRecording while recording");
     o->recording = 1;
+    if (hos_bench_on()) hos_bench_recording(1);
     cmd_rec *r = cmd_host(o);
     if (list_ref()) nvn_list_open(&r->lw, h2g(o));   /* (its own allocation: no copy at its end) */
     else r->cur = r->seg;
@@ -1869,6 +1870,7 @@ static uint64_t end_recording_direct(nvn_cmd *o) {
     void *dl = r->dl;
     r->dl = NULL;
     if (dl) rx_direct()->list_end(dl);
+    if (hos_bench_on()) hos_bench_recording(0);
     r->lw.user = dl;
     r->lw.flat_extra = o->cmd_used - o->rec_start;   /* (no bytes: flat is the accounting, what a call of it adds) */
     return end_recording_ref(o);

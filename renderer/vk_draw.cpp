@@ -850,6 +850,7 @@ PstatWhat pstat_what(const List* l, const DrawProg& p, const char* what, uint32_
     w.kind = l->info.kind, w.lr = l->info.lr, w.w = l->pass.w, w.h = l->pass.h;
     w.format = l->pass.n ? (int32_t)l->pass.color[0].format : -1, w.targets = l->pass.n;
     w.count = count, w.instances = instances, w.extra = gated;
+    w.pass = l->info.kind == GPU_LIST_JOB ? l->info.pass_key : l->pass.set_rt_at;
     return w;
 }
 void drawlog(const List* l, const char* what, const DrawProg* p, const Dyn* d, uint32_t count) {

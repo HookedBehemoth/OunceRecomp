@@ -78,6 +78,38 @@ live outside the checkout. A worktree's first build copies the texture store fro
 game when that one is current, which takes seconds and, on btrfs, almost no disk; it converts only when no current
 store exists.
 
+## Profile scenes
+
+To see where a frame's CPU and GPU time goes in many scenes at once, run:
+
+```sh
+ounce profile oot --exclusive [--scene <name>]... [--size <w>x<h>] [--shaders]
+```
+
+The scenes are listed in `games/<game>/profile.toml`. Each scene is one headless benchmark run: the scene boots
+straight into its map, waits until it has settled, and then measures 600 frames (`--frames` sets another number). The
+first time a scene runs, `ounce profile` makes its overlay in the data folder's `<game>/profile/<scene>/`. The frame
+size is the game folder's Output resolution when `ounce_options.ini` names one, and 2560x1440 otherwise.
+
+For each scene the report gives:
+
+- the frame time;
+- the CPU time a frame in four parts, summed over threads: guest logic (the game's frame threads), guest draw (the
+  game recording its command buffers), host draw (the renderer's calls and its own threads), and other;
+- the GPU time a frame, busy and idle, by kind of work and by pass for the first 300 measured frames, with a line for
+  everything outside the top passes.
+
+`--shaders` adds a second short run per scene that times every draw of one frame. It names the costliest programs of
+the costliest passes, with ACO's register counts, waves and instruction counts from the newest
+[shader census](direct/shader-costs.md). The measuring itself makes a frame about 4% slower.
+
+The report is printed and written to `work/<game>/profile.txt`. To compare a change, run the command again on the new
+build.
+
+A headless run cannot take an RGP capture, because RADV ends a capture's frame at a window's present. To take one, run
+the game in a window with `MESA_VK_TRACE=rgp` and `MESA_VK_TRACE_TRIGGER=<file>` set, and create that file in the scene
+you want. RADV writes the capture to `/tmp`.
+
 ## Where the code is
 
 | Path | What it holds |

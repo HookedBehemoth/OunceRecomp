@@ -133,6 +133,9 @@ p99 and maximum, draws a frame, and CPU seconds by thread group. The run folder'
 
 The `vk: <n> presents, <x> fps` line in any run's log gives the frame rate of an ordinary run.
 
+To measure many scenes at once, with the CPU and GPU time split by part and by pass, see
+[Profile scenes](development.md#profile-scenes).
+
 ### Record and replay a session
 
 To record, run `ounce run oot --record <name>`. The save folder is copied to the recording, and every pad state the

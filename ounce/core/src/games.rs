@@ -65,6 +65,40 @@ struct TestsFile {
     tests: BTreeMap<String, Test>,
 }
 
+/// A scene of `ounce profile` (games/<game>/profile.toml): one headless benchmark run.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Scene {
+    /// the map a chiseled boot goes to (its GameBancParam name); none: the run boots as it would
+    #[serde(default)]
+    pub banc: Option<String>,
+    /// its StartPos ("" the map's own)
+    #[serde(default)]
+    pub start: String,
+    /// whether the benchmark waits for the player in play (false: a scene with none)
+    #[serde(default = "yes")]
+    pub play: bool,
+    /// the run's time limit
+    #[serde(default = "profile_seconds")]
+    pub seconds: u64,
+    /// what the scene stands for
+    #[serde(default)]
+    pub note: String,
+}
+fn yes() -> bool {
+    true
+}
+fn profile_seconds() -> u64 {
+    120
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProfileFile {
+    #[serde(default)]
+    scenes: BTreeMap<String, Scene>,
+}
+
 /// One game, as a run and the window see it.
 #[derive(Debug)]
 pub struct Game {
@@ -78,6 +112,8 @@ pub struct Game {
     pub tests: BTreeMap<String, Test>,
     /// the test `ounce test` runs by default
     pub default_test: Option<String>,
+    /// games/<name>/profile.toml's scenes, in the file's order
+    pub scenes: Vec<(String, Scene)>,
 }
 
 impl Game {
@@ -98,6 +134,16 @@ impl Game {
             Ok(t) => toml::from_str(&t).map_err(|e| format!("{}: {e}", tf.display()))?,
             Err(_) => TestsFile::default(),
         };
+        let pf = dir.join("profile.toml");
+        let scenes = match std::fs::read_to_string(&pf) {
+            Ok(t) => {
+                let mut p: ProfileFile = toml::from_str(&t).map_err(|e| format!("{}: {e}", pf.display()))?;
+                // (the file's order: its [scenes.<name>] headers)
+                let names: Vec<String> = t.lines().filter_map(|l| l.trim().strip_prefix("[scenes.")?.strip_suffix(']').map(String::from)).collect();
+                names.into_iter().filter_map(|n| p.scenes.remove(&n).map(|s| (n, s))).collect()
+            }
+            Err(_) => Vec::new(),
+        };
         Ok(Game {
             title: raw.title.unwrap_or_else(|| raw.name.clone()),
             name: raw.name,
@@ -105,6 +151,7 @@ impl Game {
             exe: raw.exe,
             tests: tests.tests,
             default_test: tests.default,
+            scenes,
         })
     }
 }
@@ -131,6 +178,9 @@ mod tests {
                 assert!(d.set.iter().all(|s| s.contains('=')), "{n}: test {t}: a setting is NAME=VALUE");
             }
         }
+        let oot = Game::load(&repo(), "oot").unwrap();
+        assert!(oot.scenes.len() >= 10 && oot.scenes.iter().all(|(_, s)| s.banc.is_some()), "games/oot/profile.toml: its scenes");
+        assert_eq!(oot.scenes[0].0, "kokiri", "the scenes keep the file's order");
         assert!(Game::load(&repo(), "nope").unwrap_err().contains("oot"));
     }
 }

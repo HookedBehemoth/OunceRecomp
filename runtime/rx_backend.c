@@ -175,11 +175,14 @@ const gpu_fns *rx_direct(void) {
         DIRECT_FN(host_event, "gpu_host_event")
         DIRECT_FN(texture_cached, "gpu_texture_cached")
         DIRECT_FN(vram_free, "gpu_vram_free")
+        DIRECT_FN(measure, "gpu_measure")
 #undef DIRECT_FN
         hos_log("rx: the direct back end: %s", path);
         {   /* (HOS_DBG=crit: the calls timed, crit.c) */
             void crit_wrap(gpu_fns *f);
             if (crit_wanted()) crit_wrap(&renderer_fns);
+            void bench_wrap(gpu_fns *f);   /* (HOS_BENCH: the CPU time in the back end's calls, bench.c) */
+            if (hos_bench_on()) bench_wrap(&renderer_fns);
         }
         os_atomic_store(&renderer_state, 2);
     }

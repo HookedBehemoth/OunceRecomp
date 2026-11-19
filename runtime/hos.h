@@ -76,6 +76,7 @@ void hos_bench_message(void);
 uint64_t hos_code_ptr_as_guest(uint64_t v);   /* (code_ptrs.c: a host code pointer the game compares with guest addresses, as one) */   /* (a message a worker thread of the game took, counted by its thread group) */
 void hos_bench_player(int loading, int event_playing);
 void hos_bench_present(int64_t now);
+void hos_bench_recording(int begin);   /* (a command buffer's BeginRecording (1) and EndRecording (0) on this thread) */
 #define HOS_TRACE_CALL(name) do { if (hos_trace) hos_log("%s(%#llx, %#llx, %#llx, %#llx) lr %#llx", name, \
     (unsigned long long)c->x[0], (unsigned long long)c->x[1], (unsigned long long)c->x[2], \
     (unsigned long long)c->x[3], (unsigned long long)c->x[30]); } while (0)

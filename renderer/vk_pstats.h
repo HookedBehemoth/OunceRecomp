@@ -17,7 +17,7 @@
 
 namespace hsd {
 
-extern bool pstats_enabled;   // (HOS_DBG=pstats:<present>)
+extern bool pstats_enabled;   // (HOS_DBG=pstats:<present>, or pstats:bench: the present after HOS_BENCH's measured frames begin)
 inline bool pstats_on() { return pstats_enabled; }
 /// Before vkCreateDevice (after the mesh shader features are read): whether mesh shader queries are wanted
 bool pstats_wants_mesh_queries();
@@ -34,11 +34,14 @@ struct PstatWhat {
     uint32_t targets = 0;       // (its colour targets)
     uint32_t count = 0, instances = 0;   // (vertices or indices, instances; mesh: groups; dispatch: grid x, y)
     uint32_t extra = 0;         // (dispatch: grid z; draw: gated by a render condition)
+    uint64_t pass = 0;          // (its pass: a job's pass key, else its list's SetRenderTargets number)
 };
 /// Before the command: its query begun when this frame is the one measured (returns its index, or ~0u)
 uint32_t pstat_before(VkCommandBuffer cb, const PstatWhat& w);
 /// After it
 void pstat_after(VkCommandBuffer cb, uint32_t index);
+/// HOS_DBG=pstats:bench: the present measured, named now (gpu_measure)
+void pstats_arm(uint64_t present);
 /// At each present: the results written ten presents after the measured one
 void pstats_present(uint64_t present);
 

@@ -11,6 +11,7 @@
 #include "vk_draw.h"
 #include "vk_pool.h"
 #include "vk_marks.h"
+#include "vk_passtime.h"
 #include "vk_pstats.h"
 #include "vk_pass.h"
 #include "vk_shader.h"
@@ -226,6 +227,11 @@ bool task_step(List* l, const DrawProg& p, bool indirect, uint64_t rec, uint32_t
     if (marks_on()) mark_after(task, mk);
     if (!job) {
         task_barrier(task, true);
+        if (passtime_on()) {
+            PassLabel pl;
+            pl.what = PT_TASK, pl.kind = l->info.kind, pl.lr = l->info.lr, pl.rt = (uint32_t)l->pass.set_rt_at, pl.prog = p.key;
+            passtime_end(task, pl);
+        }
         pass_resume(l);
     }
     count(indirect ? T_INDIRECT : T_DIRECT);

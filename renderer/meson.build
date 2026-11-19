@@ -29,6 +29,7 @@ vk_sources = files(
   'vk_pass.cpp',
   'vk_pools.cpp',
   'vk_present.cpp',
+  'vk_passtime.cpp',
   'vk_pstats.cpp',
   'vk_query.cpp',
   'vk_spv_late.cpp',

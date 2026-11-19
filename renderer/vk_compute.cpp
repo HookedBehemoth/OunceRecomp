@@ -22,6 +22,7 @@
 
 #include "vk_marks.h"
 #include "os.h"
+#include "vk_passtime.h"
 #include "vk_pstats.h"
 #include "vk_check.h"
 #include "shader_recompiler/backend/bindings.h"
@@ -1112,6 +1113,11 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
     // because the console's switch from compute to graphics waits by itself. So whatever the list records next waits for these writes)
     l->pending_barrier = true;
     if (pstats_on()) pstat_after(cb, ps);
+    if (passtime_on()) {
+        PassLabel pl;
+        pl.what = PT_DISPATCH, pl.kind = l->info.kind, pl.lr = l->info.lr, pl.w = grid[0], pl.h = grid[1], pl.targets = grid[2], pl.prog = v->key;
+        passtime_end(cb, pl);
+    }
     if (marks_on()) mark_after(cb, mk);
     draw_push_invalidate(l);   // (the push data is the command buffer's: the next draw pushes its own again)
     tell_first(*v, l, map, v->bank_bytes, grid, indirect);

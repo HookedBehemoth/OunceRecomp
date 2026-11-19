@@ -1,0 +1,52 @@
+# The scenes of `ounce profile oot`: one headless benchmark run each (settled, then measured), its CPU time by part of the
+# frame and its GPU time by pass. A scene boots straight into its map through an overlay (patched sequence graphs, made
+# with tools/dump/make_chisel_overlay.py --route newgame) that `ounce profile` makes in the data folder's
+# oot/profile/<scene>/ when it is missing. `banc` is the map (its GameBancParam name), `start` a StartPos name ("" the
+# map's own), `note` what the scene stands for. A new game is at night, and no run can set the time of day yet: every
+# outdoor scene is a night scene. Kakariko Village (child), Death Mountain Crater, the Desert Colossus and Gerudo Valley are left out: a chiseled boot into
+# them crashes at about 3.5 s (an access violation in a module worker, 2026-11-19).
+
+[scenes.kokiri]
+banc = "KokiriForest_Child"
+note = "Kokiri Forest at Link's house: foliage, the smoke test's scene"
+
+[scenes.field_market]
+banc = "HyruleField_Child"
+start = "HyruleField_FrontOfMarket"
+note = "Hyrule Field from the Market exit: open field, the smoke test's second scene"
+
+[scenes.field_adult]
+banc = "HyruleField_Adult"
+note = "Hyrule Field as an adult, from the Kokiri Forest exit"
+
+[scenes.market]
+banc = "Market_Child"
+note = "Castle Town market: a town square, many people"
+
+[scenes.lost_woods]
+banc = "LostWood_Child"
+note = "the Lost Woods: dense foliage"
+
+[scenes.deku_tree]
+banc = "InsideTheDekuTree"
+note = "inside the Deku Tree: a dungeon interior"
+
+[scenes.zora_domain]
+banc = "ZoraDomain_Child"
+note = "Zora's Domain: water, the waterfall"
+
+[scenes.water_temple]
+banc = "WaterTemple"
+note = "the Water Temple: a water dungeon"
+
+[scenes.goron_city]
+banc = "GoronCity_Child"
+note = "Goron City: a large cave interior, Gorons"
+
+[scenes.fire_temple]
+banc = "FireTemple"
+note = "the Fire Temple: lava, fire effects"
+
+[scenes.dodongo]
+banc = "DodongoCavern"
+note = "Dodongo's Cavern: a lava cave dungeon"

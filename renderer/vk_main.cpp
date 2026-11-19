@@ -12,6 +12,7 @@
 
 #include "vk_compute.h"
 #include "vk_marks.h"
+#include "vk_passtime.h"
 #include "vk_pstats.h"
 #include "vk_internal.h"
 #include "os.h"
@@ -413,6 +414,7 @@ extern "C" __attribute__((visibility("default"))) const MkwVkRenderer* mkwvk_ini
     query_device_created();  // (M5: queries, conditions, the resolve step)
     marks_init();            // (M6c: HOS_DBG=marks; after the draws' functions are loaded)
     pstats_init(caps.mesh_queries);   // (M6h: HOS_DBG=pstats:<present>)
+    passtime_init();
     logf("direct: %s, Vulkan %u.%u, driver %#x: the direct back end (M2b: targets, passes, present, vertex and fragment draws)", dev.props.deviceName,
          VK_VERSION_MAJOR(dev.props.apiVersion), VK_VERSION_MINOR(dev.props.apiVersion), dev.props.driverVersion);
     table.version = MKWVK_API_VERSION;

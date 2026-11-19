@@ -62,6 +62,9 @@ struct PassRec {
     bool render_enabled = true;
     int64_t copy_stride = 0;
     uint64_t set_rt_at = 0;   // (its SET_RT's number in the list, for the dump's names)
+    uint32_t drawn_at = 0;    // (passtime: the list's draws when its rendering began; the jobs executed in it, their draws, the first one's key)
+    uint32_t jobs = 0, job_draws = 0;
+    uint64_t job_key = 0;
     uint64_t last_prog = 0;   // (M6b: the program of its rendering's last draw, a job's executed in it included: the dump's
                               // pass identity, as the frozen back end names its passes; 0 after each rendering's end)
 };

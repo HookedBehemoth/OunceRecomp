@@ -20,6 +20,7 @@ mod link;
 mod llvm;
 mod objeq;
 mod probe;
+mod profile;
 mod progress;
 mod smoke;
 mod static_llvm;
@@ -46,6 +47,10 @@ const HELP: &str = "ounce <command> ...
   test <game> [--name T] [--golden | --golden-reset] [--keep-shots] [--set NAME=VALUE]...
                                          a smoke test of games/<game>/tests.toml: a short headless run against the
                                          golden runs, then a verdict
+  profile <game> [--scene S]... [--size WxH] [--frames N] [--shaders] [--census <stages.jsonl>]
+                                         the scenes of games/<game>/profile.toml, a headless benchmark each: frame
+                                         time, CPU a frame by part, GPU a frame by pass; --shaders adds a per-draw run
+                                         naming the costliest programs; the report goes to work/<game>/profile.txt
   probe                                  the Vulkan device check: one line per requirement, then the verdict
   dump <file.nup|folder> [--extract <dir>] [--set] [--verify] [--title <t>] [--only exefs|romfs]
                                          a dump: its titles and which game it is; --set records it in the config
@@ -54,7 +59,7 @@ const HELP: &str = "ounce <command> ...
                                          limits.cache_days, limits.run_free_mem_gb,
                                          limits.build_mem)
   tool ...                               the low-level commands (ounce tool help)
-build, run and test also take:
+build, run, test and profile also take:
   --exclusive                            one build or game run at a time on this PC: waits for the others (a child
                                          ounce of the one holding it goes on); never wrap ounce in flock
   --mem <size>                           runs in a systemd user scope capped at <size> (MemoryMax, no swap); an
@@ -131,7 +136,7 @@ fn exclusive_flags(argv: &mut Vec<String>) {
                 argv.drain(k..k + 2);
             }
             // (a flag's value is never taken for one of these)
-            "--set" | "--name" | "--record" | "--replay" | "--out" | "--dump" | "--build" => k += 2,
+            "--set" | "--name" | "--record" | "--replay" | "--out" | "--dump" | "--build" | "--scene" | "--size" | "--frames" | "--census" => k += 2,
             _ => k += 1,
         }
     }
@@ -139,8 +144,8 @@ fn exclusive_flags(argv: &mut Vec<String>) {
     if !(exclusive || mem.is_some()) {
         return;
     }
-    if !matches!(cmd, "build" | "run" | "test") {
-        fail(format!("{cmd}: --exclusive and --mem go with build, run and test"));
+    if !matches!(cmd, "build" | "run" | "test" | "profile") {
+        fail(format!("{cmd}: --exclusive and --mem go with build, run, test and profile"));
     }
     if mem.is_none() && exclusive && cmd == "build" {
         mem = config().build_mem();
@@ -161,6 +166,7 @@ fn main() {
         Some("build") => commands::build(&argv[1..]),
         Some("run") => commands::run(&argv[1..]),
         Some("test") => commands::test(&argv[1..]),
+        Some("profile") => profile::command(&argv[1..]),
         Some("probe") => probe::command(),
         Some("dump") => dump::command(&argv[1..]),
         Some("config") => commands::config_cmd(&argv[1..]),

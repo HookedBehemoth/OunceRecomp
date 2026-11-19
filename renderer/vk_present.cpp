@@ -27,6 +27,7 @@
 #include "vk_query.h"
 #include "vk_check.h"
 #include "vk_marks.h"
+#include "vk_passtime.h"
 #include "vk_pstats.h"
 #include "vk_present_rect.h"
 
@@ -441,6 +442,7 @@ void present(const nvn_tex* t, const int* crop) {   // (the guest's Presentation
     assets_present(n);
     dump_present(n);
     pstats_present(n);   // (M6h: HOS_DBG=pstats)
+    passtime_present(n);
     sync_present(t, crop);
 }
 
@@ -488,6 +490,7 @@ void present_run(const nvn_tex& t, const int crop[4]) {   // (vk_sync.cpp's mu h
     vkBeginCommandBuffer(f.cmd, &bi);
     uint32_t gt_slot = 0;
     if (gputime_on()) gputime_present_begin(f.cmd, gt_slot);   // 
+    if (passtime_on()) passtime_top(f.cmd);
     // (after the frame's work on the queue: the window texture's writes, before the blit reads it)
     VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, mb.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
@@ -522,6 +525,11 @@ void present_run(const nvn_tex& t, const int crop[4]) {   // (vk_sync.cpp's mu h
     if (!dev.offscreen)
         barrier(f.cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
+    if (passtime_on()) {
+        PassLabel pl;
+        pl.what = PT_PRESENT, pl.w = extent.width, pl.h = extent.height;
+        passtime_end(f.cmd, pl);
+    }
     if (gputime_on()) gputime_present_end(f.cmd, gt_slot);
     vkEndCommandBuffer(f.cmd);
     VkCommandBufferSubmitInfo cb{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};

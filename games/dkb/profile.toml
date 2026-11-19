@@ -1,0 +1,8 @@
+# The scenes of `ounce profile dkb` (see games/oot/profile.toml). No overlay reaches gameplay yet: a scene is where a
+# headless run gets by itself, measured once nothing streams for the ready frames (`play = false`: the game's patches name
+# no player).
+
+[scenes.boot]
+play = false
+seconds = 150
+note = "where a headless run settles: the title and its menus"

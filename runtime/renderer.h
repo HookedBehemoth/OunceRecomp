@@ -36,6 +36,7 @@ typedef struct {
     void (*target_given)(const void *tex);
     void (*host_event)(const char *reason, const char *what);
     void (*texture_cached)(const void *tex, int cached);
+    void (*measure)(uint32_t presents);   /* the GPU's time by pass over the next presents (renderer/vk_passtime.h) */
     int64_t (*vram_free)(void);   /* free VRAM, the driver's figure */   /* a texture released to agl's LRU cache (1), taken back (0) */
 } gpu_fns;
 

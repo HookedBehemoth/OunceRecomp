@@ -27,6 +27,7 @@
 #include "vk_dump.h"
 #include "vk_image.h"
 #include "vk_pass.h"
+#include "vk_passtime.h"
 #include "vk_query.h"
 #include "vk_task.h"
 #include "os.h"
@@ -192,12 +193,20 @@ VkCommandBuffer cmd_raw(List* l) {
     if (!l->slot) l->slot = cmd_slot_take(), l->thread = thread_id();
     else if (l->thread != thread_id()) count(S_OTHER_THREAD);
     l->cur = cmd_buffer(l->slot);
+    if (passtime_on() && !l->secondary) passtime_top(l->cur);
     l->segs.push_back({l->cur, nullptr});
     l->has_cmds = true;
     return l->cur;
 }
 
 /// A pass with no target: its area, the viewport's (x + w, y + h), as the frozen back end's bare_targets
+/// (passtime) a copy, a texture clear or a task step recorded in the list's command buffer: its stamp
+void work_done(List* l, PassWhat what, uint32_t w, uint32_t h, uint64_t pass_key = 0) {
+    PassLabel pl;
+    pl.what = what, pl.kind = l->info.kind, pl.lr = l->info.lr, pl.rt = (uint32_t)l->pass.set_rt_at, pl.w = w, pl.h = h, pl.pass_key = pass_key;
+    passtime_end(l->cur, pl);
+}
+
 void bare_area(PassRec& p) {
     const uint32_t most = std::min(dev.props.limits.maxFramebufferWidth, dev.props.limits.maxFramebufferHeight);
     p.w = (uint32_t)std::clamp(p.viewport[0] + p.viewport[2], 1.0f, (float)most);
@@ -241,6 +250,7 @@ void begin(List* l) {
     }
     vkCmdBeginRendering(cb, &ri);
     p.begun = p.rendered = true;
+    p.drawn_at = l->n_drawn;
     p.load = 0;
     count(S_BEGUN);
 }
@@ -254,6 +264,14 @@ void suspend(List* l) {
     query_suspend(l, l->cur);   // (M5: its occlusion query and condition end inside it)
     vkCmdEndRendering(l->cur);
     p.begun = false;
+    if (passtime_on()) {
+        PassLabel pl;
+        pl.what = PT_RENDER, pl.kind = l->info.kind, pl.lr = l->info.lr, pl.rt = (uint32_t)p.set_rt_at, pl.w = p.w, pl.h = p.h;
+        pl.targets = (uint32_t)p.n, pl.format = p.n ? (int32_t)p.color[0].format : -1, pl.depth = p.depth.view ? (int32_t)p.depth.format : -1;
+        pl.pass_key = p.job_key, pl.prog = p.last_prog, pl.draws = l->n_drawn - p.drawn_at + p.job_draws, pl.jobs = p.jobs;
+        passtime_end(l->cur, pl);
+    }
+    p.jobs = p.job_draws = 0;
     dump_pass(l, l->cur);
     p.last_prog = 0;
     query_flush(l, &cmd);   // (M5: its reports written, after it and before what follows)
@@ -456,6 +474,7 @@ void copy_bt(List* l, const nvn_p_copy_bt& p, bool to_image) {
     } else {
         vkCmdCopyImageToBuffer(cmd(l), s.im->image, VK_IMAGE_LAYOUT_GENERAL, buf, 1, &c);
     }
+    if (passtime_on()) work_done(l, PT_COPY, s.w, s.h);
     count(S_COPIES);
 }
 
@@ -516,6 +535,7 @@ void copy_tt(List* l, const nvn_p_copy_tt& p) {
         return copy_skipped("sizes or block shapes differ, a compressed side", p, s, d);
     }
     d.im->written.fetch_or(W_COPY, std::memory_order_relaxed);
+    if (passtime_on()) work_done(l, PT_COPY, d.w, d.h);
     count(S_COPIES);
     static std::atomic<int> told{0};   // (named: the game's barriers around them are what synchronises them)
     if (present_count() > 1200 && told++ < 8)
@@ -540,6 +560,7 @@ void clear_tex(List* l, const nvn_p_clear_tex& p) {
     // (NVN's texture clear is in the 3D engine's order, Vulkan's a transfer: the clear is made visible to what follows, M2b's
     // validation run found renderings loading it right after)
     record_barrier(l->cur);
+    if (passtime_on()) work_done(l, PT_CLEAR, s.w, s.h);
     s.im->written.fetch_or(W_CLEAR, std::memory_order_relaxed);
     count(S_CLEAR_TEX);
 }
@@ -710,6 +731,7 @@ void task_job_step(List* l, const List* callee) {
     task_barrier(cb, false);
     vkCmdExecuteCommands(cb, 1, &callee->task_cb);
     task_barrier(cb, true);
+    if (passtime_on()) work_done(l, PT_TASK, 0, 0, callee->info.pass_key);
     draw_invalidate(l);   // (the caller's state is undefined after a secondary)
     count(S_TASK_JOB_STEPS);
 }
@@ -755,6 +777,8 @@ void pass_call(List* l, const List* callee) {
         vkCmdExecuteCommands(cmd(l), 1, &callee->sec);
         query_executed(l, callee);
         if (callee->last_prog) l->pass.last_prog = callee->last_prog;
+        if (!l->pass.jobs++) l->pass.job_key = callee->info.pass_key;
+        l->pass.job_draws += callee->n_drawn;
         draw_invalidate(l);   // (the caller's dynamic state, shaders, buffers and push data are undefined after it)
         l->executed.push_back(callee);
         jcount(J_EXECUTED);

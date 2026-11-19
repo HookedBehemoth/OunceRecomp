@@ -102,6 +102,7 @@ void os_thread_release(os_thread *t);
 int os_thread_join(os_thread *t, int64_t timeout_ns);   /* 0 (it has ended) or OS_ETIMEDOUT */
 uint32_t os_thread_tid(os_thread *t);   /* the system's thread id */
 uint32_t os_tid(void);                  /* the calling thread's */
+int64_t os_self_cpu_ns(void);          /* the CPU time the calling thread has used, in ns */
 void os_thread_set_name(os_thread *t, const char *name);
 void os_thread_name(os_thread *t, char *out, size_t cap);
 enum { OS_PRIO_IDLE = -3, OS_PRIO_LOWEST = -2, OS_PRIO_BELOW = -1, OS_PRIO_NORMAL = 0, OS_PRIO_ABOVE = 1, OS_PRIO_HIGHEST = 2 };

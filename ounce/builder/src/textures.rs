@@ -32,7 +32,7 @@ pub fn quality(v: &str) -> Settings {
 }
 
 /// The main checkout of the repository `root` is in (git's common folder's parent), when `root` is another worktree.
-fn main_checkout(root: &Path) -> Option<PathBuf> {
+pub fn main_checkout(root: &Path) -> Option<PathBuf> {
     let o = std::process::Command::new("git").arg("-C").arg(root).args(["rev-parse", "--path-format=absolute", "--git-common-dir"]).output().ok()?;
     let common = PathBuf::from(String::from_utf8_lossy(&o.stdout).trim());
     let main = common.parent()?.to_path_buf();

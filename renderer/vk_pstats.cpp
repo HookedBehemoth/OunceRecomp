@@ -44,7 +44,7 @@ bool pstats_wants_mesh_queries() {
 void pstats_init(bool mesh_queries) {
     const char* v = dbg_value("pstats");
     if (!v) return;
-    at = std::atoll(v);
+    at = std::strcmp(v, "bench") ? std::atoll(v) : -1;   // (bench: the present gpu_measure arms)
     mesh = mesh_queries;
     pCreate = (PFN_vkCreateQueryPool)vkGetDeviceProcAddr(dev.device, "vkCreateQueryPool");
     pReset = (PFN_vkResetQueryPool)vkGetDeviceProcAddr(dev.device, "vkResetQueryPool");
@@ -84,6 +84,10 @@ void pstats_init(bool mesh_queries) {
          "query (%u statistics, mesh %d); pstats.csv written %u presents later", (long long)at, (long long)at, values, (int)mesh, kAfter);
 }
 
+void pstats_arm(uint64_t present) {
+    if (pstats_enabled && at < 0) at = (int64_t)present, logf("direct: pstats: present %lld measured", (long long)at);
+}
+
 uint32_t pstat_before(VkCommandBuffer cb, const PstatWhat& w) {
     if ((int64_t)present_count() != at) return ~0u;
     const uint32_t i = next.fetch_add(1, std::memory_order_relaxed);
@@ -102,7 +106,7 @@ void pstat_after(VkCommandBuffer cb, uint32_t i) {
 }
 
 void pstats_present(uint64_t present) {
-    if (!pstats_enabled || (int64_t)present != at + kAfter || written.exchange(true)) return;
+    if (!pstats_enabled || at < 0 || (int64_t)present != at + kAfter || written.exchange(true)) return;
     const uint32_t n = std::min(next.load(), kQueries);
     std::vector<uint64_t> r((size_t)n * (values + 1));
     VkResult res = n ? pResults(dev.device, pool, 0, n, r.size() * 8, r.data(), (values + 1) * 8,
@@ -113,7 +117,7 @@ void pstats_present(uint64_t present) {
     FILE* f = std::fopen("pstats.csv", "w");
     if (!f) return logf("direct: pstats: pstats.csv not written");
     std::fprintf(f, "index,what,key,code0,code1,code2,kind,lr,w,h,format,targets,count,instances,extra,available,ia_vertices,ia_primitives,"
-                    "vs_invocations,clip_invocations,clip_primitives,fs_invocations,cs_invocations,ms_invocations,t_begin_ns,t_end_ns\n");
+                    "vs_invocations,clip_invocations,clip_primitives,fs_invocations,cs_invocations,ms_invocations,t_begin_ns,t_end_ns,pass\n");
     uint32_t avail = 0;
     uint64_t fs = 0, vs = 0, cs = 0, ms = 0;
     for (uint32_t i = 0; i < n; i++) {
@@ -125,11 +129,12 @@ void pstats_present(uint64_t present) {
         const uint64_t mv = mesh ? v[7] : 0;
         const bool tok = times && ts[4ull * i + 1] && ts[4ull * i + 3];
         const double tb = tok ? (double)ts[4ull * i] * ns_tick : -1, te = tok ? (double)ts[4ull * i + 2] * ns_tick : -1;
-        std::fprintf(f, "%u,%s,%016llx,%016llx,%016llx,%016llx,%u,%#llx,%u,%u,%d,%u,%u,%u,%u,%d,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.0f,%.0f\n", i, w.what,
+        std::fprintf(f, "%u,%s,%016llx,%016llx,%016llx,%016llx,%u,%#llx,%u,%u,%d,%u,%u,%u,%u,%d,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.0f,%.0f,%#llx\n", i, w.what,
                      (unsigned long long)w.key, (unsigned long long)w.codes[0], (unsigned long long)w.codes[1], (unsigned long long)w.codes[2],
                      w.kind, (unsigned long long)w.lr, w.w, w.h, w.format, w.targets, w.count, w.instances, w.extra, (int)ok,
                      (unsigned long long)v[0], (unsigned long long)v[1], (unsigned long long)v[2], (unsigned long long)v[3],
-                     (unsigned long long)v[4], (unsigned long long)v[5], (unsigned long long)v[6], (unsigned long long)mv, tb, te);
+                     (unsigned long long)v[4], (unsigned long long)v[5], (unsigned long long)v[6], (unsigned long long)mv, tb, te,
+                     (unsigned long long)w.pass);
         if (ok) vs += v[2], fs += v[5], cs += v[6], ms += mv;
     }
     std::fclose(f);

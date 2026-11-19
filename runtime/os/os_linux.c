@@ -262,6 +262,11 @@ uint32_t os_tid(void) {
     if (!self_tid) self_tid = (uint32_t)syscall(SYS_gettid);
     return self_tid;
 }
+int64_t os_self_cpu_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+    return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+}
 void os_thread_retain(os_thread *t) { os_atomic_inc(&t->refs); }
 /* Threads this file starts are joinable, so their pthread descriptor (and stack) stays until the last reference goes:
    a detached thread's could be unmapped while a handle still names it (set_affinity, set_name, cpu_ns use t->th). */

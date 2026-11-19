@@ -24,7 +24,7 @@ stages one by one does not pay.
 
 ## Measure one frame in the game
 
-Run with `HOS_DBG=pstats:<present>`. At that present the back end puts a pipeline-statistics query and two timestamps
+Run with `HOS_DBG=pstats:<present>` (or `pstats:bench`, the first frame a benchmark measures). At that present the back end puts a pipeline-statistics query and two timestamps
 around every command and writes the results; `tools/shadercensus/scene.py` turns them into a per-program table.
 `HOS_DBG=gputime` logs the GPU's busy time a frame.
 
