@@ -66,9 +66,8 @@ fn static_llvm() {
     let mut b = cc::Build::new();
     b.cpp(true).file("src/llvm_shim.cpp").file("src/lld_shim.cpp").warnings(false).cargo_metadata(false);
     if clang {
+        // (no resource headers named: a release has its own beside the executable, main.rs resource_dir)
         b.file("src/clang_shim.cpp");
-        // (the build tree's resource headers; a release has its own beside the executable, main.rs resource_dir)
-        println!("cargo:rustc-env=HK_CLANG_RESOURCE_DIR={}", dir.join("lib/clang").join(run(&["--version"]).split('.').next().unwrap()).display());
     }
     for f in run(&["--cxxflags"]).split_whitespace() {
         b.flag(f);

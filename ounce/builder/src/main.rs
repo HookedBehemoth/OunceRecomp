@@ -83,7 +83,7 @@ const TOOL_HELP: &str = "ounce tool <command> ...
   build <out dir> --direct <ounce_renderer.so> --ffmpeg <dir> --game <dir> --obj <dir> [-j N] [--cache <dir>] [--version <text>]
         [--check <obj dir>] [--gen <lift dir> [--gen-parts]] [--map <file>] [--progress] [--root <dir>] [--exefs <dir>]
         [--dump <file.nup|folder> [--title <t>] [--dump-dir <dir>]] [--no-textures] [--quality fast|high] [--shaders]
-        [--sysroot <dir>] [--resource-dir <dir>] [--sdl <libSDL3.so.0>]
+        [--sysroot <dir>] [--sdl <libSDL3.so.0>]
                                        the lift, every compile and the link in this process (feature clang), then
                                        <out>/prepared, the texture store: without --dump kept while current, else copied
                                        from the main checkout's build or converted; --dump makes <out> a game folder: the
@@ -437,13 +437,22 @@ fn lift_compile(args: &[String]) {
     }
 }
 
-/// clang's resource headers: a release's `<prefix>/lib/clang/<major>` beside `<prefix>/bin/ounce`, as clang's own
-/// driver finds them, else the folder of the clang this ounce was built with (the system's, or the static LLVM's
-/// build tree)
+/// clang's resource headers, one rule per kind of ounce: a release's (static LLVM) are `<prefix>/lib/clang/<major>`
+/// beside `<prefix>/bin/ounce`, as clang's own driver finds them; a development build's are the system clang's, the
+/// folder llvm-config named when it was built
 #[cfg(feature = "clang")]
 fn resource_dir() -> PathBuf {
-    let beside = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.parent()?.join("lib/clang").join(LLVM_MAJOR.to_string())));
-    beside.filter(|d| d.join("include/stddef.h").is_file()).unwrap_or_else(|| PathBuf::from(env!("HK_CLANG_RESOURCE_DIR")))
+    #[cfg(feature = "static-llvm")]
+    let dir = std::env::current_exe()
+        .ok()
+        .and_then(|e| Some(e.parent()?.parent()?.join("lib/clang").join(LLVM_MAJOR.to_string())))
+        .unwrap_or_else(|| fail("the executable's folder is not known: no clang resource headers"));
+    #[cfg(not(feature = "static-llvm"))]
+    let dir = PathBuf::from(env!("HK_CLANG_RESOURCE_DIR"));
+    if !dir.join("include/stddef.h").is_file() {
+        fail(format!("{} has no clang resource headers (include/stddef.h)", dir.display()));
+    }
+    dir
 }
 
 /// `build <out dir> --direct <so> ...`: the game folder (builder, ounce_renderer.so, image.bin) from the dump,
@@ -468,7 +477,7 @@ fn build(args: &[String]) {
     let jobs = gate::default_jobs();
     let mut run = ounce_lift::pipeline::Run { jobs: std::thread::available_parallelism().map_or(1, |n| n.get()), hot_first: true, ..Default::default() };
     let (mut cjobs, mut out, mut check, mut direct) = (jobs, None::<PathBuf>, None::<PathBuf>, None::<PathBuf>);
-    let (mut cache_dir, mut version, mut resource) = (None::<PathBuf>, None::<String>, resource_dir());
+    let (mut cache_dir, mut version) = (None::<PathBuf>, None::<String>);
     let mut sysroot_dir = None::<PathBuf>;
     let (mut gen, mut gen_parts, mut progress) = (None::<PathBuf>, false, false);
     let (mut dump_src, mut dump_dir, mut title) = (None::<PathBuf>, None::<PathBuf>, None::<String>);
@@ -485,7 +494,6 @@ fn build(args: &[String]) {
             "--ffmpeg" => ffmpeg = Some(val().into()),
             "--cache" => cache_dir = Some(val().into()),
             "--version" => version = Some(val()),
-            "--resource-dir" => resource = val().into(),
             "--sysroot" => sysroot_dir = Some(val().into()),
             "--sdl" => sdl_lib = Some(val().into()),
             "--gen" => gen = Some(val().into()),
@@ -553,6 +561,7 @@ fn build(args: &[String]) {
     let cache_dir = cache_dir.unwrap_or_else(|| ounce_core::layout::Layout::cache(&config));
     let cache = cache::Cache::open(&cache_dir).unwrap_or_else(|e| fail(e));
     let sysroot_dir = sysroot_dir.unwrap_or_else(|| sysroot::find(&root, &config.cache_dir()));
+    let resource = resource_dir();
     let tc = host::Toolchain { resource_dir: &resource, sysroot: &sysroot_dir };
     let gate = gate::Gate::new();
     let prog = progress::Progress::new(progress, cjobs, &cache_dir);

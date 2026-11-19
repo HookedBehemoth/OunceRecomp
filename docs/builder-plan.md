@@ -149,8 +149,9 @@ looks without an argument; `ounce run` takes the image from beside the executabl
   x86-64-v3 against the sysroot, and libc++ for the renderer; `ounce tool appdir` links them into `ounce`
   (`--features static-llvm,clang`, libstdc++ static). LTO is not set up: the archives would hold bitcode, and the Rust
   link would have to run LTO.
-- clang's resource headers are `<prefix>/lib/clang/23` beside `<prefix>/bin/ounce` when that folder has them (a
-  release), else the folder of the clang `ounce` was built with.
+- clang's resource headers follow one rule for each kind of build. A release's `ounce` (static LLVM) always takes
+  `<prefix>/lib/clang/23` beside `<prefix>/bin/ounce`. A development build always takes the system clang's folder,
+  which `llvm-config --libdir` named when `ounce` was built. A build stops when its folder has no headers.
 
 ## The link
 
