@@ -8,3 +8,11 @@
 83a048d0 mono_interp_native_call          # games/mkw/game.toml local_continuations: subsdk1 Mono interpreter, a native call with a captured context (its resume pc 0x83a04a28) ?
 83a04b40 mono_interp_native_call_2        # games/mkw/game.toml local_continuations: subsdk1 Mono interpreter, a second native call of that form ?
 83b0a100 mono_sgen_stop_world             # games/mkw/game.toml local_continuations: subsdk1 Mono sgen, stops the world ("mono_coop_mutex_lock"), the GC thread's own context captured
+825b0aa0 hid_pad_mouse_update             # runtime/nn_hid.c Nmouse: reads the pads (GetNpadStates) and asks GetNmouseHandles / GetNmouseTypeSet for a Joy-Con 2 mouse
+808925e0 social_systems_init              # runtime/nn_applet.c nn::chat: makes the GameChat, friends-side objects and loads the "UTC" time zone rule (LoadTimeZoneRule)
+80d521a0 chat_init                        # runtime/nn_applet.c nn::chat: chat::Initialize, the room-info event, the camera video storages, IsChatting
+80d52270 chat_local_camera_init           # runtime/nn_applet.c nn::chat: the local camera's video storage (3 images of 384x216) and its native image textures
+80d51b20 chat_remote_camera_init          # runtime/nn_applet.c nn::chat: one remote camera's video storage (3 images of 384x216) and its native image textures
+80d8cd50 friends_init                     # runtime/nn_answers.c nn::friends: friends::Initialize once, then SetAllocator
+80d8d7e0 friends_availability_check       # runtime/nn_answers.c nn::friends: the play history key and CheckFriendListAvailability; EnsureFriendListAvailable when the list is out of date
+80c8de50 audio_capture_buffer_size        # runtime/nn_audio.c capture: GetRequiredBufferSizeForCapture plus the game's own per-channel buffers

@@ -136,7 +136,8 @@ pub fn parse(b: &[u8]) -> Result<Bntx, String> {
             height: u32_at(b, o + 0x28)?,
             depth: u32_at(b, o + 0x2c)?,
             layers: u32_at(b, o + 0x30)?,
-            bh_log2: u32_at(b, o + 0x34)?,
+            // (the texture layout: its low nibble the block height, its high nibble a 3D texture's block depth)
+            bh_log2: u32_at(b, o + 0x34)? & 0xF,
             image_size: u32_at(b, o + 0x50)?,
             alignment: u32_at(b, o + 0x54)?,
             comp_sel: rd::<4>(b, o + 0x58)?,

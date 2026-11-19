@@ -45,11 +45,9 @@ use std::time::Instant;
 const LLVM_MAJOR: u32 = 23;
 
 const HELP: &str = "ounce <command> ...
-  build <game> [-j N] [--gen-parts] [--shaders] [--no-textures]
+  build <game> [-j N] [--gen-parts] [--shaders]
                                          the game's build into work/<game>/ (game/, lift/, obj/, build.log);
-                                         --shaders: its shader pack and caches too, as a player's folder has;
-                                         --no-textures: no texture store (a game whose store is not made yet draws
-                                         its BNTX textures as placeholders)
+                                         --shaders: its shader pack and caches too, as a player's folder has
   build <game> --out <dir> --dump <file.nup|folder> [--quality fast|high]
                                          a portable player's game folder made from a dump
   run <game> [--headless] [--seconds N] [--record R | --replay R] [--bench N] [--shots N] [--name N]
