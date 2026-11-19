@@ -105,10 +105,11 @@ For each scene the report gives:
 
 `--shaders` adds a second short run per scene that times every draw of one frame. It names the costliest programs of
 the costliest passes, with ACO's register counts, waves and instruction counts from the newest
-[shader census](direct/shader-costs.md). The measuring itself makes a frame about 4% slower.
+[shader census](direct/shader-costs.md) (`--census <file>` picks another one).
 
-The report is printed and written to `work/<game>/profile.txt`. To compare a change, run the command again on the new
-build.
+The report is printed and written to `work/<game>/profile.txt`. Beside each scene's overlay, `<scene>.png` shows a
+frame from the measured stretch, so you can check that the scene measured what you meant. To compare a change, run
+the command again on the new build.
 
 A headless run cannot take an RGP capture, because RADV ends a capture's frame at a window's present. To take one, run
 the game in a window with `MESA_VK_TRACE=rgp` and `MESA_VK_TRACE_TRIGGER=<file>` set, and create that file in the scene

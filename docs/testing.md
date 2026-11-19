@@ -93,6 +93,10 @@ actors stay, and actors to add. `work/venv/bin/python -I tools/dump/make_zoo.py 
 also needs `--set HOS_INPUT_LIVE=<folder>/live.txt`. A zoo scene keeps the base map's collision, navigation and baked
 lighting.
 
+Both tools raise the game's resource size table entry of every file they make larger. If you patch a game file by
+another way, raise its entry too (`tools/dump/rstb.py`): the game sizes the file's heap from that table, and a
+larger file overflows it.
+
 ### Run the smoke test
 
 The smoke test answers one question: did anything break? It stands in one scene and prints a verdict of about ten

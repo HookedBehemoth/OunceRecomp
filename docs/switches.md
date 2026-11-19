@@ -29,7 +29,7 @@ The build's own switches are in [Build and iterate on the lifter](lifter-build.m
 | Switch | What it does |
 |---|---|
 | `HOS_HEADLESS` | No window: the renderer draws offscreen |
-| `HOS_WINDOW_SIZE=<w>x<h>` | The window's size, or the headless image's (720 high at the monitor's shape by default). The game's frame follows the window's pixels |
+| `HOS_WINDOW_SIZE=<w>x<h>` | The window's size (by default 720 high at the monitor's shape), or the headless image's (by default 1920x1080). The game's frame follows the window's pixels |
 | `HOS_AUDIO=0` | Opens no sound device |
 | `HOS_OUTPUT_RES=<0..4>` | A fixed output resolution, over the options file; without one the frame follows the window |
 | `HOS_ASPECT=<ratio>` | A fixed picture shape instead of the window's; wider than 16:9 the HUD, menus and movies keep the middle 16:9 |
@@ -38,7 +38,7 @@ The build's own switches are in [Build and iterate on the lifter](lifter-build.m
 | `HOS_TRACE=1` | Logs every Horizon call, like `--trace` |
 | `HOS_FPS_MAX=<fps>` | The frame-rate cap (60 to 240), over the option; above 60 frames are paced up to the display's refresh rate and the game is told the display has a variable refresh |
 | `HOS_BENCH=<frames>[,<ready frames>[,<GPU frames>[,noplay]]]` | A benchmark run (`ounce run --bench` sets it). `<GPU frames>`: the GPU timed by pass over the first measured frames (`passtime.csv`); `noplay`: ready without the player in play (`ounce profile` sets both) |
-| `RX_VK_SHOTS=<dir>`, `RX_VK_SHOT_EVERY=<n>` | Saves a PNG of the presented frame every `n` presents |
+| `RX_VK_SHOTS=<dir>`, `RX_VK_SHOT_EVERY=<n>` | Saves a PNG of the presented frame every `n` presents, in the frame's shape with a long side of 1280 |
 
 ## Drive the game with scripted input
 
