@@ -20,6 +20,10 @@ Install these from your distribution:
 - Meson, Ninja and `glslangValidator`, for the renderer;
 - the Vulkan headers, FFmpeg with dav1d, and SDL2 or SDL3.
 
+The renderer needs a GPU with Vulkan 1.3 and shader objects, descriptor indexing and extended dynamic state 3. To
+check yours, run `ounce probe` once `ounce` is built; [the device check](builder-plan.md#the-device-check) lists
+what it checks.
+
 For the Python tools, make a virtual environment with `python3 -m venv work/venv` and
 `work/venv/bin/pip install -r requirements.txt`. Then build `ounce`:
 

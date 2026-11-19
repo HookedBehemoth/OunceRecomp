@@ -242,23 +242,29 @@ Stopping a build kills the process, and a build run again over the same folder f
 
 ## The device check
 
-`ounce probe` checks the GPU the back end would pick (the first discrete GPU with Vulkan 1.3), with
-libvulkan loaded at run time and no Vulkan crate. It prints one line per item, `@@probe <key> <pass|fail|warn|info>
-<value>`, and last `@@probe verdict <pass|fail> <failed keys>`; it exits 1 when an item fails.
+`ounce probe` checks the GPU the back end would pick (the first discrete GPU with Vulkan 1.3, else the first GPU
+with 1.3), with libvulkan loaded at run time and no Vulkan crate. It prints one line per item, `@@probe <key>
+<pass|fail|warn|info> <value>`, and last `@@probe verdict <pass|fail> <failed keys>`; it exits 1 when an item fails.
 
-An item fails only when the back end does not start without it, or starts and draws nothing. What the back end starts
-without is a warning.
+An item should fail only when the back end does not start without it, and warn when the back end starts without it.
 
-| Key | Fails | Warns |
-|---|---|---|
-| `loader`, `api` | under Vulkan 1.3 | |
-| `swapchain`, `external_memory_fd`, `dma_buf` | missing: the device is not made | |
-| `core_features` | no dynamic rendering, synchronization2, timeline semaphores or buffer device addresses | |
-| `graphics_queue`, `sparse_queue` | no graphics and compute family, or no sparse-binding family without either | |
-| `shader_object`, `robustness2`, `extended_dynamic_state3` and their `_feature(s)`, `descriptor_indexing` | missing: the device is not made | |
-| `maintenance7` | | missing: the game's command jobs are not executed |
-| `sparse_residency`, `udmabuf` | | missing: the game's memory is not mapped on the GPU (layer 0 off) |
-| `vram` | | under 10 GB; under 8 GB the textures may not fit |
+| Key | Fails | Warns | The back end without it |
+|---|---|---|---|
+| `loader`, `api` | under Vulkan 1.3 | | does not start |
+| `swapchain` | missing | | does not start |
+| `core_features` | no dynamic rendering, synchronization2, timeline semaphores or buffer device addresses | | does not start |
+| `graphics_queue` | no family with graphics and compute | | does not start |
+| `shader_object`, `robustness2`, `extended_dynamic_state3` and their `_feature(s)` | missing | | does not start |
+| `descriptor_indexing` | no runtime descriptor arrays, non-uniform image indexing, update after bind for images, or 64-bit integers | | does not start |
+| `external_memory_fd`, `dma_buf` | missing | | starts, but the game's memory is not imported: Linux hands it over as dma-bufs only |
+| `sparse_queue` | no sparse-binding family without graphics and compute | | starts; binds on another queue with sparse binding, and with none layer 0 is off |
+| `maintenance7` | | missing | starts; the game's command jobs are not executed |
+| `sparse_residency`, `udmabuf` | | missing | starts; layer 0 is off: the game's memory is not mapped on the GPU |
+| `vram` | | under 10 GB; under 8 GB the textures may not fit | starts |
+
+The probe does not check two of the back end's limits: the update-after-bind descriptor counts of the pools' set
+(65,536 sampled and 65,536 storage images per view type, 8,192 samplers) and 144 bytes of push constants. The back end
+names a missing requirement in its log when it refuses the device.
 
 `gpu`, `device` and `driver` lines name the GPU and its driver; `gpu` warns when the GPU is not discrete.
 
