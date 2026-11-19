@@ -88,10 +88,28 @@ static uint64_t level_offset(const nvn_texdesc *d, unsigned level, unsigned dpl,
     return off;
 }
 
+/* SPARSE (0x20) 2D textures: a level a tile fits in (nvnTextureGetSparseTileLayout) is whole 64 KiB tiles, in rows; the
+   levels below follow in the block-linear layout (the mip tail), and a layer is whole tiles too, so each layer's tail
+   has pages of its own. That is the game's model of the storage (MKW sparse_texture_init, sparse_page_map) */
+static int is_sparse(const nvn_texdesc *d, unsigned dpl) { return (d->flags & 0x20) && dpl == 2; }
+static uint64_t sparse_offset(const nvn_texdesc *d, unsigned level, unsigned dpl, uint32_t w, uint32_t h, uint32_t z,
+                              unsigned tileH, unsigned tileD, fmt_t t, int whole) {
+    int tbw, tbh;
+    nvn_sparse_tile_blocks(t.bpb, &tbw, &tbh);
+    const uint64_t tw = (uint64_t)tbw * t.bw, th = (uint64_t)tbh * t.bh;
+    uint64_t off = 0;
+    unsigned tiled = 0;
+    for (; tiled < level && mip(w, tiled) >= tw && mip(h, tiled) >= th; tiled++)
+        off += blk(mip(w, tiled), (uint32_t)tw) * blk(mip(h, tiled), (uint32_t)th) << 16;
+    off += level_offset(d, level, dpl, w, h, z, tileH, tileD, t) - level_offset(d, tiled, dpl, w, h, z, tileH, tileD, t);
+    return whole ? (off + 0xFFFF) & ~0xFFFFull : off;
+}
+
 /* NVN v55 sdk+0x4429c8 compares the default footprint against one-GOB tiles for MINIMAL_LAYOUT: the default kept if
    equal, otherwise tile H=D=0. Packaged layouts override this choice. */
 static uint64_t layer_bytes(const nvn_texdesc *d, unsigned dpl, int layered,
                             uint32_t w, uint32_t h, uint32_t z, unsigned tileH, unsigned tileD, fmt_t t) {
+    if (is_sparse(d, dpl)) return sparse_offset(d, d->levels ? d->levels : 1, dpl, w, h, z, tileH, tileD, t, 1);
     uint64_t ls = level_offset(d, d->levels ? d->levels : 1, dpl, w, h, z, tileH, tileD, t);
     if (layered) {
         uint32_t hh = blk(h, t.bh); unsigned th = tileH, td = tileD;
@@ -140,9 +158,6 @@ void nvn_tex_layout(const nvn_texdesc *d, nvn_texlayout *o) {
         uint64_t minimal = layer_bytes(d, dpl, layered, w, h, z, 0, 0, t);
         if (minimal != ls) { tileH = tileD = 0; ls = minimal; }
     }
-    /* SPARSE (0x20): a layer is whole 64 KiB tiles, so each layer's mip tail has pages of its own (the game maps a
-       layer's tail at layer x pages-per-layer + its tiled pages: MKW sparse_page_map) */
-    if (d->flags & 0x20) ls = (ls + 0xFFFF) & ~0xFFFFull;
     o->tileH = tileH; o->tileD = tileD;
     o->layer_size = ls;
     o->size = layered ? ls * z : ls;
@@ -155,6 +170,7 @@ uint64_t nvn_tex_level_offset(const nvn_texdesc *d, unsigned level) {
     shape(d, &dpl, &layered, &w, &h, &z);
     if (!t.bpb || nvn_tex_is_linear(d) || d->target == 10) return 0;
     nvn_texlayout L; nvn_tex_layout(d, &L);
+    if (is_sparse(d, dpl)) return sparse_offset(d, level, dpl, w, h, z, L.tileH, L.tileD, t, 0);
     return level_offset(d, level, dpl, w, h, z, L.tileH, L.tileD, t);
 }
 
