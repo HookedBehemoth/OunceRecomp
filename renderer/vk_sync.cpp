@@ -689,7 +689,7 @@ void sync_fill_table(MkwVkRenderer& t) {
 
 using namespace hsd;
 
-extern "C" __attribute__((visibility("default"))) void gpu_submit(uint64_t queue, void* const* lists, uint32_t n) {
+extern "C" MKWVK_EXPORT void gpu_submit(uint64_t queue, void* const* lists, uint32_t n) {
     const auto t0 = clk::now();
     Sub s;
     s.lists.reserve(n);
@@ -756,9 +756,9 @@ void sync_present(const nvn_tex* t, const int crop[4]) {
 }
 }  // namespace hsd
 
-extern "C" __attribute__((visibility("default"))) void gpu_present_queue(uint64_t queue) { present_queue = queue; }
+extern "C" MKWVK_EXPORT void gpu_present_queue(uint64_t queue) { present_queue = queue; }
 
-extern "C" __attribute__((visibility("default"))) void gpu_queue_wait_fence(uint64_t queue, uint64_t fence) {
+extern "C" MKWVK_EXPORT void gpu_queue_wait_fence(uint64_t queue, uint64_t fence) {
     std::lock_guard lk(mu);
     Queue* q = queue_of(queue);
     q->wait_fences.push_back(fence);

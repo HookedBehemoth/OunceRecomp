@@ -596,7 +596,7 @@ void present_run(const nvn_tex& t, const int crop[4]) {   // (vk_sync.cpp's mu h
 
 }  // namespace hsd
 
-extern "C" __attribute__((visibility("default"))) void gpu_shots(const char* dir, int every) {   // (before the renderer starts)
+extern "C" MKWVK_EXPORT void gpu_shots(const char* dir, int every) {   // (before the renderer starts)
     if (!dir || !*dir || every <= 0) return;
     hsd::shot_dir = dir, hsd::shot_every = every;
 }

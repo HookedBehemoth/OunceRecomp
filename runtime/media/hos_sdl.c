@@ -100,9 +100,9 @@ static int get_all(os_lib *m, int three) {
 }
 static void load_run(void *arg) {
     (void)arg;
-    os_lib *m = setting_int(SET_SDL_VERSION) == 2 ? NULL : load_one("libSDL3.so.0");
+    os_lib *m = setting_int(SET_SDL_VERSION) == 2 ? NULL : load_one(OS_LIB("libSDL3.so.0", "SDL3.dll"));
     if (m && get_all(m, 1)) version = 3, lib = m;
-    else if ((m = load_one("libSDL2-2.0.so.0")) && get_all(m, 0)) version = 2, lib = m;
+    else if ((m = load_one(OS_LIB("libSDL2-2.0.so.0", "SDL2.dll"))) && get_all(m, 0)) version = 2, lib = m;
     hos_log(version ? "sdl: SDL%d" : "sdl: no SDL3 or SDL2 found: no window, sound or SDL controllers", version);
 }
 int hos_sdl_load(void) {
@@ -130,8 +130,10 @@ void hos_sdl_identity(const char *name, const char *app_id) {
         return;
     }
     hos_sdl_hint("SDL_APP_NAME", name);
+#ifndef _WIN32   /* (the window class of X11's and Wayland's windows: SDL2 reads it from the environment) */
     setenv("SDL_VIDEO_WAYLAND_WMCLASS", app_id, 0);
     setenv("SDL_VIDEO_X11_WMCLASS", app_id, 0);
+#endif
 }
 const char *hos_sdl_error(void) { return version ? CALL(const char *(*)(void), GetError)() : "no SDL"; }
 void hos_sdl_message_box(const char *title, const char *text) {

@@ -152,6 +152,12 @@ void os_fault_set_last(os_fault_fn fn);          /* asked when no handler resume
 
 /* ---- modules --------------------------------------------------------------------------------------------------------- */
 typedef struct os_lib os_lib;
+/* a library's file name on this system: OS_LIB("libvulkan.so.1", "vulkan-1.dll") */
+#ifdef _WIN32
+#define OS_LIB(linux_name, windows_name) windows_name
+#else
+#define OS_LIB(linux_name, windows_name) linux_name
+#endif
 os_lib *os_lib_open(const char *path);   /* a shared library (by path, or a bare name the loader searches); NULL */
 void *os_lib_sym(os_lib *l, const char *name);
 void *os_sym(const char *name);          /* a symbol of the executable or anything loaded (NULL: none) */
@@ -159,6 +165,8 @@ int os_exe_path(char *out, size_t cap);  /* the executable's full path: its leng
 /* the base address of the module holding addr (0: none), and its path into out when given */
 uintptr_t os_module_of(const void *addr, char *out, size_t cap);
 uintptr_t os_exe_base(void);
+/* the calling thread's return addresses, innermost first, at most cap: how many */
+int os_backtrace(void **pcs, int cap);
 
 /* ---- files and folders ----------------------------------------------------------------------------------------------- */
 typedef struct os_file os_file;
@@ -190,6 +198,12 @@ os_dir *os_dir_open(const char *path, int *err);
 bool os_dir_next(os_dir *d, os_dirent *e);   /* the next entry, "." and ".." left out; false at the end */
 void os_dir_close(os_dir *d);
 bool os_stderr_shown(void);   /* stderr goes somewhere a person sees (a terminal, a file or a pipe; not /dev/null) */
+/* the process's arguments as UTF-8 (main's argv, on Linux; Windows: its UTF-16 command line, and the C library's
+   narrow file calls (fopen) set to take UTF-8 too): call first in main */
+char **os_args(int *argc, char **argv);
+/* the user's own data folder for programs (Linux: $XDG_DATA_HOME, else ~/.local/share; Windows: %LOCALAPPDATA%),
+   made if missing: its length, 0 when there is none */
+int os_data_home(char *out, size_t cap);
 
 #ifdef __cplusplus
 }

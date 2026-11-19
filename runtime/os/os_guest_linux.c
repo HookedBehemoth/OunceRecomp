@@ -2,6 +2,7 @@
    as dma-bufs with udmabuf (UDMABUF_CREATE), discarded with MADV_REMOVE. MAP_NORESERVE (pages made on first touch) and
    MADV_NOHUGEPAGE: a huge-page collapse under a GPU import makes the kernel pin the pages again at the next submission
    (~250 ms a submit on RADV). */
+#if defined(__linux__)   /* (sources.txt lists both systems' files: each compiles on its own) */
 #include "os_guest.h"
 #include "os.h"
 #include <errno.h>
@@ -50,6 +51,7 @@ int os_guest_reserve(void *base, uint64_t size) {
     return OS_EFAIL;
 }
 
+int os_guest_commit(void *p, size_t n) { (void)p, (void)n; return 0; }
 void os_guest_discard(void *p, size_t n) { madvise(p, n, MADV_REMOVE); }
 
 uint64_t os_guest_resident(void) {
@@ -86,3 +88,4 @@ void os_gpu_handle_close(os_gpu_handle *h) {
     if (h->kind == OS_GPU_DMABUF_FD && h->fd >= 0) close(h->fd);
     h->kind = OS_GPU_NONE, h->fd = -1, h->ptr = NULL;
 }
+#endif

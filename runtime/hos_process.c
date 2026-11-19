@@ -7,15 +7,19 @@
 #include <stdlib.h>
 #include <string.h>
 #include "os.h"
-#include <execinfo.h>
+#include "os_guest.h"
 
 /* ---- the guest window ---------------------------------------------------------------------------------------
-   The window is mapped whole, readable and writable (hos_main.c), its pages given on first touch: what the runtime
-   hands out (image, system region, heap, address regions: hos_commit) needs nothing more than to be the guest's. */
+   The window is reserved whole (hos_main.c): what the runtime hands out (image, system region, heap, address regions:
+   hos_commit) is made usable before the game touches it (os_guest_commit: nothing on Linux, whose pages are made at
+   the first touch; committed on Windows). */
 void hos_commit(uint64_t addr, uint64_t size) {
     if (!size) return;
     if (!hos_guest_range(addr, size))   /* (runtime: guest pages only) */
         hos_log("mem: commit of %#llx bytes at %#llx: outside the guest window", (unsigned long long)size, (unsigned long long)addr);
+    else if (os_guest_commit(GP(addr), (size_t)size) < 0)
+        hos_fatal(NULL, "mem: %#llx bytes at %#llx of the guest window cannot be committed (the system's commit limit: RAM and "
+                  "page file)", (unsigned long long)size, (unsigned long long)addr);
 }
 
 /* A crash nothing handles: what, where (<exe>+offset: tools/re/samap.py names the lifted function), and the guest
@@ -35,9 +39,9 @@ static int report_crash(const os_fault *f) {
     hos_log("CRASH: %s (%s %#llx, guest %#llx) at %s+%#llx", kinds[f->kind >= 1 && f->kind <= 4 ? f->kind : 0],
             f->write ? "write" : "read", (unsigned long long)addr, (unsigned long long)(addr - (uint64_t)A64_MEM),
             base ? base + 1 : name, (unsigned long long)(f->pc - mod));
-    {   /* (runtime) the host stack as module+offset, from glibc (the frames above the signal's included) */
+    {   /* (runtime) the host stack as module+offset (the frames above the fault's included) */
         void *pcs[24];
-        const int got = backtrace(pcs, 24);
+        const int got = os_backtrace(pcs, 24);
         char hb[1024];
         int n = snprintf(hb, sizeof hb, "CRASH: host backtrace:");
         for (int i = 0; i < got && n < (int)sizeof hb - 48; i++) {

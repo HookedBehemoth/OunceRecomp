@@ -119,7 +119,7 @@ fn sdl_library() {
     let load = between(&sdl, "static os_lib *load_one", "\n}");
     assert!(find(&load, "os_exe_path") < find(&load, "os_lib_open(name)"), "the bundled SDL first");
     let run_ = between(&sdl, "static void load_run(void *arg)", "\n}");
-    assert!(find(&run_, "load_one(\"libSDL3.so.0\")") < find(&run_, "load_one(\"libSDL2-2.0.so.0\")"), "SDL3 before SDL2");
+    assert!(find(&run_, "load_one(OS_LIB(\"libSDL3.so.0\"") < find(&run_, "load_one(OS_LIB(\"libSDL2-2.0.so.0\""), "SDL3 before SDL2");
     let audio = read("runtime/nn_audio.c");
     let out = between(&audio, "static int output_try(", "\n}");
     assert!(out.contains("hos_sdl_audio_open(") && !out.contains("os_lib_open"), "the sound takes the same SDL");

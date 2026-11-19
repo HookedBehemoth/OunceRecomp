@@ -227,7 +227,7 @@ void dbg_read() {
 }  // namespace
 
 // ---- the store, opened by the host ----
-extern "C" __attribute__((visibility("default"))) int gpu_assets_open(const char* dir) {
+extern "C" MKWVK_EXPORT int gpu_assets_open(const char* dir) {
     std::lock_guard lk(open_mu);
     if (S.ok) return (int)S.ntex;
     if (!dir) return 0;
@@ -382,7 +382,7 @@ int same_load(const gpu_asset_key* k) {
 }
 }  // namespace
 
-extern "C" __attribute__((visibility("default"))) int gpu_asset_load(const gpu_asset_key* k) {
+extern "C" MKWVK_EXPORT int gpu_asset_load(const gpu_asset_key* k) {
     if (!k || !k->tex) return 0;
     if (k->path == GPU_ASSET_REBIND) return rebind_load(k);
     if (k->path == GPU_ASSET_SAME) return same_load(k);
@@ -449,7 +449,7 @@ extern "C" __attribute__((visibility("default"))) int gpu_asset_load(const gpu_a
     return l.rec ? 1 : 0;
 }
 
-extern "C" __attribute__((visibility("default"))) void gpu_asset_rebind(const void* tex) {
+extern "C" MKWVK_EXPORT void gpu_asset_rebind(const void* tex) {
     st_rebinds.fetch_add(1, std::memory_order_relaxed);
     std::lock_guard lk(links_mu);
     auto it = links.find(tex);
@@ -457,7 +457,7 @@ extern "C" __attribute__((visibility("default"))) void gpu_asset_rebind(const vo
     it->second.armed = true;
 }
 
-extern "C" __attribute__((visibility("default"))) void gpu_asset_pool(uint64_t lo, uint64_t hi) {
+extern "C" MKWVK_EXPORT void gpu_asset_pool(uint64_t lo, uint64_t hi) {
     pool_lo.store(lo, std::memory_order_relaxed);
     pool_hi.store(hi, std::memory_order_release);
     logf("direct: assets: the asset heap's pool %#llx + %llu MB: a texture there with no load seen is the placeholder",
@@ -472,14 +472,14 @@ bool assets_pool_is(uint64_t gpu, uint64_t size) {
         if (lo == gpu && hi == gpu + size) return true;
     return false;
 }
-extern "C" __attribute__((visibility("default"))) void gpu_texture_data_pool(uint64_t lo, uint64_t hi) {
+extern "C" MKWVK_EXPORT void gpu_texture_data_pool(uint64_t lo, uint64_t hi) {
     std::lock_guard lk(tdp_mu);
     for (auto& p : tdp)
         if (p.first == lo) return void(p.second = hi);
     tdp.push_back({lo, hi});
 }
 
-extern "C" __attribute__((visibility("default"))) void gpu_texels(uint32_t source, const void* tex, unsigned level, unsigned layer0,
+extern "C" MKWVK_EXPORT void gpu_texels(uint32_t source, const void* tex, unsigned level, unsigned layer0,
                                                                   const void* region, const void* src, uint64_t row, uint64_t img) {
     const nvn_tex* t = (const nvn_tex*)tex;
     const NVNcopyRegion* r = (const NVNcopyRegion*)region;

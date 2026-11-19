@@ -171,7 +171,7 @@ extern "C" {
     B(DBG_FRAMES, "debug.frames", DEV, 0, "frames.csv: a row per present")                                                    \
     B(DBG_GPUTIME, "debug.gputime", DEV, 0, "the GPU's busy and idle time per present")                                       \
     B(DBG_MARKS, "debug.marks", DEV, 0, "GPU breadcrumbs for a lost device")                                                  \
-    S(DBG_PSTATS, "debug.pstats", DEV, "", "<present>|bench: every draw's time over one frame (pstats.csv)")                  \
+    S(DBG_PSTATS, "debug.pstats", DEV, "", "<present>|@<seconds>|bench: every draw's time over one frame (pstats.csv)")       \
     B(DBG_CAPTURE, "debug.capture", DEV, 0, "a capture's passes kept apart")                                                  \
     S(DBG_CAPID, "debug.capid", DEV, "", "the capture's pass id")                                                             \
     S(DBG_CRIT, "debug.crit", DEV, "", "[<first present>[:<presents>]]: a trace of the guest threads' critical path")          \

@@ -195,7 +195,7 @@ fn strict_every_skip_is_an_event() {
     for k in ["J_NO_FORMATS", "J_MISMATCH", "J_UNENDED", "J_NOT_SECONDARY", "J_NO_PASS"] {
         assert!(jc.contains(k), "{k}");
     }
-    assert!(block(passes, "extern \"C\" __attribute__((visibility(\"default\"))) int gpu_pass_known(").contains("strict_event(kJobNames[J_MISSED]"));
+    assert!(block(passes, "extern \"C\" MKWVK_EXPORT int gpu_pass_known(").contains("strict_event(kJobNames[J_MISSED]"));
     let qc = block(&s.sources["vk_query.cpp"], "void count(int k, int64_t n = 1) {");
     for k in ["Q_NO_ROOM", "Q_NOT_MEMORY", "Q_UNRECORDED", "Q_TOO_MANY"] {
         assert!(qc.contains(k), "{k}");

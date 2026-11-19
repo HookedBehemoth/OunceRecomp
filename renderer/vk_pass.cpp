@@ -889,7 +889,7 @@ using namespace hsd;
 
 /// The job recorder's entry (games/oot/patches/passes.c): 1 the pass key's formats are known (the job records a secondary),
 /// 0 not (the recorder takes the game's own early return; the layer list draws the pass inline)
-extern "C" __attribute__((visibility("default"))) int gpu_pass_known(uint64_t key) {
+extern "C" MKWVK_EXPORT int gpu_pass_known(uint64_t key) {
     const KeySlot* ks = key_slot(key, false);
     const bool known = ks && ks->set.load(std::memory_order_acquire);
     jcount(known ? J_KNOWN : J_MISSED);
@@ -898,7 +898,7 @@ extern "C" __attribute__((visibility("default"))) int gpu_pass_known(uint64_t ke
 }
 /// The game's inline path (f_80681320) draws the pass of that key into the list now, after its SetRenderTargets: the
 /// key's formats noted from them
-extern "C" __attribute__((visibility("default"))) void gpu_pass_inline(void* list, uint64_t key) {
+extern "C" MKWVK_EXPORT void gpu_pass_inline(void* list, uint64_t key) {
     List* l = (List*)list;
     jcount(J_INLINE);
     if (KeySlot* ks = key_slot(key, true)) ks->inl.fetch_add(1, std::memory_order_relaxed), ks->inl_all.fetch_add(1, std::memory_order_relaxed);

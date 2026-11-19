@@ -25,6 +25,7 @@ double ns_tick = 1.0;
 PFN_vkCmdWriteTimestamp2 pStamp = nullptr;
 uint32_t values = 0;   // (statistics a query)
 std::atomic<uint32_t> next{0};
+int64_t at_ns = 0;   // (debug.pstats=@<seconds>: the first present that long after the device was made; 0 none)
 std::atomic<bool> written{false};
 std::vector<PstatWhat> what;
 std::vector<uint64_t> present_of;
@@ -45,6 +46,7 @@ void pstats_init(bool mesh_queries) {
     const char* v = dbg_value(SET_DBG_PSTATS);
     if (!v) return;
     at = std::strcmp(v, "bench") ? std::atoll(v) : -1;   // (bench: the present gpu_measure arms)
+    if (v[0] == '@') at = -1, at_ns = host->now_ns() + (int64_t)(std::atof(v + 1) * 1e9);   // (@<seconds>: the present then)
     mesh = mesh_queries;
     pCreate = (PFN_vkCreateQueryPool)vkGetDeviceProcAddr(dev.device, "vkCreateQueryPool");
     pReset = (PFN_vkResetQueryPool)vkGetDeviceProcAddr(dev.device, "vkResetQueryPool");
@@ -106,6 +108,7 @@ void pstat_after(VkCommandBuffer cb, uint32_t i) {
 }
 
 void pstats_present(uint64_t present) {
+    if (pstats_enabled && at < 0 && at_ns && host->now_ns() >= at_ns) at = (int64_t)present + 1, at_ns = 0, logf("direct: pstats: present %lld measured", (long long)at);
     if (!pstats_enabled || at < 0 || (int64_t)present != at + kAfter || written.exchange(true)) return;
     const uint32_t n = std::min(next.load(), kQueries);
     std::vector<uint64_t> r((size_t)n * (values + 1));

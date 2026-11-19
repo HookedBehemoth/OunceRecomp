@@ -87,7 +87,7 @@ PFN_vkGetInstanceProcAddr get_instance_proc;
 namespace {
 
 bool load_global() {
-    os_lib* m = os_lib_open("libvulkan.so.1");
+    os_lib* m = os_lib_open(OS_LIB("libvulkan.so.1", "vulkan-1.dll"));
     if (!m) return false;
     get_instance_proc = (PFN_vkGetInstanceProcAddr)os_lib_sym(m, "vkGetInstanceProcAddr");
     if (!get_instance_proc) return false;
@@ -114,9 +114,9 @@ bool create_instance() {
     vkEnumerateInstanceExtensionProperties(nullptr, &n, nullptr);
     std::vector<VkExtensionProperties> all(n);
     vkEnumerateInstanceExtensionProperties(nullptr, &n, all.data());
-    // (every window system's surface the loader has, for whichever one SDL's window is on: X11 or Wayland)
+    // (every window system's surface the loader has, for whichever one SDL's window is on: X11, Wayland or Win32)
     std::vector<const char*> exts = {VK_KHR_SURFACE_EXTENSION_NAME};
-    for (const char* want : {"VK_KHR_xlib_surface", "VK_KHR_xcb_surface", "VK_KHR_wayland_surface"})
+    for (const char* want : {"VK_KHR_xlib_surface", "VK_KHR_xcb_surface", "VK_KHR_wayland_surface", "VK_KHR_win32_surface"})
         if (has_extension(all, want)) exts.push_back(want);
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.pApplicationName = "ounce-renderer";
@@ -320,22 +320,22 @@ void texture_created(const nvn_tex* t) {
 }
 }  // namespace
 }  // namespace hsd
-extern "C" __attribute__((visibility("default"))) int64_t gpu_vram_free(void) {   // (M6f: -1 not known yet)
+extern "C" MKWVK_EXPORT int64_t gpu_vram_free(void) {   // (M6f: -1 not known yet)
     return hsd::vram_free_now.load(std::memory_order_relaxed);
 }
-extern "C" __attribute__((visibility("default"))) void gpu_texture_cached(const void* t, int cached) {   // 
+extern "C" MKWVK_EXPORT void gpu_texture_cached(const void* t, int cached) {   // 
     hsd::image_texture_cached((const nvn_tex*)t, cached != 0);
 }
 // (the transient pool, docs/direct/transient-pool.md: games/oot/patches/rt_slots.c's calls)
-extern "C" __attribute__((visibility("default"))) int gpu_transient_pool(uint64_t lo, uint64_t hi) {
+extern "C" MKWVK_EXPORT int gpu_transient_pool(uint64_t lo, uint64_t hi) {
     return hsd::image_pool_range(lo, hi) ? 1 : 0;
 }
-extern "C" __attribute__((visibility("default"))) void gpu_transient_slot(uint64_t gpu, uint64_t cap) { hsd::image_pool_slot(gpu, cap); }
-extern "C" __attribute__((visibility("default"))) uint64_t gpu_image_need(const void* desc, uint64_t* align) {
+extern "C" MKWVK_EXPORT void gpu_transient_slot(uint64_t gpu, uint64_t cap) { hsd::image_pool_slot(gpu, cap); }
+extern "C" MKWVK_EXPORT uint64_t gpu_image_need(const void* desc, uint64_t* align) {
     return hsd::image_need((const nvn_texdesc*)desc, align);
 }
-extern "C" __attribute__((visibility("default"))) void gpu_target_given(const void* t) { hsd::image_target_given((const nvn_tex*)t); }
-extern "C" __attribute__((visibility("default"))) void gpu_host_event(const char* reason, const char* what) {
+extern "C" MKWVK_EXPORT void gpu_target_given(const void* t) { hsd::image_target_given((const nvn_tex*)t); }
+extern "C" MKWVK_EXPORT void gpu_host_event(const char* reason, const char* what) {
     hsd::strict_event(reason, "%s", what ? what : "");
 }
 namespace hsd {
@@ -390,7 +390,7 @@ const char* setting_str(setting_id id) { return hsd::host->setting_str(id); }
 int setting_given(setting_id id) { return hsd::host->setting_given(id); }
 }
 
-extern "C" __attribute__((visibility("default"))) const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
+extern "C" MKWVK_EXPORT const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
     using namespace hsd;
     if (!h || h->version != MKWVK_API_VERSION) return nullptr;
     host = h;
@@ -399,7 +399,7 @@ extern "C" __attribute__((visibility("default"))) const MkwVkRenderer* mkwvk_ini
         deferred_check = dbg(SET_DBG_DEFERREDCHECK);
     }
     if (!load_global()) {
-        logf("direct: libvulkan.so.1 not found");
+        logf("direct: %s not found", OS_LIB("libvulkan.so.1", "vulkan-1.dll"));
         return nullptr;
     }
     if (!create_instance() || !pick_device() || !create_device()) return nullptr;

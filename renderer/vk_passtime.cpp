@@ -134,7 +134,7 @@ void passtime_present(uint64_t present) {
 
 /// The next `presents` presents measured by pass (the host's bench, at its measured frames' start); debug.pstats=bench
 /// measures the next present's draws
-extern "C" __attribute__((visibility("default"))) void gpu_measure(uint32_t presents) {
+extern "C" MKWVK_EXPORT void gpu_measure(uint32_t presents) {
     using namespace hsd;
     pstats_arm(present_count() + 2);
     if (!presents || start_at.load() || !pStamp || !pReset || !pResults) return;
