@@ -112,9 +112,10 @@ float hos_res_scale_at_boot(void) {
     if (!v) v = render_scales[setting_int(SET_RENDER_SCALE)];
     return v;
 }
+float hos_render_scale_chosen(void) { return render_scales[setting_int(SET_RENDER_SCALE)]; }   /* (option_rows.c) */
 /* the scale the 3D takes now (the chosen one, or the boot one while a larger choice waits for a restart) */
 static float render_scale_now(void) {
-    const float want = render_scales[setting_int(SET_RENDER_SCALE)], boot = hos_res_scale_at_boot();
+    const float want = hos_render_scale_chosen(), boot = hos_res_scale_at_boot();
     return want > 1.0f && want > boot ? boot : want;
 }
 void game_frame_timing(int64_t now) {

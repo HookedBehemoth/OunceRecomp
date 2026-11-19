@@ -23,6 +23,7 @@
 #include <stddef.h>
 #include <string.h>
 #include "os.h"
+#include "upscale.h"
 
 #define UI_SINGLETON_REF 0x84c9e2a8ull   /* (holds the address of the UI singleton's pointer: ui_option_screen_build_rows) */
 #define SET_BOUND_TEXT 0x80a87d30ull     /* ui_layout_set_bound_text(layout, name, ref, 1, 0) */
@@ -60,9 +61,11 @@ typedef struct __attribute__((may_alias)) {
 _Static_assert(offsetof(ChoiceRow, layout) == 0x20 && offsetof(ChoiceRow, type) == 0x58 && offsetof(ChoiceRow, index) == 0x5c,
                "the choice row");
 
-/* The rows: an enum setting each (renderer/api/settings.h), its choices in the setting's order. A render resolution row
-   waits for the host upscaler: below 100% the 3D is drawn into a corner of the frame and nothing scales it up */
-enum { MAX_CHOICES = 6 };
+/* The rows: an enum setting each (renderer/api/settings.h), its choices in the setting's order. A row offers the choices
+   its setting allows now (offer): the Upscaler row the game's network only while the chosen render scale is at most 100%
+   (hos_upscaler_allows), so the settings never pair it with a frame larger than the output. The row's index is a place
+   in that list; the entry's choice count (+0x10, which the row's step reads each time) follows it */
+enum { MAX_CHOICES = 9, ROW_FRAME_RATE = 0, ROW_RENDER_SCALE, ROW_UPSCALER };
 typedef struct {
     setting_id id;
     const char *title, *caption;
@@ -71,13 +74,38 @@ typedef struct {
 } Setting;
 static const Setting settings[] = {
     {SET_FRAME_RATE, "Frame Rate", "Sets the frame rate cap.\nVSync matches the display's refresh rate.", 4, {"30", "60", "120", "VSync"}},
+    {SET_RENDER_SCALE, "Render Resolution",
+     "Sets the 3D resolution relative to the output.\nAbove the starting value, applies after a restart.",
+     9, {"50%", "58%", "67%", "75%", "80%", "83%", "100%", "150%", "200%"}},
+    {SET_UPSCALER, "Upscaler", "Sets how the 3D is scaled to the output.\nThe game's own works up to 100%.", 3,
+     {"Game", "Bilinear", "Catmull-Rom"}},
 };
 enum { N = sizeof settings / sizeof *settings };
+float hos_render_scale_chosen(void);   /* (frame_rate.c: render_scale's value) */
 
 /* a text in guest memory of ours: kept for as long as the game runs, as the panes keep the pointer */
 typedef struct { uint64_t at; uint32_t bytes; } Text;
 static struct { Text title, caption, choice[MAX_CHOICES]; } texts[N];
 static uint64_t our_rows;   /* (the table's entries while they are ours) */
+static uint64_t entry_of[N], row_of[N];   /* (each row's table entry, and its row object once set up) */
+static struct { int n, value[MAX_CHOICES]; } offered[N];
+
+/* the choices row i offers now, into offered[i] and its entry's count */
+static void offer(int i) {
+    int n = 0;
+    for (int v = 0; v < settings[i].count; v++)
+        if (i != ROW_UPSCALER || hos_upscaler_allows((hos_upscaler)v, hos_render_scale_chosen())) offered[i].value[n++] = v;
+    offered[i].n = n;
+    if (entry_of[i]) ((OptionRow *)GP(entry_of[i]))->choices = (uint32_t)n;
+}
+/* the place of the setting's value in the row's list */
+static int place(int i) {
+    const int v = (int)setting_int(settings[i].id);
+    for (int k = 0; k < offered[i].n; k++)
+        if (offered[i].value[k] == v) return k;
+    hos_fatal(NULL, "settings: %s's value %d is not one the row offers", settings[i].title, v);
+    return 0;
+}
 
 static Text text(const char *s) {
     const size_t n = strlen(s);
@@ -121,8 +149,9 @@ PATCH_AT(0x834211c0, word(0xd503237f), before, none, settings_rows) {   /* pacib
             OptionRow *o = &r[t->count + 1 + i];
             *o = *choice;
             o->type = TYPE_OURS + i, o->key = 0, o->check = 0;
-            o->choices = settings[i].count;
             o->choice = hos_sys_alloc(MAX_CHOICES * 4, 8);   /* (zeros: the writer, refused at key 0, is all that reads them) */
+            entry_of[i] = rows + (uint64_t)(t->count + 1 + i) * sizeof(OptionRow);
+            offer(i);
             if (!texts[i].title.at) {
                 texts[i].title = text(settings[i].title), texts[i].caption = text(settings[i].caption);
                 for (int k = 0; k < settings[i].count; k++) texts[i].choice[k] = text(settings[i].choice[k]);
@@ -141,7 +170,7 @@ PATCH_FUNC(0x833ef590, word(0xd503237f), body(0xcd0005f327864f67), aapcs, none, 
            guest(0x80a87d30), sp, as(x0, row), as(x1, entry), as(x2, flag)) {
     ChoiceRow *r = (ChoiceRow *)GP(row);
     const int i = ours(((const OptionRow *)GP(entry))->type);
-    if (i >= 0) r->index = (int32_t)setting_int(settings[i].id);
+    if (i >= 0) offer(i), r->index = place(i), row_of[i] = row;
     guest_orig(orig, row, entry, flag);
     if (i >= 0) set_text(g, sp, r->layout, STR_T_OPTION, texts[i].title);
 }
@@ -149,7 +178,7 @@ PATCH_FUNC(0x833ef590, word(0xd503237f), body(0xcd0005f327864f67), aapcs, none, 
 /* ui_option_choice_row_set_text(row): ours shows its choice, and a new index is the setting's new value (written to the
    options file: runtime/settings.c) */
 PATCH_FUNC(0x833ef7f0, word(0xd503237f), body(0x2e2f49591b6a8d04), aapcs, none, settings_choice_text, orig,
-           guest(0x80a87d30), sp, as(x0, row)) {
+           guest(0x80a87d30, 0x833ef590), sp, as(x0, row)) {
     const ChoiceRow *r = (const ChoiceRow *)GP(row);
     const int i = ours(r->type);
     if (i < 0) {
@@ -157,9 +186,18 @@ PATCH_FUNC(0x833ef7f0, word(0xd503237f), body(0x2e2f49591b6a8d04), aapcs, none, 
         return;
     }
     const Setting *s = &settings[i];
-    if (r->index < 0 || r->index >= s->count) hos_fatal(NULL, "settings: %s's row shows choice %d", s->title, r->index);
-    if (setting_int(s->id) != r->index) setting_write_int(s->id, r->index);
-    set_text(g, sp, r->layout, STR_T_TEXT, texts[i].choice[r->index]);
+    if (r->index < 0 || r->index >= offered[i].n) hos_fatal(NULL, "settings: %s's row shows choice %d", s->title, r->index);
+    const int v = offered[i].value[r->index];
+    if (setting_int(s->id) != v) {
+        setting_write_int(s->id, v);
+        if (i == ROW_RENDER_SCALE) {   /* (the Upscaler row's choices follow the scale: the game's network up to 100%) */
+            offer(ROW_UPSCALER);
+            if (!hos_upscaler_allows(hos_upscaler_get(), hos_render_scale_chosen())) hos_upscaler_set(HOS_UPSCALER_BILINEAR);
+            if (row_of[ROW_UPSCALER])   /* (its setup again: its place, arrows and text) */
+                guest_call(g, (sp - 0x40) & ~15ull, 0x833ef590, row_of[ROW_UPSCALER], entry_of[ROW_UPSCALER], 0, 0, 0);
+        }
+    }
+    set_text(g, sp, r->layout, STR_T_TEXT, texts[i].choice[v]);
 }
 
 /* ui_option_screen_set_caption(screen, type): the help line of ours */

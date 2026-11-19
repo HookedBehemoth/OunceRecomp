@@ -11,6 +11,12 @@ static uint8_t guest[0x4000];
 static void hos_log(const char *fmt, ...) { (void)fmt; }
 static int hos_bench_on(void) { return 0; }   /* (the bench setting off: frame::bench_* check it on) */
 int hos_display_refresh_mhz(void) { return 0; }
+static float render_scale_now(void) { return 1.0f; }   /* (frame_rate.c's render scale and upscaler: the game's at 1.0) */
+enum { HOS_UPSCALER_GAME, HOS_UPSCALER_BILINEAR };
+static int hos_upscaler_get(void) { return HOS_UPSCALER_GAME; }
+static int hos_upscaler_allows(int kind, float scale) { (void)kind; return scale <= 1.0f; }
+static const char *hos_upscaler_name(int kind) { (void)kind; return "game"; }
+static int hos_upscaler_set(int kind) { (void)kind; return 1; }
 volatile uint64_t hos_gfx_module = MOD;
 volatile int hos_fixed_resolution, hos_dynres_runs;
 volatile uint32_t hos_fixed_scale_bits;
