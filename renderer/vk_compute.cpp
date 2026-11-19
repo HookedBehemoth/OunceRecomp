@@ -1,9 +1,10 @@
 // Dispatches and the buffer ops (vk_compute.h). The compute half of gpu/legacy/vk/vk_shader.cpp translate_into, Env and
 // vk_bank.cpp's compute bank (cs_layout, driver_bank_fill's stage 5), on the step-B interface of the graphics programs
 // (vk_shader.cpp): handles read by the shader from c0, storage buffers and global memory by address, uniform buffers
-// through an address table. What differs from the frozen back end: the grid is NumWorkgroups (no CPU read of an indirect
-// dispatch's counts, no copy into c0), the 0x880 pointer table is not made (global memory is translated by address), and
-// the networks run as the game has them (the matrix multiplies in software on this card): no stand-ins (plan rule 8).
+// through an address table; translated from the code alone (docs/direct/shader-contract.md, "Compute programs"). What
+// differs from the frozen back end: the grid is NumWorkgroups (no CPU read of an indirect dispatch's counts, no copy
+// into c0), the 0x880 pointer table is not made (global memory is translated by address), and the networks run as the
+// game has them (the matrix multiplies in software on this card): no stand-ins (plan rule 8).
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
@@ -17,6 +18,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <set>
 #include <unordered_set>
 #include <vector>
 
@@ -45,6 +47,7 @@
 #include "vk_shader.h"
 #include "vk_shader_parts.h"
 #include "vk_work.h"
+#include "vk_cache_file.h"
 
 namespace Shader::Optimization {   // (collect_shader_info_pass.cpp: NVN2 compute's storage buffer table, this thread's program)
 extern thread_local u32 g_nvn2_compute_ssbo_base;
@@ -200,21 +203,39 @@ std::atomic<double> last_miss_s{0};
 std::atomic<int64_t> st_waited{0}, st_prefetched{0}, st_bumped{0}, st_read_here{0};
 std::atomic<int64_t> st_from_binary{0}, st_binary_failed{0};
 
-// ---- programs: variants per code key, slots per NVN serial ----
-struct Answer {
-    uint16_t offset;    // (the handle's c0 word)
+uint32_t word_of(const uint8_t* bank, uint32_t n, uint32_t off) {
+    uint32_t v = 0;
+    if (off + 4 <= n) std::memcpy(&v, bank + off, 4);
+    return v;
+}
+
+// ---- programs: one variant per code key (translated from the code alone), slots per NVN serial ----
+/// A texture or storage image the variant reads through a c0 word, and what its translation took it for: the dispatch
+/// checks the bound one against it (check_bound)
+struct Expect {
+    uint16_t offset;   // (the handle's c0 word)
     uint8_t want, dim_fixed, desc_type;
-    bool depth_float;
+    bool depth_float, image;
 };
+/// A handle the program uses both as an integer and as a float texture or image (texture_pass.cpp IntegerByUse): its
+/// code is translated once for each answer, and a dispatch picks the variant of the bound one
+struct Choice {
+    uint16_t offset;   // (its c0 word)
+    uint8_t image, c0;   // (a storage image's; read from c0, as every dispatch's handles are)
+};
+constexpr size_t kChoicesMax = 4;   // (the variants of one code: 2^choices; past this many, the rest are taken for floats)
 struct Variant {
-    uint64_t key = 0, variant = 0;
-    // (translated: kept in the cache file)
+    uint64_t key = 0;
+    // (translated: kept in the cache file, all but the SPIR-V, which is let go once the object is made)
+    std::vector<Choice> choices;   // (the code's, the same in each of its variants)
+    uint32_t mask = 0;             // (bit i: choices[i] taken for an integer one)
     std::vector<uint32_t> spirv;
+    uint64_t object = 0;   // (its shader object's key in the driver binaries)
     std::vector<uint8_t> c1;
     Shader::Info info;
     uint32_t wg[3]{1, 1, 1}, shared = 0;
-    std::vector<Answer> answers;
     // (made)
+    std::vector<Expect> expects;
     VkShaderEXT cs = VK_NULL_HANDLE;
     VkDeviceAddress c1_addr = 0;
     uint32_t bank_bytes = 16;
@@ -224,20 +245,23 @@ struct Variant {
     };
     std::vector<Ubo> ubos;
     const char* skip = nullptr;
+    bool no_binary = false;   // (finish: kept, but the driver has not its binary: translated again)
     bool told = false;   // (its first dispatch logged)
     uint32_t lay_ssbo_at = 0, lay_ssbo = 0;   // (its layout's storage buffer table, for that log)
-    Variant* next = nullptr;
+};
+/// A code's variants, by mask (one, but for a code with choices)
+struct VariantSet {
+    std::vector<Variant*> by_mask;
 };
 struct Family {   // (one compute code: every program slot with it shares its variants)
     uint64_t key = 0;
     Layout lay;
     nvn_stage_data sd{};
-    std::atomic<Variant*> variants{nullptr};
-    std::atomic<bool> loaded{false};
-    std::mutex mu;   // (pending, failed, queued, waiting, and loaded's change)
-    std::unordered_set<uint64_t> pending, failed;
-    std::unordered_map<uint64_t, work::TicketRef> queued;   // (pending translations' jobs, to bump one a dispatch needs)
-    std::vector<std::atomic<int>*> waiting;   // (other slots of the code, made ready when its kept variants are)
+    std::atomic<VariantSet*> variants{nullptr};
+    std::atomic<bool> loaded{false}, failed{false};
+    std::mutex mu;   // (queued, waiting, and loaded's change)
+    work::TicketRef queued;   // (its translation's job, to bump when a dispatch needs it)
+    std::vector<std::atomic<int>*> waiting;   // (other slots of the code, made ready when it has been looked up in the cache)
 };
 std::mutex families_mu;
 std::unordered_map<uint64_t, Family*> families;
@@ -262,18 +286,10 @@ Slot* slot_find(uint64_t serial) {
     return nullptr;
 }
 
-// ---- the cache file (ounce_renderer_compute.bin: records by code key) ----
-constexpr uint32_t kDiskMagic = 0x43445348;   // ('HSDC')
-constexpr uint64_t kDiskVersion = 3;   // (the record's layout, disk_save: a change to it changes this)
-std::mutex disk_mu;
-FILE* disk_out = nullptr;
-FILE* disk_in = nullptr;
-bool disk_on = false;
-struct DiskRecord {
-    int64_t at;
-    size_t size;
-};
-std::unordered_map<uint64_t, std::vector<DiskRecord>> disk_by_key;
+// ---- the cache file (ounce_renderer_compute.bin, vk_cache_file.h: a record by code key) ----
+constexpr uint64_t kDiskMagic = 0x3243445348ull;   // ('HSDC2')
+constexpr uint64_t kDiskVersion = 4;   // (the record's layout, disk_save: a change to it changes this)
+CacheFile disk;
 /// The cache's stamp: the compute translation's code (OUNCE_RENDERER_COMPUTE_STAMP, renderer/meson/shader_stamp.py: the
 /// regions marked "stamp compute" here and "stamp shared" in vk_shader.cpp, the translator and the compiler and flags
 /// that build it), the record format (kDiskVersion), the device (parts::device_stamp, the loop cap among it), and the
@@ -285,50 +301,9 @@ uint64_t disk_stamp() {
 void disk_init() {
     static std::once_flag once;
     std::call_once(once, [] {
-        const std::string path = parts::program_dir() + "ounce_renderer_compute.bin";
-        os_file* lock = os_file_open((path + ".lock").c_str(), OS_READ | OS_WRITE | OS_CREATE, nullptr);   // (held for the process's life)
-        if (!lock || !os_file_trylock(lock)) {
-            os_file_close(lock);
-            return logf("direct: compute cache %s: in use by another game: none", path.c_str());
-        }
-        const uint64_t stamp = disk_stamp();
-        int64_t good = 0, whole = 0;
-        size_t records = 0;
-        if (FILE* f = fopen(path.c_str(), "rb")) {
-            fseeko(f, 0, SEEK_END);
-            whole = ftello(f);
-            fseeko(f, 0, SEEK_SET);
-            uint32_t head[2]{};
-            uint64_t kept = 0;
-            if (whole >= 16 && fread(head, 4, 2, f) == 2 && fread(&kept, 8, 1, f) == 1 && head[0] == kDiskMagic && kept == stamp) {
-                good = 16;
-                while (good + 24 <= whole) {
-                    uint64_t rec[2];
-                    fseeko(f, good, SEEK_SET);
-                    if (fread(rec, 8, 2, f) != 2 || rec[1] < 8 || rec[1] > (uint64_t)(whole - good - 16)) break;
-                    disk_by_key[rec[0]].push_back({good + 16, (size_t)rec[1]});
-                    good += 16 + (int64_t)rec[1];
-                    records++;
-                }
-            }
-            fclose(f);
-        }
-        std::error_code ec;
-        if (good && good != whole && (std::filesystem::resize_file(path, (uintmax_t)good, ec), ec)) good = 0;
-        if (good) {
-            disk_out = fopen(path.c_str(), "ab");
-        } else {
-            disk_by_key.clear(), records = 0;
-            if ((disk_out = fopen(path.c_str(), "wb"))) {
-                const uint32_t h[2] = {kDiskMagic, 0};
-                fwrite(h, 4, 2, disk_out), fwrite(&stamp, 8, 1, disk_out), fflush(disk_out);
-            }
-        }
-        disk_in = disk_out ? fopen(path.c_str(), "rb") : nullptr;
-        disk_on = disk_out && disk_in;
-        logf("direct: compute cache %s: %zu variants kept%s", path.c_str(), records, whole && !good ? "; another stamp's file was truncated" : "");
-        // (the compute objects' binaries are kept with the graphics ones, by create info: an earlier separate file is removed)
-        os_remove((parts::program_dir() + "ounce_renderer_compute_objects.bin").c_str());
+        load_functions();   // (mma_software: in the stamp)
+        const uint64_t h[2] = {kDiskMagic, disk_stamp()};
+        disk.open(parts::program_dir() + "ounce_renderer_compute.bin", "compute cache", h, sizeof h);
     });
 }
 template <class T> void put(std::vector<uint8_t>& o, const T& v) { o.insert(o.end(), (const uint8_t*)&v, (const uint8_t*)&v + sizeof v); }
@@ -339,45 +314,37 @@ template <class T> bool get(const uint8_t*& p, const uint8_t* e, T& v) {
 }
 void disk_save(const Variant& v) {
     disk_init();
-    if (!disk_on) return;
+    if (!disk.on()) return;
     std::vector<uint8_t> o;
-    put(o, (uint64_t)v.answers.size());
-    for (const Answer& a : v.answers) put(o, a);
-    put(o, v.wg), put(o, v.shared);
-    put(o, (uint64_t)v.spirv.size());
-    o.insert(o.end(), (const uint8_t*)v.spirv.data(), (const uint8_t*)(v.spirv.data() + v.spirv.size()));
+    put(o, v.mask), put(o, (uint64_t)v.choices.size());
+    for (const Choice& c : v.choices) put(o, c);
+    put(o, v.wg), put(o, v.shared), put(o, v.object);
     put(o, (uint64_t)v.c1.size());
     o.insert(o.end(), v.c1.begin(), v.c1.end());
     parts::info_put(o, v.info);
-    const uint64_t head[2] = {v.key, o.size()};
-    std::lock_guard lk(disk_mu);
-    fseeko(disk_out, 0, SEEK_END);
-    fwrite(head, 8, 2, disk_out), fwrite(o.data(), 1, o.size(), disk_out), fflush(disk_out);
+    disk.append(v.key, o.data(), o.size());
 }
-bool disk_read(const DiskRecord& d, Variant& v) {
-    std::vector<uint8_t> data(d.size);
-    {
-        std::lock_guard lk(disk_mu);
-        fseeko(disk_in, d.at, SEEK_SET);
-        if (fread(data.data(), 1, data.size(), disk_in) != data.size()) return false;
-    }
+bool disk_read(const CacheFile::Rec& d, Variant& v) {
+    std::vector<uint8_t> data;
+    if (!disk.read(d, data)) return false;
     const uint8_t* p = data.data();
     const uint8_t* e = p + data.size();
     uint64_t n = 0;
-    if (!get(p, e, n) || n > 4096) return false;
-    v.answers.resize(n);
-    for (Answer& a : v.answers)
-        if (!get(p, e, a)) return false;
-    if (!get(p, e, v.wg) || !get(p, e, v.shared) || !get(p, e, n) || n > (uint64_t)(e - p) / 4 || !n) return false;
-    v.spirv.resize(n);
-    std::memcpy(v.spirv.data(), p, n * 4), p += n * 4;
-    if (!get(p, e, n) || n > (uint64_t)(e - p)) return false;
+    if (!get(p, e, v.mask) || !get(p, e, n) || n > kChoicesMax) return false;
+    v.choices.resize(n);
+    for (Choice& c : v.choices)
+        if (!get(p, e, c)) return false;
+    if (!get(p, e, v.wg) || !get(p, e, v.shared) || !get(p, e, v.object) || !get(p, e, n) || n > (uint64_t)(e - p)) return false;
     v.c1.assign(p, p + n), p += n;
     return parts::info_get(p, e, v.info);
 }
 
 // <stamp compute>
-// ---- the translator's questions (vk_shader.cpp Env, compute: handles in c0, the grid folded into NumWorkgroups) ----
+// ---- the translator's questions (vk_shader.cpp Env, compute), answered from the program's code alone ----
+// No dispatch state reaches a translation: c0's words read 0, so a texture's type is its instruction's (Color2D where the
+// instruction has none, a size query's), and whether a texture or storage image is an integer one is decided by how the
+// program uses its texels (Environment::IntegerFromUse, texture_pass.cpp IntegerByUse). The grid's words are
+// NumWorkgroups. A dispatch checks the bound handles against that (check_bound): one that contradicts it is an error
 struct Code {
     uint64_t key = 0;
     std::vector<u128> code;   // (the native instructions)
@@ -386,18 +353,15 @@ struct Code {
     Layout lay;
 };
 /// The compute stage's native instructions up to the program's end, and what its control section says of it
-bool read_code(const nvn_stage_data& sd, Code& c) {
-    uint8_t ctl[kControlSize];
-    std::vector<uint8_t> area;
-    if (!parts::read_stage(sd, ctl, area)) return false;
+bool parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area, Code& c) {
     uint32_t len, c1o;
     uint16_t st;
     std::memcpy(&len, ctl + 0x38, 4), std::memcpy(&c1o, ctl + 0x40, 4), std::memcpy(&st, ctl + 0x56, 2);
-    if (st != 5) return false;
+    if (st != 5 || c1o > area.size()) return false;
     c.key = hash_bytes(area.data(), area.size(), hash_bytes(ctl, kControlSize));
     using Shader::Ampere::Instruction;
     Shader::Ampere::ProgramCaptureState capture;
-    for (uint32_t i = 0; (i + 1) * sizeof(Instruction) <= len; i++) {
+    for (uint32_t i = 0; (i + 1) * sizeof(Instruction) <= len && (i + 1) * sizeof(Instruction) <= area.size(); i++) {
         Instruction insn;
         std::memcpy(&insn, area.data() + i * sizeof(Instruction), sizeof insn);
         c.code.push_back({uint64_t(insn.words[0]) | uint64_t(insn.words[1]) << 32, uint64_t(insn.words[2]) | uint64_t(insn.words[3]) << 32});
@@ -416,10 +380,16 @@ bool read_code(const nvn_stage_data& sd, Code& c) {
     c.lay = layout_of(ctl);
     return true;
 }
+bool read_code(const nvn_stage_data& sd, Code& c) {
+    uint8_t ctl[kControlSize];
+    std::vector<uint8_t> area;
+    return parts::read_stage(sd, ctl, area) && parse_code(ctl, area, c);
+}
 
 class Env final : public Shader::Environment {
 public:
-    Env(const Code& c, const uint8_t* bank, uint32_t bank_n) : nvn{c}, c0{bank}, c0_n{bank_n} {
+    /// order: the code's choices (keys, sorted) and mask the answers this translation takes for them (none: all floats)
+    Env(const Code& c, const std::vector<uint64_t>& order, uint32_t mask) : nvn{c}, order{order}, mask{mask} {
         stage = Shader::Stage::Compute;
         start_address = 0;
         is_proprietary_driver = true;
@@ -432,19 +402,18 @@ public:
     u32 ReadCbufValue(u32 index, u32 offset) override {
         uint32_t v = 0;
         if (index == 1 && (size_t)offset + 4 <= nvn.c1.size()) std::memcpy(&v, nvn.c1.data() + offset, 4);
-        if (index == 0 && offset + 4 <= c0_n && !(offset & 3)) std::memcpy(&v, c0 + offset, 4);
-        if (index >= 3) game_words++;   // (step B: a game buffer's word is not read)
-        return v;
+        return v;   // (c0, the driver bank, and the game's buffers: not the program's own, read 0)
     }
-    Shader::TextureType ReadTextureType(u32 handle) override {
-        questions++;
-        return handle ? (Shader::TextureType)(parts::answer_of(handle) & 0x7f) : Shader::TextureType::Color2D;
-    }
+    Shader::TextureType ReadTextureType(u32) override { return Shader::TextureType::Color2D; }
     Shader::TexturePixelFormat ReadTexturePixelFormat(u32) override { return Shader::TexturePixelFormat{}; }
-    bool IsTexturePixelFormatInteger(u32 handle) override {
-        questions++;
-        return handle && (parts::answer_of(handle) & 0x80);
+    bool IsTexturePixelFormatInteger(u32) override { return false; }
+    bool IntegerFromUse() const override { return true; }
+    bool IntegerChoice(u64 key) override {
+        mixed.insert(key);
+        const auto it = std::find(order.begin(), order.end(), key);
+        return it != order.end() && (mask >> (it - order.begin()) & 1);
     }
+    std::set<uint64_t> mixed;   // (the code's choices, as the texture pass met them)
     u32 ReadViewportTransformState() override { return 1; }
     u32 TextureBoundBuffer() const override { return 0; }   // (NVN2 compute: c0)
     u32 LocalMemorySize() const override { return nvn.local_mem; }
@@ -469,12 +438,11 @@ public:
         }
     }
     void Dump(u64, u64) override {}
-    int questions = 0, game_words = 0;
 
 private:
     const Code& nvn;
-    const uint8_t* c0;
-    uint32_t c0_n;
+    const std::vector<uint64_t>& order;
+    uint32_t mask;
 };
 
 struct Translation {
@@ -504,9 +472,10 @@ int grid_reads_left(const Shader::IR::Program& p) {
 
 std::atomic<int64_t> st_grid_left{0}, st_coopmat{0};
 
-bool translate_variant(Variant& v, const Code& c, const uint8_t* bank, uint32_t bank_n) {
+/// One variant of the code (order, mask: Env's); mixed: the choices the translation met
+bool translate_variant(Variant& v, const Code& c, const std::vector<uint64_t>& order, uint32_t mask, std::vector<uint64_t>* mixed) {
     try {
-        Env env{c, bank, bank_n};
+        Env env{c, order, mask};
         Shader::Optimization::g_nvn2_compute_ssbo_base = c.lay.ssbo ? c.lay.ssbo_at() : 0;
         Shader::Optimization::g_nvn2_compute_ssbo_count = c.lay.ssbo ? c.lay.ssbo : 16;
         Shader::Optimization::g_nvn2_compute_layout_end = 0;   // (no 0x880 pointer table: global memory by address)
@@ -532,19 +501,10 @@ bool translate_variant(Variant& v, const Code& c, const uint8_t* bank, uint32_t 
         v.wg[0] = t->program.workgroup_size[0], v.wg[1] = t->program.workgroup_size[1], v.wg[2] = t->program.workgroup_size[2];
         v.shared = t->program.shared_memory_size;
         if (v.info.uses_cooperative_matrix) st_coopmat.fetch_add(1, std::memory_order_relaxed);
-        if (env.questions) {   // (the answers its textures were translated with: c0 words, as a dispatch checks them)
-            for (const auto& d : v.info.texture_descriptors) {
-                if (d.count != 1 || d.handle_program != ~0u || d.has_secondary || d.cbuf_index != 0 || d.cbuf_offset + 4 > bank_n) continue;
-                uint32_t h;
-                std::memcpy(&h, bank + d.cbuf_offset, 4);
-                Answer a{};
-                a.offset = (uint16_t)d.cbuf_offset, a.dim_fixed = d.type_fixed, a.desc_type = (uint8_t)d.type;
-                a.depth_float = d.is_depth && !d.is_integer;
-                const uint8_t raw = h ? parts::answer_of(h) : (uint8_t)((uint8_t)d.type | (d.is_integer ? 0x80 : 0));
-                a.want = parts::answer_canonical(raw, a.dim_fixed, a.desc_type, a.depth_float);
-                v.answers.push_back(a);
-            }
-        }
+        if (mixed) mixed->assign(env.mixed.begin(), env.mixed.end());
+        v.mask = mask;
+        for (size_t i = 0; i < order.size(); i++)
+            v.choices.push_back({(uint16_t)order[i], (uint8_t)(order[i] >> 63), (uint8_t)((order[i] >> 32 & 0x7fffffffu) == 0)});
         return true;
     } catch (const std::exception& e) {
         static std::atomic<int> told{0};
@@ -555,11 +515,62 @@ bool translate_variant(Variant& v, const Code& c, const uint8_t* bank, uint32_t 
 
 // </stamp compute>
 
+/// What a dispatch checks of the handles the variant reads by a c0 word: that the bound texture or image is what the
+/// translation from the code alone took it for (its type where the translation asked for one, rectangle, buffer, and
+/// integer or not), canonicalised as its descriptor
+void expects_of(Variant& v) {
+    v.expects.clear();
+    for (const auto& d : v.info.texture_descriptors) {
+        if (d.count != 1 || d.handle_program != ~0u || d.has_secondary || d.cbuf_index != 0) continue;
+        Expect x{};
+        x.offset = (uint16_t)d.cbuf_offset, x.dim_fixed = d.type_fixed, x.desc_type = (uint8_t)d.type;
+        x.depth_float = d.is_depth && !d.is_integer;
+        x.want = parts::answer_canonical((uint8_t)((uint8_t)Shader::TextureType::Color2D | (d.is_integer ? 0x80 : 0)), x.dim_fixed, x.desc_type, x.depth_float);
+        v.expects.push_back(x);
+    }
+    for (const auto& d : v.info.image_descriptors) {
+        if (d.count != 1 || d.handle_program != ~0u || d.cbuf_index != 0) continue;
+        Expect x{};
+        x.offset = (uint16_t)d.cbuf_offset, x.image = true, x.want = d.is_integer ? 0x80 : 0;
+        v.expects.push_back(x);
+    }
+}
+
+std::atomic<int64_t> st_contradicted{0};
+/// The bound handles against the variant's expects: one that contradicts the translation is sampled or stored wrong: an
+/// error, logged once a program, word and answer with the texture, counted, and a strict run's event
+void check_bound(const Variant& v, const uint8_t* bank, uint32_t n) {
+    for (const Expect& x : v.expects) {
+        const uint32_t h = word_of(bank, n, x.offset);
+        if (!h) continue;
+        const uint8_t live = parts::answer_of(h);
+        const uint8_t bound = x.image ? (uint8_t)(live & 0x80) : parts::answer_canonical(live, x.dim_fixed, x.desc_type, x.depth_float);
+        if (bound == x.want) continue;
+        st_contradicted.fetch_add(1, std::memory_order_relaxed);
+        static std::mutex mu;
+        static std::unordered_set<uint64_t> told;
+        {
+            std::lock_guard lk(mu);
+            if (!told.insert(v.key ^ ((uint64_t)x.offset << 32 | (uint64_t)x.image << 16 | bound)).second) continue;
+        }
+        char tex[256];
+        pool_describe(h & 0xFFFFF, tex, sizeof tex);
+        char where[200];
+        std::snprintf(where, sizeof where, "compute program %016llx %s c0+%#x handle %#x: bound type %#x%s, translated for %#x%s",
+                      (unsigned long long)v.key, x.image ? "image" : "texture", x.offset, h, live & 0x7f, live & 0x80 ? " integer" : "",
+                      x.want & 0x7f, x.want & 0x80 ? " integer" : "");
+        logf("direct: error: a bound texture contradicts the translation from the code alone: %s; %s", where, tex);
+        if (strict_on()) strict_event("a bound texture contradicts the translation from the code alone", "%s", where);
+    }
+}
+
 // ---- the shader object (vk_shader.cpp finish's, one compute stage) ----
 /// The variant's uniform buffers (by device address: the table's address pushed at kTablePush, entries in its descriptors'
-/// order), then its shader object (none for a variant no dispatch can run)
+/// order), then its shader object (none for a variant no dispatch can run). A kept variant (no SPIR-V) is made from this
+/// driver's binary; with none, no_binary: it is translated again
 bool finish(Variant& v, const Layout& lay) {
     const Shader::Info& info = v.info;
+    if (v.spirv.empty() && v.object && !parts::object_has(v.object)) return v.no_binary = true, false;
     for (const auto& c : info.constant_buffer_descriptors) {
         if (c.count != 1) v.skip = v.skip ? v.skip : "a uniform buffer array";
         const uint32_t used = c.index < info.constant_buffer_used_sizes.size() ? info.constant_buffer_used_sizes[c.index] : 0;
@@ -573,7 +584,7 @@ bool finish(Variant& v, const Layout& lay) {
         v.bank_bytes = std::clamp<uint32_t>((std::max(used, lay.end()) + 15) & ~15u, 16, kBankMax);
     }
     v.lay_ssbo_at = lay.ssbo_at(), v.lay_ssbo = lay.ssbo;
-    v.c1_addr = parts::put_c1(v.c1, info.constant_buffer_used_sizes.size() > 1 ? info.constant_buffer_used_sizes[1] : 0);
+    expects_of(v);
     if (kTablePush + 8 > caps.max_push) v.skip = v.skip ? v.skip : "push data over the device's limit";
     if (v.skip) {
         logf("direct: compute program %016llx cannot be dispatched: %s (skipped, counted)", (unsigned long long)v.key, v.skip);
@@ -591,11 +602,11 @@ bool finish(Variant& v, const Layout& lay) {
     ci.pName = "main";
     if (caps.sg32_stages & VK_SHADER_STAGE_COMPUTE_BIT) ci.pNext = &sz;
     const auto t0 = clk::now();
-    const uint64_t id = parts::object_key(ci, (caps.sg32_stages & VK_SHADER_STAGE_COMPUTE_BIT) != 0);
+    if (!v.spirv.empty()) v.object = parts::object_key(ci, (caps.sg32_stages & VK_SHADER_STAGE_COMPUTE_BIT) != 0);
     VkResult r = VK_ERROR_UNKNOWN;
     bool from_binary = false;
     {   // (its binary, when this driver made it before from the same create info: no compile)
-        const std::vector<uint8_t> bin = parts::object_binary(id);
+        const std::vector<uint8_t> bin = parts::object_binary(v.object);
         if (!bin.empty()) {
             VkShaderCreateInfoEXT bi = ci;
             bi.codeType = VK_SHADER_CODE_TYPE_BINARY_EXT, bi.codeSize = bin.size(), bi.pCode = bin.data();
@@ -604,6 +615,7 @@ bool finish(Variant& v, const Layout& lay) {
             if (!from_binary) v.cs = VK_NULL_HANDLE, st_binary_failed.fetch_add(1, std::memory_order_relaxed);
         }
     }
+    if (!from_binary && v.spirv.empty()) return v.no_binary = true, false;
     if (!from_binary) r = vkCreateShadersEXT(dev.device, 1, &ci, nullptr, &v.cs);
     const int64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - t0).count();
     st_object_ns.fetch_add(ns, std::memory_order_relaxed);
@@ -618,44 +630,114 @@ bool finish(Variant& v, const Layout& lay) {
     st_cs_objects.fetch_add(1, std::memory_order_relaxed);
     object_made(1, "a compute shader object");
     if (from_binary) st_from_binary.fetch_add(1, std::memory_order_relaxed);
-    else parts::object_keep(id, v.cs);
+    else parts::object_keep(v.object, v.cs);
     return true;
 }
 
-void publish(Family& f, Variant* v) {
-    v->variant = 0;
-    for (const Answer& a : v->answers) v->variant = (v->variant ^ ((uint64_t)a.offset << 16 | a.want)) * 1099511628211ull;
-    Variant* head = f.variants.load(std::memory_order_acquire);
-    do v->next = head;
-    while (!f.variants.compare_exchange_weak(head, v, std::memory_order_release, std::memory_order_acquire));
-    st_variants.fetch_add(1, std::memory_order_relaxed);
-    mem_account_main(MO_M_SHADERS, (int64_t)(v->spirv.capacity() * 4));
-}
-
-/// One variant of f translated on a worker for these c0 bytes (want: its key in f's pending set, put there by the caller)
-void start_variant(Family* f, std::shared_ptr<std::vector<uint8_t>> copy, uint64_t want, work::Class cls) {
-    work::TicketRef t = work::make([f, copy, want] {
-        const auto t1 = clk::now();
-        Code code;
-        auto nv = std::make_unique<Variant>();
-        nv->key = f->key;
-        bool ok = read_code(f->sd, code) && code.key == f->key && translate_variant(*nv, code, copy->data(), (uint32_t)copy->size());
-        if (ok) disk_save(*nv), ok = finish(*nv, f->lay);
-        st_translate_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - t1).count(), std::memory_order_relaxed);
-        (ok ? st_translated : st_failed).fetch_add(1, std::memory_order_relaxed);
-        if (ok) publish(*f, nv.release());
-        std::lock_guard lk(f->mu);
-        f->pending.erase(want), f->queued.erase(want);
-        if (!ok) f->failed.insert(want);
-    });
+/// (a worker, or the precompile) the code's variants: from the cache when it holds all of them and this driver has their
+/// binaries, else translated (once, then once more for each answer of its choices), their objects compiled and the
+/// records kept. Null: the code does not translate or an object is not made
+VariantSet* make_variants(const Code& code, const Layout& lay, bool* kept) {
+    disk_init();
     {
-        std::lock_guard lk(f->mu);
-        f->queued[want] = t;
+        auto set = std::make_unique<VariantSet>();
+        size_t want = 1;
+        for (const CacheFile::Rec& d : disk.find(code.key)) {
+            auto v = std::make_unique<Variant>();
+            v->key = code.key;
+            if (!disk_read(d, *v) || v->mask >= (1u << v->choices.size())) break;
+            want = (size_t)1 << v->choices.size();
+            if (set->by_mask.size() < want) set->by_mask.resize(want, nullptr);
+            const uint32_t mask = v->mask;
+            if (set->by_mask[mask] || !finish(*v, lay)) break;
+            set->by_mask[mask] = v.release();
+        }
+        bool whole = !set->by_mask.empty();
+        for (Variant* v : set->by_mask) whole = whole && v;
+        if (whole) {
+            st_from_disk.fetch_add((int64_t)set->by_mask.size(), std::memory_order_relaxed);
+            if (kept) *kept = true;
+            return set.release();
+        }
+        for (Variant* v : set->by_mask)   // (not all of them: none is used)
+            if (v) {
+                if (v->cs) vkDestroyShaderEXT(dev.device, v->cs, nullptr);
+                delete v;
+            }
     }
-    work::push(t, cls);
+    const bool save = !disk.has(code.key);   // (records kept whose binaries this driver has not: the same again)
+    const auto t1 = clk::now();
+    auto set = std::make_unique<VariantSet>();
+    std::vector<uint64_t> mixed;
+    bool ok = true;
+    for (uint32_t mask = 0, n = 1; mask < n && ok; mask++) {
+        auto v = std::make_unique<Variant>();
+        v->key = code.key;
+        static const std::vector<uint64_t> none;
+        ok = mask ? translate_variant(*v, code, mixed, mask, nullptr) : translate_variant(*v, code, none, 0, &mixed);
+        if (ok && mask == 0 && !mixed.empty()) {   // (the first translation found its choices: it is translated again with them)
+            if (mixed.size() > kChoicesMax) {
+                logf("direct: compute program %016llx uses %zu textures or images both as integer and float ones: the last %zu are "
+                     "taken for floats", (unsigned long long)code.key, mixed.size(), mixed.size() - kChoicesMax);
+                mixed.resize(kChoicesMax);
+            }
+            n = 1u << mixed.size();
+            v = std::make_unique<Variant>();
+            v->key = code.key;
+            ok = translate_variant(*v, code, mixed, 0, nullptr);
+        }
+        ok = ok && finish(*v, lay);
+        if (!ok) break;
+        if (save) disk_save(*v);
+        std::vector<uint32_t>().swap(v->spirv);
+        set->by_mask.push_back(v.release());
+    }
+    st_translate_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - t1).count(), std::memory_order_relaxed);
+    (ok ? st_translated : st_failed).fetch_add(ok ? (int64_t)set->by_mask.size() : 1, std::memory_order_relaxed);
+    if (!ok) {
+        for (Variant* v : set->by_mask) {
+            if (v->cs) vkDestroyShaderEXT(dev.device, v->cs, nullptr);
+            delete v;
+        }
+        return nullptr;
+    }
+    if (kept) *kept = false;
+    return set.release();
 }
 
-/// (a worker) a program's stages read: its compute stage's code key, its family (whose kept variants the first slot makes)
+void publish(Family& f, VariantSet* set) {
+    for (Variant* v : set->by_mask) {
+        v->c1_addr = parts::put_c1(v->c1, v->info.constant_buffer_used_sizes.size() > 1 ? v->info.constant_buffer_used_sizes[1] : 0);
+        st_variants.fetch_add(1, std::memory_order_relaxed);
+        mem_account_main(MO_M_SHADERS, (int64_t)(sizeof *v + v->c1.capacity()));
+    }
+    f.variants.store(set, std::memory_order_release);
+}
+
+/// The variant of the set for the handles the list has bound at its choices' words (a deferred bind's from the game's
+/// array now)
+Variant* pick(const VariantSet& set, const ListComp& c, const Layout& lay) {
+    if (set.by_mask.size() == 1) return set.by_mask[0];
+    const std::vector<Choice>& choices = set.by_mask[0]->choices;
+    uint32_t mask = 0;
+    for (size_t i = 0; i < choices.size(); i++) {
+        const Choice& x = choices[i];
+        const uint32_t at = x.image ? lay.img_at() : lay.tex_at(), lim = x.image ? 32 : 128;
+        if (!x.c0 || x.offset < at || (x.offset - at) % 8 || (x.offset - at) / 8 >= lim) continue;
+        const uint32_t k = (x.offset - at) / 8;
+        uint32_t h = x.image ? c.img[k] : c.tex[k];
+        if (const uint64_t src = x.image ? c.img_src[k] : c.tex_src[k]) {
+            uint64_t w = 0;
+            host->gpu_read(src, &w, 8);
+            h = (uint32_t)w;
+        }
+        if (h && (parts::answer_of(h) & 0x80)) mask |= 1u << i;
+    }
+    return mask < set.by_mask.size() ? set.by_mask[mask] : nullptr;
+}
+
+/// (a worker) a program's stages read: its compute stage's code key and its family; the first slot of a code makes its
+/// variant (from the cache, or translated now, when the game sets it, so a load's programs are made side by side)
 void scan_slot(Slot* s) {
     int cs = -1;
     uint8_t ctl[kControlSize];
@@ -683,44 +765,28 @@ void scan_slot(Slot* s) {
         }
         s->fam = it->second, fresh = made;
     }
-    if (!fresh) {   // (the code's kept variants are made by the slot that saw it first: this one is ready when they are)
-        std::lock_guard lk(s->fam->mu);
-        if (!s->fam->loaded.load(std::memory_order_acquire)) return s->fam->waiting.push_back(&s->state);
+    Family* f = s->fam;
+    if (!fresh) {   // (the code's variant is made by the slot that saw it first: this one is ready when it is queued)
+        std::lock_guard lk(f->mu);
+        if (!f->loaded.load(std::memory_order_acquire)) return f->waiting.push_back(&s->state);
         return s->state.store(1, std::memory_order_release);
     }
-    disk_init();
-    std::vector<DiskRecord> recs;
+    work::TicketRef t = work::make([f] {
+        Code code;
+        VariantSet* v = read_code(f->sd, code) && code.key == f->key ? make_variants(code, f->lay, nullptr) : nullptr;
+        if (v) publish(*f, v);
+        else f->failed.store(true, std::memory_order_release);
+    });
     {
-        std::lock_guard lk(disk_mu);
-        if (const auto it = disk_by_key.find(key); it != disk_by_key.end()) recs = it->second;
-    }
-    for (const DiskRecord& d : recs) {
-        auto v = std::make_unique<Variant>();
-        v->key = key;
-        if (!disk_read(d, *v) || !finish(*v, s->fam->lay)) continue;
-        st_from_disk.fetch_add(1, std::memory_order_relaxed);
-        publish(*s->fam, v.release());
-    }
-    {
-        std::lock_guard lk(s->fam->mu);
-        s->fam->loaded.store(true, std::memory_order_release);
-        for (std::atomic<int>* w : s->fam->waiting) w->store(1, std::memory_order_release);
-        s->fam->waiting.clear();
+        std::lock_guard lk(f->mu);
+        f->queued = t;
+        f->loaded.store(true, std::memory_order_release);
+        for (std::atomic<int>* w : f->waiting) w->store(1, std::memory_order_release);
+        f->waiting.clear();
     }
     s->state.store(1, std::memory_order_release);
-    // A program with no texture or image handles has one variant, whatever its c0 holds: with none kept it is translated
-    // now, when the game sets it at the load, so the load's programs are made side by side instead of one after another
-    // as their dispatches come
-    if (recs.empty() && !s->fam->lay.tex && !s->fam->lay.img) {
-        Family* f = s->fam;
-        {
-            std::lock_guard lk(f->mu);
-            if (!f->pending.insert(f->key).second) return;
-        }
-        st_prefetched.fetch_add(1, std::memory_order_relaxed);
-        const uint32_t n = std::clamp<uint32_t>((f->lay.end() + 15) & ~15u, 16, kBankMax);
-        start_variant(f, std::make_shared<std::vector<uint8_t>>(n, 0), f->key, work::P1);
-    }
+    st_prefetched.fetch_add(1, std::memory_order_relaxed);
+    work::push(t, work::P1);
 }
 Slot* slot_make(const nvn_prog& p) {
     std::lock_guard lk(table_mu);
@@ -744,11 +810,6 @@ Slot* slot_make(const nvn_prog& p) {
 }
 
 // ---- c0 ----
-uint32_t word_of(const uint8_t* bank, uint32_t n, uint32_t off) {
-    uint32_t v = 0;
-    if (off + 4 <= n) std::memcpy(&v, bank + off, 4);
-    return v;
-}
 /// The bank as NVN2 lays it out for this dispatch (vk_bank.cpp driver_bank_fill, stage 5); deferred words noted at their place
 void bank_fill(ListComp& c, const Layout& l, const uint32_t grid[3], uint8_t* d, uint32_t n, bool note) {
     std::memset(d, 0, n);
@@ -998,49 +1059,26 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
     if (state == 0) return count(l, D_NOT_READ);
     if (state != 1) return count(l, D_NOT_COMPUTE);
     Family& fam = *slot->fam;
-    // (c0 as this dispatch has it: the answers are read from it, then it goes to the arena)
-    uint8_t bank[kBankMax];
-    const uint32_t lay_n = std::clamp<uint32_t>((fam.lay.end() + 15) & ~15u, 16, kBankMax);
-    bank_fill(c, fam.lay, grid, bank, lay_n, false);
-    auto pick = [&]() -> Variant* {
-        for (Variant* x = fam.variants.load(std::memory_order_acquire); x; x = x->next) {
-            bool hold = true;
-            for (const Answer& a : x->answers) {
-                const uint32_t h = word_of(bank, lay_n, a.offset);
-                if (h && parts::answer_canonical(parts::answer_of(h), a.dim_fixed, a.desc_type, a.depth_float) != a.want) hold = false;
-            }
-            if (hold) return x;
-        }
-        return nullptr;
-    };
-    Variant* v = pick();
-    if (!v) {   // (translated on a worker, once for these answers)
-        uint64_t want = fam.key;
-        for (uint32_t off = fam.lay.tex_at(); off + 4 <= lay_n && off < fam.lay.img_at(); off += 8)
-            if (const uint32_t h = word_of(bank, lay_n, off)) want = (want ^ ((uint64_t)off << 8 | parts::answer_of(h))) * 1099511628211ull;
+    VariantSet* set = fam.variants.load(std::memory_order_acquire);
+    if (!set) {   // (its translation is still queued or running: needed now)
+        if (fam.failed.load(std::memory_order_acquire)) return count(l, D_FAILED);
         st_misses.fetch_add(1, std::memory_order_relaxed);
         last_miss_s.store(seconds_since_device(), std::memory_order_relaxed);
-        bool mine;
+        work::TicketRef t;
         {
             std::lock_guard lk(fam.mu);
-            if (fam.failed.count(want)) return count(l, D_FAILED);
-            mine = fam.pending.insert(want).second;
-            // (one still queued with the load's work, a set-time translation among them: needed now)
-            if (const auto it = fam.queued.find(want); it != fam.queued.end() && work::bump(it->second, now)) st_bumped.fetch_add(1, std::memory_order_relaxed);
+            t = fam.queued;
         }
-        if (!mine && !wait) return count(l, D_TRANSLATING);   // (at the start, one already being translated is waited for)
-        if (mine) start_variant(&fam, std::make_shared<std::vector<uint8_t>>(bank, bank + lay_n), want, now);
-        while (wait && !(v = pick()) && clk::now() < wait_until) {
-            {
-                std::lock_guard lk(fam.mu);
-                if (!fam.pending.count(want)) break;
-            }
+        if (t && work::bump(t, now)) st_bumped.fetch_add(1, std::memory_order_relaxed);
+        if (t && wait && work::run_here(t)) st_read_here.fetch_add(1, std::memory_order_relaxed);   // (at the start: waited for all the same)
+        while (wait && !(set = fam.variants.load(std::memory_order_acquire)) && !fam.failed.load(std::memory_order_acquire) && clk::now() < wait_until)
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-        if (!v) v = pick();
-        if (!v) return count(l, D_TRANSLATING);
+        if (!set) set = fam.variants.load(std::memory_order_acquire);
+        if (!set) return count(l, fam.failed.load(std::memory_order_acquire) ? D_FAILED : D_TRANSLATING);
         st_waited.fetch_add(1, std::memory_order_relaxed);
     }
+    Variant* v = pick(*set, c, fam.lay);
+    if (!v) return count(l, D_VARIANT);
     if (v->skip || !v->cs) return count(l, D_VARIANT);
     if (skipped_by_dbg(v->key)) return count(l, D_VARIANT);
     VkCommandBuffer cb = cmd(l);   // (and the list's slot, whose arena the bank goes to)
@@ -1050,6 +1088,7 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
     if (!draw_arena(l->slot, v->bank_bytes, map, bank_addr)) return count(l, D_ARENA);
     const size_t fix_at = c.fixups.size();
     bank_fill(c, fam.lay, grid, map, v->bank_bytes, true);
+    check_bound(*v, map, v->bank_bytes);
     VkDeviceAddress entries[32];
     const size_t nu = std::min<size_t>(v->ubos.size(), 32);
     for (size_t i = 0; i < nu; i++) {
@@ -1230,6 +1269,32 @@ void compute_program_set(const nvn_prog* p) {
 
 int64_t compute_objects_made() { return st_cs_objects.load(std::memory_order_relaxed); }
 
+PreResult compute_precompile(const uint8_t* ctl, const uint8_t* area, uint32_t area_n) {
+    load_functions();
+    const std::vector<uint8_t> bytes(area, area + area_n);
+    Code code;
+    if (!parse_code(ctl, bytes, code)) return PRE_FAILED;
+    bool kept = false;
+    VariantSet* set = make_variants(code, code.lay, &kept);
+    if (!set) return PRE_FAILED;
+    for (Variant* v : set->by_mask) {   // (made for their binaries: destroyed again)
+        if (v->cs) vkDestroyShaderEXT(dev.device, v->cs, nullptr);
+        delete v;
+    }
+    delete set;
+    return kept ? PRE_KEPT : PRE_MADE;
+}
+
+uint64_t compute_cache_stamp() {
+    load_functions();
+    return disk_stamp();
+}
+
+void compute_cache_index() {
+    disk_init();
+    disk.index_now();
+}
+
 void compute_log(double frames) {
     if (const char* pk = dbg_value(SET_DBG_PEEK)) {   // (debug.peek=<guest address>: 64 KB there, nonzero bytes and a checksum)
         const uint64_t at = strtoull(pk, nullptr, 16);
@@ -1260,11 +1325,11 @@ void compute_log(double frames) {
     logf("direct: %s", out);
     const size_t queued = work::queued();
     logf("direct: compute programs (since the start): %lld slots, %lld codes, %lld variants (%lld translated in %.1f s, %lld from the cache, "
-         "%lld failed), shader objects %lld (%.1f s, %lld failed; %lld from their binaries, %lld binaries refused), %lld with matrix multiplies, %lld reading the grid otherwise; misses %.1f "
-         "a frame, %zu jobs waiting, the last %.2f s after the device; deferred words copied %.1f a frame; separate compute samplers bound %lld; dispatches that waited for their variant at the start %lld; translated when set %lld; moved ahead of the load's work %lld; programs read at their first dispatch %lld",
+         "%lld failed), shader objects %lld (%.1f s, %lld failed; %lld from their binaries, %lld binaries refused), %lld with matrix multiplies, %lld reading the grid otherwise; bound textures that contradict the translation %lld; misses %.1f "
+         "a frame, %zu jobs waiting, the last %.2f s after the device; deferred words copied %.1f a frame; separate compute samplers bound %lld; dispatches that waited for their variant at the start %lld; made when set %lld; moved ahead of the load's work %lld; programs read at their first dispatch %lld",
          (long long)st_slots.load(), (long long)st_codes.load(), (long long)st_variants.load(), (long long)st_translated.load(),
          st_translate_ns.load() / 1e9, (long long)st_from_disk.load(), (long long)st_failed.load(), (long long)st_cs_objects.load(),
-         st_object_ns.load() / 1e9, (long long)st_object_failed.load(), (long long)st_from_binary.load(), (long long)st_binary_failed.load(), (long long)st_coopmat.load(), (long long)st_grid_left.load(),
+         st_object_ns.load() / 1e9, (long long)st_object_failed.load(), (long long)st_from_binary.load(), (long long)st_binary_failed.load(), (long long)st_coopmat.load(), (long long)st_grid_left.load(), (long long)st_contradicted.load(),
          st_misses.exchange(0) / frames, queued, last_miss_s.load(), st_fixups.exchange(0) / frames, (long long)st_samp_binds.load(), (long long)st_waited.load(), (long long)st_prefetched.load(),
          (long long)st_bumped.load(), (long long)st_read_here.load());
 }

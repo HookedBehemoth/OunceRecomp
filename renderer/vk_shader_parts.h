@@ -30,6 +30,8 @@ uint64_t device_stamp();
 uint64_t object_key(const VkShaderCreateInfoEXT& ci, bool size32);
 /// The binary kept for key, or empty
 std::vector<uint8_t> object_binary(uint64_t key);
+/// Whether this driver's binary of key is kept
+bool object_has(uint64_t key);
 /// Keeps a shader object made from SPIR-V
 void object_keep(uint64_t key, VkShaderEXT obj);
 std::string program_dir();

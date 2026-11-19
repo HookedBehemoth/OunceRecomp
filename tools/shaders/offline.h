@@ -181,6 +181,7 @@ public:
     Shader::TextureType ReadTextureType(u32) override { return Shader::TextureType::Color2D; }
     Shader::TexturePixelFormat ReadTexturePixelFormat(u32) override { return {}; }
     bool IsTexturePixelFormatInteger(u32) override { return false; }
+    bool IntegerFromUse() const override { return stage == Shader::Stage::Compute; }   // (as the back end's compute Env)
     u32 ReadViewportTransformState() override { return 1; }
     u32 TextureBoundBuffer() const override { return nvn.texture_bound != ~0u ? nvn.texture_bound : stage == Shader::Stage::Compute ? 0 : 2; }
     u32 LocalMemorySize() const override { return nvn.local_mem; }

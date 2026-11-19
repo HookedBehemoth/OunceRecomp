@@ -1,6 +1,6 @@
 // Shaders ahead of the game: the shader pack beside the executable (shaders.pack, made by the builder from the romfs,
-// ounce/shaders) read, and each of its graphics programs made as its first draw would make it (vk_shader.h
-// shader_precompile), into the program cache and the driver binaries. Two ways in:
+// ounce/shaders) read, and each of its programs made as its first draw or dispatch would make it (vk_shader.h
+// shader_precompile), into the program and compute caches and the driver binaries. Two ways in:
 // - the game's --precompile (mkwvk_precompile): every program on every core, the build's last step, so the first boot is
 //   warm;
 // - at every start (shader_warm): when the caches' stamp (the translator, the device, the driver's binary UUID and
@@ -30,7 +30,21 @@ namespace {
 /// u32 NVN stage, u32 control bytes, u32 code bytes, control, code}; each program {u32 count, u32 stage indices})
 struct Pack {
     std::vector<PreStage> stages;
+    std::vector<uint32_t> kinds;   // (each stage's NVN stage)
     std::vector<std::vector<uint32_t>> programs;
+    /// The programs in the order they are made: compute programs first. A network's (matrix multiplies in software)
+    /// takes RADV minutes to compile, so they start early and the graphics programs fill the cores beside them (OoT:
+    /// 284 s cold, 308 s in the pack's order; the longest first gave 334 s, that one compile slowed by the others)
+    std::vector<uint32_t> order() const {
+        std::vector<uint32_t> o, graphics;
+        for (uint32_t i = 0; i < programs.size(); i++) {
+            bool compute = false;
+            for (uint32_t s : programs[i]) compute = compute || kinds[s] == 5;
+            (compute ? o : graphics).push_back(i);
+        }
+        o.insert(o.end(), graphics.begin(), graphics.end());
+        return o;
+    }
 };
 
 bool pack_read(const std::string& path, Pack& p) {
@@ -49,6 +63,7 @@ bool pack_read(const std::string& path, Pack& p) {
         at += 8;   // (the key: shader_precompile computes its own)
         if (!u32(kind) || !u32(cn) || !u32(xn) || cn != 0xd8 || at + cn + xn > n) return false;
         p.stages.push_back({d + at, d + at + cn, xn});
+        p.kinds.push_back(kind);
         at += cn + xn;
     }
     for (uint32_t i = 0; i < programs; i++) {
@@ -127,13 +142,14 @@ void shader_warm() {
     auto c = std::make_shared<Counts>();
     const size_t n = p->programs.size(), chunk = 64;
     const auto t0 = std::chrono::steady_clock::now();
+    auto order = std::make_shared<std::vector<uint32_t>>(p->order());
     for (size_t at = 0; at < n; at += chunk)
-        work::run(work::P2, [p, c, at, n, chunk, want, t0] {
-            for (size_t i = at; i < std::min(n, at + chunk); i++) c->add(make(*p, p->programs[i]));
+        work::run(work::P2, [p, c, order, at, n, chunk, want, t0] {
+            for (size_t i = at; i < std::min(n, at + chunk); i++) c->add(make(*p, p->programs[(*order)[i]]));
             if ((size_t)c->done.load() == n) {
                 shader_cache_index();
                 write_text(stamp_path(), want);
-                logf("direct: shaders: the pack's programs made in %.1f s: %d translated, %d kept, %d failed, %d not drawn so (compute)",
+                logf("direct: shaders: the pack's programs made in %.1f s: %d translated, %d kept, %d failed, %d not drawn",
                      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), c->made.load(), c->kept.load(),
                      c->failed.load(), c->other.load());
             }
@@ -160,12 +176,13 @@ extern "C" __attribute__((visibility("default"))) int mkwvk_precompile(const Mkw
     if (!pack_read(pack_path(), p)) return logf("direct: precompile: the shader pack %s is not one", pack_path().c_str()), 1;
     Counts c;
     std::atomic<size_t> next{0};
+    const std::vector<uint32_t> order = p.order();
     const unsigned threads = std::max(1u, std::thread::hardware_concurrency());
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<std::thread> ts;
     for (unsigned w = 0; w < threads; w++)
         ts.emplace_back([&] {
-            for (size_t i; (i = next.fetch_add(1)) < p.programs.size();) c.add(make(p, p.programs[i]));
+            for (size_t i; (i = next.fetch_add(1)) < p.programs.size();) c.add(make(p, p.programs[order[i]]));
         });
     for (int last = -1; c.done.load() < (int)p.programs.size();) {
         std::this_thread::sleep_for(std::chrono::milliseconds(250));
@@ -175,7 +192,7 @@ extern "C" __attribute__((visibility("default"))) int mkwvk_precompile(const Mkw
     if (progress) progress((int)p.programs.size(), (int)p.programs.size(), c.made.load(), c.kept.load(), c.failed.load());
     shader_cache_index();
     write_text(stamp_path(), want);
-    logf("direct: precompile: %zu programs in %.1f s on %u threads: %d translated, %d kept, %d failed, %d not drawn so (compute)",
+    logf("direct: precompile: %zu programs in %.1f s on %u threads: %d translated, %d kept, %d failed, %d not drawn",
          p.programs.size(), std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), threads, c.made.load(),
          c.kept.load(), c.failed.load(), c.other.load());
     return 0;

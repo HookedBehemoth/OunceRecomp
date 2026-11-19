@@ -114,6 +114,13 @@ public:
     /// Native argument tables mix pointers with scalars (sizes, strides).
     [[nodiscard]] virtual bool IsCbufStorageBufferPointer(u32, u32) { return true; }
 
+    /// Whether a texture's or storage image's integer format is decided from the code alone (TexturePass, IntegerByUse:
+    /// how the program uses the texels) instead of asking IsTexturePixelFormatInteger for the bound handle
+    [[nodiscard]] virtual bool IntegerFromUse() const { return false; }
+    /// (IntegerFromUse) A handle the program uses both as an integer and as a float texture or image (key: bank << 32 |
+    /// offset, bit 63 for an image): whether this translation takes it for an integer one
+    [[nodiscard]] virtual bool IntegerChoice(u64) { return false; }
+
     [[nodiscard]] virtual std::optional<ReplaceConstant> GetReplaceConstBuffer(u32 bank,
                                                                                u32 offset) = 0;
 

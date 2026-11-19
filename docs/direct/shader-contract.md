@@ -57,6 +57,23 @@ translator's push-data layout in `third_party/eden/shader_recompiler/backend/spi
 For compute, c0 is NVN's packed compute bank: grid, push constants, uniform and storage tables and handles. Compute
 textures read their handles from c0, not c2. An indirect dispatch reads its grid on the GPU.
 
+## Compute programs
+
+- A compute program is translated from its code alone, like a graphics stage, so its variants are made when the game
+  sets it or ahead of the game. The local size, shared memory and local memory come from its control section;
+  c0's words read 0 at translation, and its grid words become `NumWorkgroups`.
+- A texture's type is its instruction's. Whether a texture or storage image is an integer one is decided from how the
+  program uses its texels: the values a fetch, gather or image read gives are followed through the program, and an
+  image write's values back to what made them. Integer arithmetic, compares and integer conversions are integer uses;
+  float operations, and bits taken back as a float, are float uses; bitwise operations, selects, phis and plain
+  copies say neither. A filtered sample is a float use, an atomic an integer one.
+- A handle with only integer uses is an integer one, and any other a float one. A handle with both is a choice: the
+  program is translated once for each answer of its choices (up to four), and a dispatch picks the variant of the
+  textures it has bound there. OoT has 42 such handles in 38 of its 4,128 compute programs.
+- A dispatch checks the textures and images it reads through c0 against the variant: a bound integer texture where the
+  translation took a float one, or the reverse, a rectangle, a buffer, or another type at a size query, is an error.
+  It is logged once per program and handle word, counted, and fails the smoke test.
+
 ## Fixed-function state
 
 The back end sets all dynamic state in every command buffer, because RADV inherits none into secondaries. Conversions
@@ -77,9 +94,13 @@ read; you don't need to delete one.
 
 | File | Holds | Made again when |
 |---|---|---|
-| `ounce_renderer_programs.bin` | translated graphics variants (SPIR-V, interface info) | the shader stamp changes (the translator, the compiler and flags that build it, the stamped regions of `vk_shader.cpp`, `vk_state.h`, the register-pressure pass), the record format, the device's subgroup answers, the depth mode, or the translation switches `nolate`, `latevertex` and `loopcap` |
-| `ounce_renderer_compute.bin` | translated compute variants | the compute stamp (the translator, the compiler and flags, the stamped regions), the record version, the device's answers or `loopcap` change |
-| `ounce_renderer_shader_objects.bin` | driver binaries of the shader objects | the driver's binary UUID or version changes; a binary the driver refuses is compiled again |
+| `ounce_renderer_programs.bin` | translated graphics variants: their interface info, constants and driver binaries' keys, no SPIR-V | the shader stamp changes (the translator, the compiler and flags that build it, the stamped regions of `vk_shader.cpp`, `vk_state.h`, the register-pressure pass), the record format, the device's subgroup answers, the depth mode, or the translation switches `nolate`, `latevertex` and `loopcap` |
+| `ounce_renderer_compute.bin` | translated compute variants, the same way | the compute stamp (the translator, the compiler and flags, the stamped regions), the record version, the device's answers or `loopcap` change |
+| `ounce_renderer_shader_objects.bin` | driver binaries of the shader objects | the driver's binary UUID or version changes |
+
+The caches hold no SPIR-V. A kept variant whose driver binary is missing or refused, as after a driver update, is
+translated again from its code, which is at hand when the game sets the program. Each file keeps an index beside it
+(`<file>.idx`), so a start reads the index instead of every record's head.
 
 The build computes the stamps (`renderer/meson/shader_stamp.py`) by hashing the compiler's name, version and flags,
 the translator's files (its `meson.build` files excepted) and the regions marked `// <stamp graphics>`,

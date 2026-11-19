@@ -107,10 +107,15 @@ struct PreStage {
     uint32_t area_n;
 };
 enum PreResult { PRE_MADE, PRE_KEPT, PRE_FAILED, PRE_OTHER };
-/// (any thread) A graphics program made from its stages' bytes as a draw into float targets makes it: translated into
-/// the program cache unless it holds it (KEPT), its shader objects made (their driver binaries kept) and destroyed
-/// again. OTHER: a compute program, or one the draws do not draw
+/// (any thread) A program made from its stages' bytes as its first draw into float targets, or its first dispatch, makes
+/// it: translated and its shader objects compiled (their driver binaries kept, the objects destroyed again) unless the
+/// caches hold it and this driver's binaries (KEPT). OTHER: one the draws do not draw
 PreResult shader_precompile(const PreStage* st, int n);
+/// (vk_compute.cpp) The same for a compute program's stage
+PreResult compute_precompile(const uint8_t* ctl, const uint8_t* area, uint32_t area_n);
+/// (vk_compute.cpp) The compute cache's stamp, and its index written for what it holds now
+uint64_t compute_cache_stamp();
+void compute_cache_index();
 /// The stamp of the caches a precompile filled: the program cache's and the driver binaries' (another driver, another
 /// translator or another device: another stamp)
 uint64_t shader_cache_stamp();

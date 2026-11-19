@@ -7,7 +7,8 @@
 // by the handle the shader reads; a stage is translated from its code alone (no draw state reaches Env), so it can be
 // translated before its first draw.
 // The caches beside the executable (docs/direct/shader-contract.md, "The caches"):
-// - ounce_renderer_programs.bin: translated variants by code pair. Stamped by the translation's code only
+// - ounce_renderer_programs.bin: translated variants by code pair (vk_cache_file.h; their interface, constants and driver
+//   binaries' keys, no SPIR-V: a variant whose binaries the driver lacks is translated again). Stamped by the translation's code only
 //   (OUNCE_RENDERER_SHADER_STAMP, renderer/meson/shader_stamp.py: the translator, the compiler and flags that build it,
 //   and the regions marked "stamp graphics" and "stamp shared" here, vk_spv_late.*, vk_state.h), the record format
 //   (kDiskFormat), the device's answers and the switches that change the translation; a file of another stamp is made
@@ -58,6 +59,7 @@
 #include "vk_state.h"
 #include "vk_shader_parts.h"
 #include "vk_work.h"
+#include "vk_cache_file.h"
 
 #ifndef OUNCE_RENDERER_SHADER_STAMP
 #define OUNCE_RENDERER_SHADER_STAMP 0ull
@@ -402,13 +404,19 @@ struct VStage {
     std::vector<uint8_t> c1;
     std::vector<uint32_t> spirv;
     uint32_t threads = 0, payload_words = 0;   // (M4c: a task stage's threads and payload words, which the draw's task header needs)
+    uint64_t object = 0;   // (its shader object's key in the driver binaries; the SPIR-V is dropped once the object is made)
 };
 struct Variant {
     DrawProg d;
     std::vector<VStage> stages;
+    bool no_binary = false;   // (finish: a kept variant whose binaries the driver does not have)
     Variant* next = nullptr;
 };
 // </stamp graphics>
+/// The variant's SPIR-V let go once its shader objects are made (their binaries are kept)
+void drop_spirv(Variant& v) {
+    for (VStage& st : v.stages) std::vector<uint32_t>().swap(st.spirv);
+}
 void count_code(const Variant& v) {
     int64_t b = sizeof(Variant);
     for (const VStage& st : v.stages) b += (int64_t)(sizeof(VStage) + st.spirv.capacity() * 4 + st.c1.capacity());
@@ -500,18 +508,12 @@ Slot* slot_find(uint64_t serial) {
     return nullptr;
 }
 
-// ---- the program cache file (its record: vk_shader.cpp's put_info / get_info, the rest this back end's) ----
-constexpr uint32_t kDiskMagic = 0x50445348;   // ('HSDP')
-constexpr uint64_t kDiskFormat = 4;            // (the record's layout below: a change to it changes this)
-std::mutex disk_mu;
-FILE* disk_out = nullptr;
-FILE* disk_in = nullptr;
-bool disk_on = false;
-struct DiskRecord {
-    int64_t at;
-    size_t size;
-};
-std::unordered_map<uint64_t, std::vector<DiskRecord>> disk_by_pair;   // (vertex code key ^ fragment code key * 31)
+// ---- the program cache file (ounce_renderer_programs.bin, vk_cache_file.h): a record by pair (pair_key_of), each a
+// variant's key and stages: their interface (Info), c1 and the key of each shader object's driver binary. No SPIR-V: a
+// variant whose binaries the driver no longer has (another driver) is translated again from its code ----
+constexpr uint64_t kDiskMagic = 0x3250445348ull;   // ('HSDP2')
+constexpr uint64_t kDiskFormat = 5;                 // (the record's layout below: a change to it changes this)
+CacheFile disk;
 
 uint64_t pair_key(uint64_t vs, uint64_t fs) { return vs ^ fs * 31; }
 /// a slot's family and cache key: a mesh program's code key salted so it never meets a vertex program's
@@ -668,146 +670,40 @@ std::string exe_dir() {
     return p.substr(0, p.find_last_of('/') + 1);
 }
 
-// ---- a cache file's index (<file>.idx): its records' {key, offset, size} up to an offset, so a start reads the index
-// and the heads of the records after it, not the head of every record of a file of gigabytes (a precompiled game's
-// program cache: 33,478 records, 4.2 GB; 9.6 s from a cold disk without it). For the header it was made under (stamp);
-// its last record's head is checked against the file's (the key: the program cache's is the pair, the record's first
-// field after its head) ----
-struct IndexEntry {
-    uint64_t key;
-    int64_t at;   // (the record's bytes, after its 16-byte head)
-    uint64_t size;
-};
-constexpr uint64_t kIndexMagic = 0x3158444950445348ull;   // ("HSDPIDX1")
-/// The index's entries when it is the file's (f, its size whole, made under stamp); the offset it covers, else 0
-int64_t index_load(const std::string& path, uint64_t stamp, os_file* f, int64_t whole, std::vector<IndexEntry>& out, bool key_after_head) {
-    os_file* x = os_file_open(path.c_str(), OS_READ, nullptr);
-    if (!x) return 0;
-    uint64_t head[4]{};
-    std::vector<IndexEntry> e;
-    const int64_t n = os_file_size(x);
-    bool ok = n >= 32 && os_file_read_at(x, head, 32, 0) == 32 && head[0] == kIndexMagic && head[1] == stamp && (int64_t)head[2] <= whole &&
-              (uint64_t)(n - 32) == head[3] * sizeof(IndexEntry);
-    if (ok) {
-        e.resize(head[3]);
-        ok = os_file_read_at(x, e.data(), e.size() * sizeof(IndexEntry), 32) == (int64_t)(e.size() * sizeof(IndexEntry));
-    }
-    os_file_close(x);
-    if (ok && !e.empty()) {   // (the last record where the index says, of the size and key it says)
-        uint64_t rec[3];
-        ok = os_file_read_at(f, rec, 24, (uint64_t)(e.back().at - 16)) == 24 && rec[key_after_head ? 2 : 0] == e.back().key && rec[1] == e.back().size &&
-             e.back().at + (int64_t)e.back().size == (int64_t)head[2];
-    }
-    if (!ok) return 0;
-    out = std::move(e);
-    return (int64_t)head[2];
-}
-void index_save(const std::string& path, uint64_t stamp, int64_t end, const std::vector<IndexEntry>& e) {
-    const std::string tmp = path + ".tmp";
-    FILE* f = fopen(tmp.c_str(), "wb");
-    if (!f) return;
-    const uint64_t head[4] = {kIndexMagic, stamp, (uint64_t)end, e.size()};
-    const bool ok = fwrite(head, 8, 4, f) == 4 && fwrite(e.data(), sizeof(IndexEntry), e.size(), f) == e.size();
-    if (fclose(f) == 0 && ok) os_rename(tmp.c_str(), path.c_str(), true);
-}
-std::vector<IndexEntry> disk_index;   // (the program cache's records in file order: key is the record's pair; under disk_mu)
-int64_t disk_end = 0;                 // (the file's end its records reach; under disk_mu)
-uint64_t disk_stamp_now = 0;
-
 void disk_init() {
     static std::once_flag once;
     std::call_once(once, [] {
-        const std::string path = exe_dir() + "ounce_renderer_programs.bin";
-        os_file* lock = os_file_open((path + ".lock").c_str(), OS_READ | OS_WRITE | OS_CREATE, nullptr);   // (held for the process's life)
-        if (!lock || !os_file_trylock(lock)) {
-            os_file_close(lock);
-            logf("direct: program cache %s: another game is using it: this one runs without it", path.c_str());
-            return;
-        }
-        const uint64_t stamp = disk_stamp();
-        int64_t good = 0, whole = 0;
-        size_t records = 0;
-        bool scanned = false;
-        if (os_file* f = os_file_open(path.c_str(), OS_READ, nullptr)) {   // (the index, then the heads after it: no read-ahead)
-            os_file_random(f);
-            whole = os_file_size(f);
-            uint64_t head[2]{};
-            if (whole >= 16 && os_file_read_at(f, head, 16, 0) == 16 && (uint32_t)head[0] == kDiskMagic && head[1] == stamp) {
-                good = std::max<int64_t>(16, index_load(path + ".idx", stamp, f, whole, disk_index, true));
-                while (good + 32 <= whole) {
-                    uint64_t rec[3];   // (key, size, then the record's first field: the pair)
-                    if (os_file_read_at(f, rec, 24, (uint64_t)good) != 24) break;
-                    if (rec[1] < 8 || rec[1] > (uint64_t)(whole - good - 16)) break;
-                    disk_index.push_back({rec[2], good + 16, rec[1]});
-                    good += 16 + (int64_t)rec[1];
-                    scanned = true;
-                }
-                for (const IndexEntry& e : disk_index) disk_by_pair[e.key].push_back({e.at, (size_t)e.size});
-                records = disk_index.size();
-            }
-            os_file_close(f);
-        }
-        disk_stamp_now = stamp, disk_end = good;
-        if (scanned) index_save(path + ".idx", stamp, good, disk_index);
-        if (good) {
-            std::error_code ec;
-            if (good != whole && (std::filesystem::resize_file(path, (uintmax_t)good, ec), ec)) good = 0;
-        }
-        if (good) {
-            disk_out = fopen(path.c_str(), "ab");
-        } else {   // (none, or another stamp: made again)
-            disk_by_pair.clear(), disk_index.clear();
-            records = 0, disk_end = 16;
-            disk_out = fopen(path.c_str(), "wb");
-            if (disk_out) {
-                const uint32_t h[2] = {kDiskMagic, 0};
-                fwrite(h, 4, 2, disk_out), fwrite(&stamp, 8, 1, disk_out), fflush(disk_out);
-            }
-        }
-        disk_in = disk_out ? fopen(path.c_str(), "rb") : nullptr;
-        disk_on = disk_out && disk_in;
-        logf("direct: program cache %s: %zu variants kept (%lld KB)%s", path.c_str(), records, (long long)(good >> 10),
-             whole && !good ? "; another stamp's file was truncated" : "");
+        const uint64_t h[2] = {kDiskMagic, disk_stamp()};
+        disk.open(exe_dir() + "ounce_renderer_programs.bin", "program cache", h, sizeof h);
     });
 }
 
+/// The variant's record under its pair, unless one of its key is there (a variant translated again for a driver's binaries)
 void disk_save(const Variant& v, uint64_t pair) {
     disk_init();
-    if (!disk_on) return;
+    if (!disk.on()) return;
     std::vector<uint8_t> o;
-    o.reserve(128 << 10);
-    put(o, pair);
+    for (const CacheFile::Rec& r : disk.find(pair))
+        if (disk.read({r.at, std::min<uint64_t>(r.size, 8)}, o) && o.size() == 8 && !std::memcmp(o.data(), &v.d.key, 8)) return;
+    o.clear();
+    o.reserve(8 << 10);
     put(o, v.d.key);
     put(o, (uint64_t)v.stages.size());
     for (const VStage& st : v.stages) {
         put(o, st.nvn_stage);
         put(o, st.vk_stage);
         put(o, st.threads), put(o, st.payload_words);
-        put_list(o, st.spirv);
+        put(o, st.object);
         put_list(o, st.c1);
         put_info(o, st.info);
     }
-    const uint64_t head[2] = {v.d.key, o.size()};
-    std::lock_guard lk(disk_mu);
-    fseeko(disk_out, 0, SEEK_END);
-    const int64_t at = ftello(disk_out);
-    fwrite(head, 8, 2, disk_out);
-    fwrite(o.data(), 1, o.size(), disk_out);
-    fflush(disk_out);
-    disk_by_pair[pair].push_back({at + 16, o.size()});   // (a program set after this finds it: shader_warm's)
-    disk_index.push_back({pair, at + 16, o.size()});
-    disk_end = at + 16 + (int64_t)o.size();
+    disk.append(pair, o.data(), o.size());
 }
 
-bool disk_read(const DiskRecord& d, Variant& v) {
-    std::vector<uint8_t> data(d.size);
-    {
-        std::lock_guard lk(disk_mu);
-        fseeko(disk_in, d.at, SEEK_SET);
-        if (fread(data.data(), 1, data.size(), disk_in) != data.size()) return false;
-    }
+bool disk_read(const CacheFile::Rec& d, Variant& v) {
+    std::vector<uint8_t> data;
+    if (!disk.read(d, data)) return false;
     Reader r{data.data(), data.data() + data.size()};
-    r.get<uint64_t>();   // (the pair)
     v.d.key = r.get<uint64_t>();
     const uint64_t n = r.count(1);
     if (r.bad || n == 0 || n > 3) return false;
@@ -816,10 +712,9 @@ bool disk_read(const DiskRecord& d, Variant& v) {
         st.nvn_stage = r.get<int>();
         st.vk_stage = r.get<VkShaderStageFlagBits>();
         st.threads = r.get<uint32_t>(), st.payload_words = r.get<uint32_t>();
-        r.list(st.spirv);
+        st.object = r.get<uint64_t>();
         r.list(st.c1);
         get_info(r, st.info);
-        if (st.spirv.empty()) r.bad = true;
     }
     return !r.bad;
 }
@@ -851,33 +746,27 @@ VkDeviceAddress c1_put(const std::vector<uint8_t>& bytes, uint32_t used) {
     return a;
 }
 
-// ---- the shader objects' binaries, graphics and compute: ounce_renderer_shader_objects.bin ----
+// ---- the shader objects' binaries, graphics and compute: ounce_renderer_shader_objects.bin (vk_cache_file.h) ----
 // A vkCreateShadersEXT from SPIR-V is paid once per driver: each object made from SPIR-V has its binary
 // (vkGetShaderBinaryDataEXT) appended, keyed by a hash of everything its create info carries (stage, next stage, flags, the
 // subgroup size, the SPIR-V, the push range); a later make with the same key creates it from the binary. No build stamp
-// is in it: a translation that changed comes out as other SPIR-V, another key. VK_EXT_shader_object ties a binary to shaderBinaryUUID and
-// shaderBinaryVersion: the file's header holds them, and a file of another driver is made again. A binary the driver still
-// refuses (VK_INCOMPATIBLE_SHADER_BINARY_EXT) is a cache miss: the SPIR-V is compiled, counted. The file is locked as the
-// program cache is (another game: none). Records: {key, size} then the bytes.
+// is in it: a translation that changed comes out as other SPIR-V, another key. VK_EXT_shader_object ties a binary to
+// shaderBinaryUUID and shaderBinaryVersion: the file's header holds them, and a file of another driver is made again. A
+// binary the driver still refuses (VK_INCOMPATIBLE_SHADER_BINARY_EXT) is a cache miss: the program is translated again
+// and compiled, counted.
 namespace sobin {
 constexpr uint32_t kMagic = 0x4f445348;   // "HSDO"
-constexpr uint32_t kVersion = 1;
+constexpr uint32_t kVersion = 2;
 std::once_flag once;
-std::mutex mu;
-os_file* file = nullptr;   // (the binaries, read back)
-FILE* out = nullptr;
-std::unordered_map<uint64_t, std::pair<int64_t, uint32_t>> at;   // (key -> offset of the bytes, size)
+CacheFile file;
 PFN_vkGetShaderBinaryDataEXT get_binary = nullptr;
 std::atomic<int64_t> st_hits{0}, st_saved{0}, st_refused{0};
-std::vector<IndexEntry> index;   // (the records in file order; under mu after init)
-int64_t end = 0;                 // (the file's end its records reach)
 
 struct Header {
     uint32_t magic, version;
     uint8_t uuid[VK_UUID_SIZE];
     uint32_t binary_version, pad;
 };
-Header header{};   // (the file's, from init)
 Header want() {
     VkPhysicalDeviceShaderObjectPropertiesEXT so{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_PROPERTIES_EXT};
     VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
@@ -891,50 +780,9 @@ Header want() {
 void init() {
     std::call_once(once, [] {
         get_binary = (PFN_vkGetShaderBinaryDataEXT)vkGetDeviceProcAddr(dev.device, "vkGetShaderBinaryDataEXT");
-        const std::string path = exe_dir() + "ounce_renderer_shader_objects.bin";
-        os_file* lock = get_binary ? os_file_open((path + ".lock").c_str(), OS_READ | OS_WRITE | OS_CREATE, nullptr) : nullptr;
-        if (!lock || !os_file_trylock(lock)) {   // (the lock is held for the process's life)
-            os_file_close(lock);
-            logf("direct: shader object binaries %s: %s: none kept or saved", path.c_str(),
-                 get_binary ? "another game is using it" : "no vkGetShaderBinaryDataEXT");
-            return;
-        }
+        if (!get_binary) return logf("direct: shader object binaries: no vkGetShaderBinaryDataEXT: none kept or saved");
         const Header h = want();
-        header = h;
-        int64_t good = 0, whole = 0;
-        bool scanned = false;
-        const uint64_t stamp = hash_bytes(&h, sizeof h);
-        if (os_file* f = os_file_open(path.c_str(), OS_READ, nullptr)) {   // (the index, then the heads after it: no read-ahead)
-            os_file_random(f);
-            whole = os_file_size(f);
-            Header got{};
-            if (whole >= (int64_t)sizeof got && os_file_read_at(f, &got, sizeof got, 0) == (int64_t)sizeof got && !std::memcmp(&got, &h, sizeof h)) {
-                good = std::max<int64_t>(sizeof h, index_load(path + ".idx", stamp, f, whole, index, false));
-                while (good + 16 <= whole) {
-                    uint64_t rec[2];
-                    if (os_file_read_at(f, rec, 16, (uint64_t)good) != 16 || !rec[1] || rec[1] > (uint64_t)(whole - good - 16) || rec[1] > 0xFFFFFFFFull) break;
-                    index.push_back({rec[0], good + 16, rec[1]});
-                    good += 16 + (int64_t)rec[1];
-                    scanned = true;
-                }
-                for (const IndexEntry& e : index) at[e.key] = {e.at, (uint32_t)e.size};
-            }
-            os_file_close(f);
-        }
-        if (scanned) index_save(path + ".idx", stamp, good, index);
-        end = good;
-        std::error_code ec;
-        if (good && good != whole && (std::filesystem::resize_file(path, (uintmax_t)good, ec), ec)) good = 0;
-        if (good) {
-            out = fopen(path.c_str(), "ab");
-        } else {   // (none, or another driver's: made again)
-            at.clear(), index.clear();
-            end = sizeof h;
-            if ((out = fopen(path.c_str(), "wb"))) fwrite(&h, sizeof h, 1, out), fflush(out);
-        }
-        file = out ? os_file_open(path.c_str(), OS_READ, nullptr) : nullptr;
-        if (!file) at.clear();
-        logf("direct: shader object binaries %s: %zu kept (driver binary version %u)", path.c_str(), at.size(), h.binary_version);
+        file.open(exe_dir() + "ounce_renderer_shader_objects.bin", "shader object binaries", &h, sizeof h);
     });
 }
 uint64_t key_of(const VkShaderCreateInfoEXT& ci, bool size32) {
@@ -946,44 +794,35 @@ uint64_t key_of(const VkShaderCreateInfoEXT& ci, bool size32) {
 }
 /// The binary kept for key, or empty
 std::vector<uint8_t> find(uint64_t key) {
-    std::pair<int64_t, uint32_t> where{0, 0};
-    {
-        std::lock_guard lk(mu);
-        const auto it = at.find(key);
-        if (it == at.end()) return {};
-        where = it->second;
-    }
-    std::vector<uint8_t> b(where.second);
-    if (os_file_read_at(file, b.data(), b.size(), (uint64_t)where.first) != (int64_t)b.size()) return {};
+    init();
+    std::vector<uint8_t> b;
+    const std::vector<CacheFile::Rec> r = file.find(key);
+    if (r.empty() || !file.read(r[0], b)) return {};
     return b;
 }
+bool has(uint64_t key) {
+    init();
+    return file.has(key);
+}
 void save(uint64_t key, VkShaderEXT obj) {
-    if (!out || !get_binary) return;
+    init();
+    if (!file.on() || file.has(key)) return;
     size_t n = 0;
     if (get_binary(dev.device, obj, &n, nullptr) != VK_SUCCESS || !n) return;
     std::vector<uint8_t> data(n);
     if (get_binary(dev.device, obj, &n, data.data()) != VK_SUCCESS) return;
-    const uint64_t h[2] = {key, n};
-    std::lock_guard lk(mu);
-    if (at.count(key)) return;
-    fseeko(out, 0, SEEK_END);
-    const int64_t pos = ftello(out);
-    if (fwrite(h, 8, 2, out) != 2 || fwrite(data.data(), 1, n, out) != n || fflush(out) != 0) return;
-    at[key] = {pos + 16, (uint32_t)n};
-    index.push_back({key, pos + 16, n});
-    end = pos + 16 + (int64_t)n;
+    file.append(key, data.data(), n);
     st_saved.fetch_add(1, std::memory_order_relaxed);
 }
 /// The index written for what the file holds now (the precompile's end)
-void index_now() {
-    std::lock_guard lk(mu);
-    if (out) index_save(exe_dir() + "ounce_renderer_shader_objects.bin.idx", hash_bytes(&header, sizeof header), end, index);
-}
+void index_now() { file.index_now(); }
 }  // namespace sobin
 
 /// The variant's push layout and draw-side tables (v.d), then its shader objects (none for a variant no draw can draw)
 bool finish(Variant& v) {
     DrawProg& d = v.d;
+    for (const VStage& st : v.stages)   // (a kept variant: its objects from this driver's binaries, or it is translated again)
+        if (st.spirv.empty() && st.object && !sobin::has(st.object)) return v.no_binary = true, false;
     uint32_t slots = 0;
     for (size_t si = 0; si < v.stages.size(); si++) {
         const VStage& st = v.stages[si];
@@ -1087,7 +926,7 @@ bool finish(Variant& v) {
         return r;
     }();
     for (size_t si = 0; si < v.stages.size() && !d.skip; si++) {
-        const VStage& st = v.stages[si];
+        VStage& st = v.stages[si];
         VkPipelineShaderStageRequiredSubgroupSizeCreateInfo sz = size32;
         VkShaderCreateInfoEXT ci{VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT};
         pool_shader_layout(ci);
@@ -1106,11 +945,10 @@ bool finish(Variant& v) {
         if (caps.sg32_stages & st.vk_stage) ci.pNext = &sz;
         VkShaderEXT obj = VK_NULL_HANDLE;
         const auto t0 = clk::now();
-        sobin::init();
-        const uint64_t bkey = sobin::key_of(ci, (caps.sg32_stages & st.vk_stage) != 0);
+        if (!st.spirv.empty()) st.object = sobin::key_of(ci, (caps.sg32_stages & st.vk_stage) != 0);
         VkResult r = VK_ERROR_UNKNOWN;
         bool from_binary = false;
-        if (std::vector<uint8_t> bin = sobin::find(bkey); !bin.empty()) {   // (M4e: made before by this driver: no compile)
+        if (std::vector<uint8_t> bin = sobin::find(st.object); !bin.empty()) {   // (M4e: made before by this driver: no compile)
             VkShaderCreateInfoEXT bi = ci;
             bi.codeType = VK_SHADER_CODE_TYPE_BINARY_EXT, bi.codeSize = bin.size(), bi.pCode = bin.data();
             r = vkCreateShadersEXT(dev.device, 1, &bi, nullptr, &obj);
@@ -1118,8 +956,13 @@ bool finish(Variant& v) {
             if (from_binary) sobin::st_hits.fetch_add(1, std::memory_order_relaxed);
             else obj = VK_NULL_HANDLE, sobin::st_refused.fetch_add(1, std::memory_order_relaxed);
         }
+        if (!from_binary && st.spirv.empty()) {   // (refused, and no SPIR-V to compile: translated again)
+            for (VkShaderEXT* o : {&d.vs, &d.fs, &d.gs, &d.ms, &d.ts})
+                if (*o) vkDestroyShaderEXT(dev.device, *o, nullptr), *o = VK_NULL_HANDLE;
+            return v.no_binary = true, false;
+        }
         if (!from_binary) r = vkCreateShadersEXT(dev.device, 1, &ci, nullptr, &obj);
-        if (r == VK_SUCCESS && !from_binary) sobin::save(bkey, obj);
+        if (r == VK_SUCCESS && !from_binary) sobin::save(st.object, obj);
         st_object_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - t0).count(), std::memory_order_relaxed);
         if (r != VK_SUCCESS) {
             st_object_failed.fetch_add(1, std::memory_order_relaxed);
@@ -1445,13 +1288,7 @@ void scan_slot(Slot* s) {
         return s->state.store(1, std::memory_order_release);
     }
     disk_init();
-    std::vector<DiskRecord> recs;
-    {
-        std::lock_guard lk(disk_mu);
-        const auto it = disk_by_pair.find(pair);
-        if (it != disk_by_pair.end()) recs = it->second;
-    }
-    for (const DiskRecord& d : recs) {
+    for (const CacheFile::Rec& d : disk.find(pair)) {
         auto v = std::make_unique<Variant>();
         const auto t0 = clk::now();
         const bool read = disk_read(d, *v);
@@ -1637,10 +1474,10 @@ const DrawProg* shader_pick(const DState& s, const uint8_t color_types[8], Shade
                            : sl.mesh ? ms >= 0 && translate_mesh_variant(*v, codes[ms], prim >= 0 ? &codes[prim] : nullptr, fs >= 0 ? &codes[fs] : nullptr, job->ct)
                                      : vs >= 0 && translate_variant(*v, codes[vs], gs >= 0 ? &codes[gs] : nullptr, fs >= 0 ? &codes[fs] : nullptr, job->ct));
         if (made) {
-            disk_save(*v, slot_pair(sl));
             v->d.codes[0] = sl.vs.key, v->d.codes[1] = sl.has_fs ? sl.fs.key : 0, v->d.codes[2] = sl.has_prim ? sl.prim.key : sl.has_gs ? sl.gs.key : 0;
             v->d.task_code = sl.task ? sl.task_key : 0;
             ok = finish(*v);
+            if (ok) disk_save(*v, slot_pair(sl)), drop_spirv(*v);
         }
         st_translate_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - t0).count(), std::memory_order_relaxed);
         if (ok) {
@@ -1665,9 +1502,12 @@ PreResult shader_precompile(const PreStage* st, int n) {
     for (int i = 0; i < n && i < 6; i++) {
         uint32_t end = 0;
         std::vector<uint8_t> area(st[i].area, st[i].area + st[i].area_n);
-        if (!control_end(st[i].ctl, &end) || end != st[i].area_n || !parse_bytes(st[i].ctl, area, codes[i])) return PRE_FAILED;
+        if (!control_end(st[i].ctl, &end) || end != st[i].area_n || !parse_bytes(st[i].ctl, area, codes[i])) {
+            logf("direct: precompile: a program's stage %d (NVN stage %u) is not readable", i, (unsigned)st[i].ctl[0x56]);
+            return PRE_FAILED;
+        }
         const Code& c = codes[i];
-        if (c.stage == 5) return PRE_OTHER;   // (compute: its translation reads the dispatch's bank)
+        if (c.stage == 5) return compute_precompile(st[i].ctl, st[i].area, st[i].area_n);   // (a compute program: its stage alone)
         if (c.stage == 6) task = i;
         else if (c.header_only) prim = i;
         else if (c.stage == 0) vs = i;
@@ -1692,50 +1532,43 @@ PreResult shader_precompile(const PreStage* st, int n) {
     const uint64_t pair = task >= 0 ? pair_key(hash_bytes("task", 4, codes[task].key) ^ hash_bytes("mesh", 4, first.key), fsc ? fsc->key : 0)
                                     : pair_key_of(is_mesh, first.key ^ (gsc ? hash_bytes("geom", 4, gsc->key) : 0), fsc ? fsc->key : 0);
     const size_t want = 1u + (fsc != nullptr) + (task >= 0) + (gsc != nullptr);
-    auto v = std::make_unique<Variant>();
-    bool kept = false;
     disk_init();
-    std::vector<DiskRecord> recs;
-    {
-        std::lock_guard lk(disk_mu);
-        if (const auto it = disk_by_pair.find(pair); it != disk_by_pair.end()) recs = it->second;
+    for (const CacheFile::Rec& d : disk.find(pair)) {   // (kept, and this driver has its binaries: nothing to do)
+        Variant r;
+        if (!disk_read(d, r) || r.d.key != key || r.stages.size() != want) continue;
+        bool all = true;
+        for (const VStage& s : r.stages) all = all && (!s.object || sobin::has(s.object));
+        if (all) return PRE_KEPT;
+        break;
     }
-    for (const DiskRecord& d : recs) {
-        auto r = std::make_unique<Variant>();
-        if (disk_read(d, *r) && r->d.key == key && r->stages.size() == want) {
-            v = std::move(r), kept = true;
-            break;
-        }
-    }
-    if (!kept) {
-        v->d.key = key;
-        const bool made = task >= 0 ? translate_task_mesh_variant(*v, codes[task], codes[mesh], pc, fsc, ct)
-                          : is_mesh ? translate_mesh_variant(*v, codes[mesh], pc, fsc, ct)
-                                    : translate_variant(*v, codes[vs], gsc, fsc, ct);
-        if (!made) return PRE_FAILED;
-        disk_save(*v, pair);
-    }
+    auto v = std::make_unique<Variant>();
+    v->d.key = key;
+    const bool made = task >= 0 ? translate_task_mesh_variant(*v, codes[task], codes[mesh], pc, fsc, ct)
+                      : is_mesh ? translate_mesh_variant(*v, codes[mesh], pc, fsc, ct)
+                                : translate_variant(*v, codes[vs], gsc, fsc, ct);
+    if (!made) return PRE_FAILED;
     v->d.codes[0] = first.key, v->d.codes[1] = fsc ? fsc->key : 0, v->d.codes[2] = pc ? pc->key : gsc ? gsc->key : 0;
     v->d.task_code = task >= 0 ? codes[task].key : 0;
-    const bool ok = finish(*v);   // (its objects: made from SPIR-V once per driver, their binaries kept)
+    const bool ok = finish(*v);   // (its objects: compiled from SPIR-V once per driver, their binaries kept)
     for (VkShaderEXT o : {v->d.vs, v->d.fs, v->d.gs, v->d.ms, v->d.ts})
         if (o) vkDestroyShaderEXT(dev.device, o, nullptr);
-    return !ok ? PRE_FAILED : kept ? PRE_KEPT : PRE_MADE;
+    if (!ok) return PRE_FAILED;
+    disk_save(*v, pair);
+    return PRE_MADE;
 }
 
 void shader_cache_index() {
-    {
-        std::lock_guard lk(disk_mu);
-        if (disk_on) index_save(exe_dir() + "ounce_renderer_programs.bin.idx", disk_stamp_now, disk_end, disk_index);
-    }
+    disk.index_now();
     sobin::index_now();
+    compute_cache_index();
 }
 
 uint64_t shader_cache_stamp() {
     disk_init();
     sobin::init();
     const sobin::Header h = sobin::want();
-    return hash_bytes(&h, sizeof h, disk_stamp());
+    const uint64_t s[2] = {disk_stamp(), compute_cache_stamp()};
+    return hash_bytes(&h, sizeof h, hash_bytes(s, sizeof s));
 }
 
 void shader_held_stats(char* out, size_t cap) {
@@ -1784,6 +1617,7 @@ uint64_t object_key(const VkShaderCreateInfoEXT& ci, bool size32) {
 }
 std::vector<uint8_t> object_binary(uint64_t key) { return sobin::find(key); }
 void object_keep(uint64_t key, VkShaderEXT obj) { sobin::save(key, obj); }
+bool object_has(uint64_t key) { return sobin::has(key); }
 std::string program_dir() { return exe_dir(); }
 uint8_t answer_of(uint32_t handle) { return live_answer(handle); }
 uint8_t answer_canonical(uint8_t type, bool dim_fixed, uint8_t desc_type, bool depth_float) {

@@ -42,7 +42,7 @@ The target is 15 minutes on a 16-thread PC. Measured on a Ryzen 7 5800X3D (16 th
 | Host C | `runtime/*.c`, libopus and the runtime by clang in this process (`ounce/builder/src/host.rs`) | 4 s |
 | Link | lld in this process (`ounce/builder/src/link.rs`), against the prebuilt host and the sysroot; then the labels | 1 s |
 | Textures | `ounce/tex`: every BNTX texture deswizzled, ASTC re-encoded to BC7 and BC5, packed (`ounce tool textures`); the romfs copy's texture files written with their texels zeroed | 258 s (fast, the default); 1055 s with `--quality high` (16,000 CPU-s, 2.6 GB peak) |
-| Shaders | the shader pack from the romfs (`ounce/shaders`), then the game's `--precompile`: the renderer translates and compiles every program into the folder's caches ([shaders](#shaders)) | pack 4 s; precompile 124 s at 16 threads, cold (0.1 s when current) |
+| Shaders | the shader pack from the romfs (`ounce/shaders`), then the game's `--precompile`: the renderer translates and compiles every program into the folder's caches ([shaders](#shaders)) | pack 4 s; precompile 280 to 370 s at 16 threads, cold (0.1 s when current) |
 
 ## The prepared assets
 
@@ -389,11 +389,11 @@ The last step of a game folder's build makes its shaders ahead of the game, so t
    shader tools read. It depends on the romfs alone: OoT 37,618 programs, 485 MB, in 5 s; it is made again when the
    files it reads change (`shaders.pack.key`).
 2. **The precompile**: the build runs the game with `--precompile`. Nothing of the game runs: the renderer makes its
-   device, then on every core makes each graphics program of the pack as its first draw into float targets would
-   make it, through the same code (vk_shader.cpp `shader_precompile`): translated into `ounce_renderer_programs.bin`
-   unless it is there, its shader objects made, their driver binaries kept in `ounce_renderer_shader_objects.bin`.
-   Compute programs are left to their first dispatch: their translation reads the dispatch's bank. When it is done
-   the renderer writes `ounce_renderer_shaders.stamp`: the caches' stamp and the pack's size.
+   device, then on every core makes each program of the pack as its first draw into float targets or its first
+   dispatch would make it, through the same code (vk_shader.cpp `shader_precompile`, vk_compute.cpp
+   `compute_precompile`): translated unless the caches hold it, its shader objects compiled, their driver binaries
+   kept in `ounce_renderer_shader_objects.bin`. Compute programs go first, because the networks' take RADV minutes
+   each. When it is done the renderer writes `ounce_renderer_shaders.stamp`: the caches' stamp and the pack's size.
 
 The precompile depends on the GPU and its driver, so it runs on the PC that builds the game, which is the one that plays
 it. The caches' stamp is the program cache's (the translator's code, the device's subgroup answers, the depth mode)
@@ -403,13 +403,17 @@ new renderer, a build without the precompile), the driver binaries of another dr
 pack's programs are made again on the shader workers' background half while the game plays; the stamp file is
 written when they are done. A precompile of a folder whose stamp is current returns at once.
 
-Measured for OoT (Ryzen 7 5800X3D, RX 6950 XT, RADV): 33,478 graphics variants translated, 12 failed and 4,128
-compute programs left in 124 s; the program cache is then 4.2 GB and the driver binaries 346 MB. Each cache keeps an
-index beside it (`<file>.idx`: every record's key, offset and size, written by the precompile and at a start that read
-new records), so a start reads 0.8 MB instead of the head of every record (9.6 s from a cold disk without it). A
-Kokiri boot from such a folder translated 24 graphics variants (other colour target types) and made 11,823 of its
-11,865 shader objects from binaries; its 590 compute variants were still translated at their dispatches (8.5 s on the
-workers).
+The program and compute caches hold what a start needs to use a driver binary: each variant's interface, constants
+and the key of its binary, no SPIR-V. A variant whose binary is missing or refused is translated again from its code.
+Each cache keeps an index beside it (`<file>.idx`: every record's key, offset and size), so a start reads under 2 MB
+instead of the head of every record.
+
+Measured for OoT (Ryzen 7 5800X3D, RX 6950 XT, RADV): 37,618 programs (33,490 graphics, 4,128 compute) made with none
+failed in 280 to 370 s cold. Translation alone takes about 20 s; the rest is RADV, and the wall time is set by one
+network's compute program, which takes 2 to 4 minutes to compile while the other cores are busy. The caches are then
+89 MB of programs, 4 MB of compute programs and 385 MB of driver binaries (the program cache was 4.2 GB with SPIR-V). A
+Kokiri boot from such a folder translates no compute program (762 variants of 733 codes from the cache) and 27
+graphics variants (other colour target types).
 
 ## The device check
 

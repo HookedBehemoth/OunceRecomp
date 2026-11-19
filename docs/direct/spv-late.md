@@ -39,7 +39,7 @@ command) but off: it made some stages spill more.
 | `debug.nolate` | the translator's order, unchanged (a diagnosis) |
 | `debug.latevertex` | the pass on vertex stages too (a trial; off by default) |
 
-The translated SPIR-V is kept in `ounce_renderer_programs.bin`. The pass's source is part of the shader stamp, and both
+The pass runs before the driver compiles a stage, so its result is in the driver binaries the caches keep. The pass's source is part of the shader stamp, and both
 switches are part of the cache's stamp. So a build that changes the pass, or a run that flips a switch, translates
 every program once more on its first start. You don't need to delete anything.
 

@@ -1197,6 +1197,195 @@ void PatchTexelFetch(IR::Block& block, IR::Inst& inst, TexturePixelFormat pixel_
 }
 } // Anonymous namespace
 
+/// (Environment::IntegerFromUse) Which textures and storage images the program treats as integer, from its code alone,
+/// by (bank << 32 | offset, bit 63 for an image). The texels a fetch, gather or image read gives are followed through the
+/// program: held as a float, then as its bits (BitCastU32F32), through bitwise operations, selects and phis. One that
+/// meets a float operation, or is taken back as a float (BitCastF32U32), is a float texel; one that meets integer
+/// arithmetic, a compare or a conversion from an integer is an integer one; a store of its bits says neither. A sample
+/// (filtered) is a float texture's. A storage image's write is integer when a value it stores is integer arithmetic's,
+/// float when one is a float's bits; an atomic is an integer image's. A handle is integer when it has integer evidence and
+/// no float evidence, float when it has no integer evidence, and the environment's choice (IntegerChoice) when it has
+/// both: a program that reads the same handle both ways is translated once for each. The dispatch checks the bound
+/// handles against it
+static std::unordered_map<u64, bool> IntegerByUse(Environment& env, IR::Program& program, const TextureInstVector& insts) {
+    struct Votes {
+        int integer = 0, floating = 0;
+    };
+    using IR::Opcode;
+    const auto is_dead_set{[](Opcode op) {   // (a register's or a flag's write: the SSA rewrite left it, nothing reads it)
+        switch (op) {
+        case Opcode::SetRegister: case Opcode::SetPred: case Opcode::SetGotoVariable: case Opcode::SetIndirectBranchVariable:
+        case Opcode::SetZFlag: case Opcode::SetSFlag: case Opcode::SetCFlag: case Opcode::SetOFlag:
+            return true;
+        default:
+            return false;
+        }
+    }};
+    const auto is_store{[](Opcode op) {
+        switch (op) {
+        case Opcode::WriteGlobal32: case Opcode::WriteGlobal64: case Opcode::WriteGlobal128:
+        case Opcode::WriteStorage32: case Opcode::WriteStorage64: case Opcode::WriteStorage128:
+        case Opcode::WriteSharedU32: case Opcode::WriteSharedU64: case Opcode::WriteSharedU128: case Opcode::WriteLocal:
+        case Opcode::ImageWrite: case Opcode::BindlessImageWrite: case Opcode::BoundImageWrite:
+            return true;
+        default:
+            return false;
+        }
+    }};
+    // (the instructions whose results reach something the program does: the rest is dead code the later passes
+    // remove, and says nothing; the SSA rewrite leaves the register writes behind, unread)
+    std::unordered_set<const IR::Inst*> live;
+    {
+        std::vector<const IR::Inst*> work;
+        for (IR::Block* const block : program.post_order_blocks) {
+            for (const IR::Inst& inst : block->Instructions()) {
+                if (inst.MayHaveSideEffects() && !is_dead_set(inst.GetOpcode()) && live.insert(&inst).second) work.push_back(&inst);
+            }
+        }
+        while (!work.empty()) {
+            const IR::Inst* const inst{work.back()};
+            work.pop_back();
+            for (size_t a = 0; a < inst->NumArgs(); ++a) {
+                if (inst->Arg(a).IsImmediate()) continue;
+                const IR::Inst* const arg{inst->Arg(a).TryInstRecursive()};
+                if (arg && live.insert(arg).second) work.push_back(arg);
+            }
+        }
+    }
+    std::unordered_map<const IR::Inst*, std::vector<const IR::Inst*>> users;
+    for (const IR::Inst* const inst : live) {
+        for (size_t a = 0; a < inst->NumArgs(); ++a) {
+            if (inst->Arg(a).IsImmediate()) continue;
+            if (const IR::Inst* const arg{inst->Arg(a).TryInstRecursive()}) users[arg].push_back(inst);
+        }
+    }
+    /// The arguments of a user that hand a value's bits on as they are, or some of them (the value's kind is the user's
+    /// user's): a bitwise operation's, a select's data, a phi's, a shuffle's value, a bit insert's base and insert
+    const auto bits_args{[](Opcode op) -> std::pair<size_t, size_t> {   // ([first, end) of those arguments; none: {0, 0})
+        switch (op) {
+        case Opcode::BitwiseAnd32: case Opcode::BitwiseOr32: case Opcode::BitwiseXor32: case Opcode::BitwiseNot32:
+        case Opcode::Phi: case Opcode::Identity:
+        case Opcode::CompositeConstructU32x2: case Opcode::CompositeConstructU32x3: case Opcode::CompositeConstructU32x4:
+            return {0, 64};
+        case Opcode::SelectU32:
+            return {1, 3};
+        case Opcode::BitFieldInsert:
+            return {0, 2};
+        case Opcode::ShuffleIndex: case Opcode::ShuffleUp: case Opcode::ShuffleDown: case Opcode::ShuffleButterfly:
+        case Opcode::SubgroupReadFirstLane:
+            return {0, 1};
+        default:
+            return {0, 0};
+        }
+    }};
+    const auto is_bits_move{[&](Opcode op) { return bits_args(op).second != 0; }};
+    /// A value that holds what the program loaded, not what it computed: a store of it says nothing
+    const auto is_loaded{[](Opcode op) {
+        switch (op) {
+        case Opcode::GetCbufU32: case Opcode::GetCbufU32x2: case Opcode::GetCbufU16: case Opcode::GetCbufS16:
+        case Opcode::GetCbufU8: case Opcode::GetCbufS8:
+        case Opcode::LoadGlobal32: case Opcode::LoadGlobal64: case Opcode::LoadGlobal128:
+        case Opcode::LoadStorage32: case Opcode::LoadStorage64: case Opcode::LoadStorage128: case Opcode::LoadStorageU16:
+        case Opcode::LoadStorageS16: case Opcode::LoadStorageU8: case Opcode::LoadStorageS8: case Opcode::LoadLocal:
+        case Opcode::LoadSharedU8: case Opcode::LoadSharedS8: case Opcode::LoadSharedU16: case Opcode::LoadSharedS16:
+        case Opcode::LoadSharedU32: case Opcode::LoadSharedU64: case Opcode::LoadSharedU128:
+        case Opcode::UndefU32: case Opcode::LaneId: case Opcode::SubgroupBallot:
+        case Opcode::CompositeExtractU32x2: case Opcode::CompositeExtractU32x3: case Opcode::CompositeExtractU32x4:
+            return true;
+        default:
+            return false;
+        }
+    }};
+    /// The texels from inst followed (as_int: held as integer bits), their evidence added to v
+    const auto follow{[&](const IR::Inst* start, bool as_int, Votes& v) {
+        std::vector<std::pair<const IR::Inst*, bool>> work{{start, as_int}};
+        std::unordered_set<u64> seen;
+        while (!work.empty()) {
+            const auto [value, held_int] = work.back();
+            work.pop_back();
+            if (!seen.insert(reinterpret_cast<u64>(value) ^ (held_int ? 1 : 0)).second) continue;
+            const auto it{users.find(value)};
+            if (it == users.end()) continue;
+            for (const IR::Inst* const u : it->second) {
+                const Opcode op{u->GetOpcode()};
+                if (is_store(op) || is_dead_set(op)) continue;
+                if (op == Opcode::CompositeExtractF32x4 || op == Opcode::CompositeExtractU32x4) {   // (a texel's component)
+                    work.push_back({u, held_int});
+                    continue;
+                }
+                if (!held_int) {
+                    if (op == Opcode::BitCastU32F32) work.push_back({u, true});
+                    else if (op == Opcode::Phi || op == Opcode::SelectF32 || op == Opcode::Identity) work.push_back({u, false});
+                    else v.floating++;
+                } else {
+                    if (op == Opcode::BitCastF32U32) v.floating++;
+                    else if (is_bits_move(op)) work.push_back({u, true});
+                    else v.integer++;
+                }
+            }
+        }
+    }};
+    /// A stored value's kind (an image write's component), from what made it
+    const auto stored{[&](const IR::Value& value, Votes& v) {
+        std::vector<const IR::Inst*> work;
+        if (!value.IsImmediate()) {
+            if (const IR::Inst* const i{value.TryInstRecursive()}) work.push_back(i);
+        }
+        std::unordered_set<const IR::Inst*> seen;
+        while (!work.empty()) {
+            const IR::Inst* const i{work.back()};
+            work.pop_back();
+            if (!seen.insert(i).second) continue;
+            const Opcode op{i->GetOpcode()};
+            if (op == Opcode::BitCastU32F32 || op == Opcode::PackFloat2x16 || op == Opcode::PackHalf2x16) {
+                v.floating++;   // (a float's bits, or two halves packed from floats)
+            } else if (const auto [first, end] = bits_args(op); end != 0) {
+                for (size_t a = first; a < std::min<size_t>(end, i->NumArgs()); ++a) {
+                    if (i->Arg(a).IsImmediate()) continue;
+                    if (const IR::Inst* const arg{i->Arg(a).TryInstRecursive()}) work.push_back(arg);
+                }
+            } else if (!is_loaded(op) && !is_store(op)) {
+                v.integer++;   // (integer arithmetic's result or a conversion to an integer)
+            }
+        }
+    }};
+    std::unordered_map<u64, Votes> votes;
+    for (const TextureInst& t : insts) {
+        const Opcode op{IndexedInstruction(*t.inst)};
+        const bool image{IsStorageImageOpcode(op)};
+        const u64 k{(image ? 1ull << 63 : 0) | u64{t.cbuf.index} << 32 | t.cbuf.offset};
+        Votes& v{votes[k]};
+       
+        switch (op) {
+        case Opcode::ImageQueryDimensions: case Opcode::ImageQueryLod:
+            break;
+        case Opcode::ImageSampleImplicitLod: case Opcode::ImageSampleExplicitLod: case Opcode::ImageSampleDrefImplicitLod:
+        case Opcode::ImageSampleDrefExplicitLod: case Opcode::ImageGatherDref: case Opcode::ImageGradient:
+            v.floating++;
+            break;
+        case Opcode::ImageFetch: case Opcode::ImageGather: case Opcode::ImageRead:
+            follow(t.inst, op == Opcode::ImageRead, v);
+            break;
+        case Opcode::ImageWrite: {
+            const IR::Value color{t.inst->Arg(2)};
+            const IR::Inst* const c{color.IsImmediate() ? nullptr : color.TryInstRecursive()};
+            if (c && c->GetOpcode() == Opcode::CompositeConstructU32x4) {
+                for (size_t i = 0; i < 4; ++i) stored(c->Arg(i), v);
+            } else {
+                stored(color, v);
+            }
+            break;
+        }
+        default:   // (an atomic)
+            v.integer++;
+            break;
+        }
+    }
+    std::unordered_map<u64, bool> out;
+    for (const auto& [k, v] : votes) out.emplace(k, v.integer > 0 && (v.floating == 0 || env.IntegerChoice(k)));
+    return out;
+}
+
 void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo& host_info) {
     // reset per-pass caches
     env.cbuf_word_cache.clear();
@@ -1252,7 +1441,14 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
     u32 last_cbuf_index{};
     u32 last_cbuf_offset{};
     bool last_is_integer{false};
+    const std::unordered_map<u64, bool> integer_by_use{env.IntegerFromUse() ? IntegerByUse(env, program, to_replace)
+                                                                           : std::unordered_map<u64, bool>{}};
+    bool image_now{false};   // (the instruction being replaced is a storage image's: integer_by_use's key)
     const auto is_texture_pixel_format_integer{[&](const ConstBufferAddr& cbuf_addr) {
+        if (env.IntegerFromUse()) {
+            const auto it{integer_by_use.find((image_now ? 1ull << 63 : 0) | u64{cbuf_addr.index} << 32 | cbuf_addr.offset)};
+            return it != integer_by_use.end() && it->second;
+        }
         if (cbuf_addr.handle_program != ~0U) {
             // Every handle program is at cbuf 0 offset 0: the cache below can't tell them apart.
             return IsTexturePixelFormatIntegerCached(env, cbuf_addr);
@@ -1296,6 +1492,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
         // TODO: Handle arrays
         IR::Inst* const inst{texture_inst.inst};
         inst->ReplaceOpcode(IndexedInstruction(*inst));
+        image_now = IsStorageImageOpcode(inst->GetOpcode());
 
         const auto& cbuf{texture_inst.cbuf};
         auto flags{inst->Flags<IR::TextureInstInfo>()};

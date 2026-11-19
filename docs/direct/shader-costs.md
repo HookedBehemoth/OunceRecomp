@@ -73,6 +73,7 @@ Every player's game folder holds `shaders.pack`, the programs its models' materi
 shader archives, and its shader caches filled by the game's `--precompile` ([the player builder](../builder-plan.md),
 "Shaders"). To time it in a developer's build, run `ounce build <game> --exclusive --shaders`: the build prints the
 pack's counts and the precompile's time, and the game folder's `ounce_precompile_log.txt` has the renderer's line
-(programs translated, kept and failed, and the seconds). A second run finds the caches current and returns at once;
-delete `ounce_renderer_shaders.stamp` and the three `ounce_renderer_*.bin` files beside the executable for a cold
-one, and run with `MESA_SHADER_CACHE_DISABLE=true` so the driver's own cache does not help.
+(programs translated, kept and failed, and the seconds), and a line for each compute program whose compile took over
+2 s. A second run finds the caches current and returns at once;
+delete `ounce_renderer_shaders.stamp` and the three `ounce_renderer_*.bin` files and their `.idx` files beside the
+executable for a cold one, and run with `MESA_SHADER_CACHE_DISABLE=true` so the driver's own cache does not help.
