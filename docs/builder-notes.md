@@ -17,15 +17,16 @@ A builder is a thin front end over the developer path ([Development guide](devel
    game then leaves out walls and floors. The reader replaces each in the `romfs/` it writes with a whole file of the
    same kind and prints what it did; tell the player. A player's own folder is never written to.
 3. **Lift and build.** `ounce tool build <folder> --direct <ounce_renderer.so>` lifts, compiles and links
-   in one process ([the plan](builder-plan.md)) with `--ffmpeg <dir>`, the FFmpeg it links ([FFmpeg](builder-plan.md#ffmpeg)). It needs the glibc development files.
+   in one process ([the plan](builder-plan.md)) with `--ffmpeg <dir>`, the FFmpeg it links ([FFmpeg](builder-plan.md#ffmpeg)), against the
+   sysroot ([the sysroot](builder-plan.md#the-sysroot)).
 4. **Prepare assets.** `ounce tool build ... --dump` writes the game folder's `prepared/tex` (or
    `ounce tool textures` alone), the direct back end's texture store ([the converters](direct/converters.md)). Without it every asset texture is a
    placeholder.
-5. **Make button prompts.** `tools/prompts/prompt_assets.py --romfs <romfs> --out <game>/prompts` (needs the packages in
+5. **Button prompts** are not made by a player's build ([button prompts](builder-plan.md#button-prompts)). A developer
+   makes them with `tools/prompts/prompt_assets.py --romfs <romfs> --out <game>/prompts` (needs the packages in
    `tools/prompts/prompt_requirements.txt`). Without them the game keeps the Switch's icons.
 6. **Assemble the game folder:** `ounce tool build --dump` makes it (the executable, `ounce_renderer.so`,
-   `image.bin`, `romfs/`, `prepared/` and `user/` for the saves, [the plan](builder-plan.md)); add the SDL library
-   and the prompts.
+   `image.bin`, `romfs/`, `prepared/` and `user/` for the saves, [the plan](builder-plan.md)).
 
 ## Report progress
 

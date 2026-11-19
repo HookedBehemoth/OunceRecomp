@@ -19,8 +19,13 @@ Install these from your distribution:
   compiler; `ISPC=<path>` picks another one, as `CC` does);
 - Meson, Ninja and `glslangValidator`, for the renderer;
 - the Vulkan headers, and SDL2 or SDL3;
-- curl, NASM, Make and pkg-config, for the FFmpeg the game links, which the first build makes from source
-  ([FFmpeg](builder-plan.md#ffmpeg)).
+- curl, tar, NASM, Make and pkg-config, for the FFmpeg the game links, which the first build makes from source
+  ([FFmpeg](builder-plan.md#ffmpeg)), and the sysroot it is built against, which the first build fetches
+  ([the sysroot](builder-plan.md#the-sysroot)).
+
+The game is built against that sysroot's glibc 2.35, not your distribution's, so it runs on other PCs too. To make
+the release, the AppImage, run `ounce tool static-llvm` once and then `ounce tool appdir <dir>` ([the
+release](builder-plan.md#the-release)).
 
 The renderer needs a GPU with Vulkan 1.3 and shader objects, descriptor indexing and extended dynamic state 3. To
 check yours, run `ounce probe` once `ounce` is built; [the device check](builder-plan.md#the-device-check) lists

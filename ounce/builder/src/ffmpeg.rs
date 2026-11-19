@@ -3,8 +3,8 @@
 //! own AV1 decoder needs a hardware decoder), libswscale for the RGBA reads and libavutil. The games demux their WebM
 //! movies themselves and their sound is a separate stream, so there is no libavformat, no parser beyond VP9's and no
 //! audio. Both sources are pinned release tarballs, fetched once and checked by SHA-256; they are built unmodified with
-//! clang at the host C's target flags, static and PIC, with nothing autodetected (no system library but libc, libm
-//! and pthread).
+//! clang at the host C's target flags against the build's sysroot (sysroot.rs), static and PIC, with nothing
+//! autodetected (no library but the sysroot's libc, libm and pthread).
 //!
 //! The result is `<dir>/<key>/`: `include/`, `lib/` (the four archives), `licenses/` and `ffmpeg.txt` (the sources,
 //! their hashes and the configure lines: what the LGPL asks to say about a library linked in). `<key>` names the
@@ -12,25 +12,25 @@
 //! by every checkout; a release ships the folder as `prebuilt/ffmpeg/`. About a minute on 16 threads.
 
 use crate::fail;
+use crate::fetch::{fetch, run, Pinned};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 struct Tarball {
     name: &'static str,
-    url: &'static str,
-    sha256: &'static str,
+    src: Pinned,
 }
 
 const FFMPEG: Tarball = Tarball {
     name: "ffmpeg-9.0.2",
-    url: "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz",
-    sha256: "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e",
+    src: Pinned { file: "ffmpeg-9.0.2.tar.xz", url: "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz",
+    sha256: "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e" },
 };
 const DAV1D: Tarball = Tarball {
     name: "dav1d-1.5.4",
-    url: "https://downloads.videolan.org/pub/videolan/dav1d/1.5.4/dav1d-1.5.4.tar.xz",
-    sha256: "686616b7c69eb88d44459391ab25cac13b6647a3b288835c5784e71c1514a5c5",
+    src: Pinned { file: "dav1d-1.5.4.tar.xz", url: "https://downloads.videolan.org/pub/videolan/dav1d/1.5.4/dav1d-1.5.4.tar.xz",
+    sha256: "686616b7c69eb88d44459391ab25cac13b6647a3b288835c5784e71c1514a5c5" },
 };
 
 /// dav1d's Meson options: the library alone, 8-bit (every AV1 movie is 8-bit 4:2:0)
@@ -53,7 +53,8 @@ pub const LIBS: [&str; 4] = ["libavcodec.a", "libdav1d.a", "libswscale.a", "liba
 /// A release's FFmpeg, built with it (the AppImage's), under its sources' root
 pub const PREBUILT: &str = "prebuilt/ffmpeg";
 
-/// The C flags of both builds: the host C's target (the CPU, OUNCE_SYSROOT's sysroot), sections for --gc-sections
+/// The C flags of both builds: the host C's target (the CPU), sections for --gc-sections; the sysroot (sysroot.rs)
+/// is given apart, as its path differs from PC to PC
 fn cflags() -> String {
     let mut f = crate::host::target();
     f.extend(["-ffunction-sections", "-fdata-sections"].map(String::from));
@@ -64,9 +65,9 @@ fn cflags() -> String {
 fn recipe() -> String {
     let mut t = String::from("FFmpeg as linked into the game (ounce tool ffmpeg), from unmodified upstream sources:\n");
     for s in [&FFMPEG, &DAV1D] {
-        t += &format!("{} {} sha256 {}\n", s.name, s.url, s.sha256);
+        t += &format!("{} {} sha256 {}\n", s.name, s.src.url, s.src.sha256);
     }
-    t += &format!("CFLAGS: {}\ndav1d: meson setup {}\nFFmpeg: configure {}\n", cflags(), DAV1D_OPTIONS.join(" "), CONFIGURE.join(" "));
+    t += &format!("sysroot: {} (ounce tool sysroot)\nCFLAGS: {}\ndav1d: meson setup {}\nFFmpeg: configure {}\n", crate::sysroot::key(), cflags(), DAV1D_OPTIONS.join(" "), CONFIGURE.join(" "));
     t += "FFmpeg is LGPL 2.1 or later and dav1d BSD 2-clause (licenses/). The game is linked from its objects on the PC \
           that builds it, so it can be linked again with another build of these libraries.\n";
     t
@@ -82,41 +83,8 @@ fn complete(out: &Path) -> bool {
     std::fs::read_to_string(out.join("ffmpeg.txt")).is_ok_and(|t| t == recipe()) && LIBS.iter().all(|l| out.join("lib").join(l).is_file())
 }
 
-fn run(mut c: Command, what: &str, log: &Path) {
-    let prog = c.get_program().to_string_lossy().into_owned();
-    let f = std::fs::OpenOptions::new().create(true).append(true).open(log).unwrap_or_else(|e| fail(format!("{}: {e}", log.display())));
-    let st = c.stdout(f.try_clone().unwrap_or_else(|e| fail(e))).stderr(f).status().unwrap_or_else(|e| {
-        fail(if e.kind() == std::io::ErrorKind::NotFound { format!("{what}: {prog} is not installed") } else { format!("{what}: {prog}: {e}") })
-    });
-    if !st.success() {
-        fail(format!("{what} failed ({st}); the log is {}", log.display()));
-    }
-}
-
-/// `dl/<file>`, fetched unless it is there with its hash
-fn fetch(dir: &Path, t: &Tarball, log: &Path) -> PathBuf {
-    let file = dir.join("dl").join(format!("{}.tar.xz", t.name));
-    let sum = |p: &Path| std::fs::read(p).map(|b| Sha256::digest(&b).iter().map(|x| format!("{x:02x}")).collect::<String>()).unwrap_or_default();
-    if sum(&file) == t.sha256 {
-        return file;
-    }
-    std::fs::create_dir_all(dir.join("dl")).unwrap_or_else(|e| fail(e));
-    let part = file.with_extension("part");
-    println!("ffmpeg: fetching {}", t.url);
-    let mut c = Command::new("curl");
-    c.args(["-fsSL", "--retry", "3", "-o"]).arg(&part).arg(t.url);
-    run(c, &format!("the download of {}", t.name), log);
-    let got = sum(&part);
-    if got != t.sha256 {
-        let _ = std::fs::remove_file(&part);
-        fail(format!("{}: SHA-256 {got}, not {}", t.url, t.sha256));
-    }
-    std::fs::rename(&part, &file).unwrap_or_else(|e| fail(e));
-    file
-}
-
 /// The folder of this recipe's build under `dir`, built first unless it is there
-pub fn ensure(dir: &Path, jobs: usize) -> PathBuf {
+pub fn ensure(dir: &Path, jobs: usize, sysroot: &Path) -> PathBuf {
     let out = dir.join(key());
     if complete(&out) {
         return out;
@@ -135,7 +103,7 @@ pub fn ensure(dir: &Path, jobs: usize) -> PathBuf {
     println!("ffmpeg: building {} (the log is {})", out.display(), log.display());
     let stage = work.join("out");
     for t in [&FFMPEG, &DAV1D] {
-        let file = fetch(dir, t, &log);
+        let file = fetch(dir, &t.src, &log);
         let mut c = Command::new("tar");
         c.arg("-xf").arg(&file).arg("-C").arg(&work);
         run(c, &format!("the unpacking of {}", t.name), &log);
@@ -143,7 +111,8 @@ pub fn ensure(dir: &Path, jobs: usize) -> PathBuf {
     let (ff_src, dav_src) = (work.join(FFMPEG.name), work.join(DAV1D.name));
     let mut c = Command::new("meson");
     c.arg("setup").arg(work.join("dav1d-build")).arg(&dav_src).arg(format!("--prefix={}", stage.display())).arg("--libdir=lib");
-    c.args(DAV1D_OPTIONS).env("CC", "clang").env("CFLAGS", cflags());
+    let sr = format!("--sysroot={}", sysroot.display());
+    c.args(DAV1D_OPTIONS).env("CC", "clang").env("CFLAGS", format!("{} {sr}", cflags())).env("LDFLAGS", &sr);
     run(c, "dav1d's meson setup", &log);
     let mut c = Command::new("ninja");
     c.arg("-C").arg(work.join("dav1d-build")).arg("-j").arg(jobs.to_string()).arg("install");
@@ -151,7 +120,7 @@ pub fn ensure(dir: &Path, jobs: usize) -> PathBuf {
     let ff_build = work.join("ffmpeg-build");
     std::fs::create_dir_all(&ff_build).unwrap_or_else(|e| fail(e));
     let mut c = Command::new(ff_src.join("configure"));
-    c.current_dir(&ff_build).arg(format!("--prefix={}", stage.display())).args(CONFIGURE).arg(format!("--extra-cflags={}", cflags()));
+    c.current_dir(&ff_build).arg(format!("--prefix={}", stage.display())).args(CONFIGURE).arg(format!("--extra-cflags={} {sr}", cflags())).arg(format!("--extra-ldflags={sr}"));
     // (only the dav1d just built: no system library is found)
     c.env("PKG_CONFIG_LIBDIR", stage.join("lib/pkgconfig")).env_remove("PKG_CONFIG_PATH");
     run(c, "FFmpeg's configure", &log);
@@ -180,7 +149,7 @@ pub fn ensure(dir: &Path, jobs: usize) -> PathBuf {
 
 /// The FFmpeg a build links: a release's prebuilt one under `root`, else this recipe's in the cache folder (built
 /// the first time)
-pub fn find(root: &Path, cache_dir: &Path, jobs: usize) -> PathBuf {
+pub fn find(root: &Path, cache_dir: &Path, jobs: usize, sysroot: &Path) -> PathBuf {
     let prebuilt = root.join(PREBUILT);
     if prebuilt.join("ffmpeg.txt").is_file() {
         if !complete(&prebuilt) {
@@ -188,7 +157,7 @@ pub fn find(root: &Path, cache_dir: &Path, jobs: usize) -> PathBuf {
         }
         return prebuilt;
     }
-    ensure(&cache_dir.join("ffmpeg"), jobs)
+    ensure(&cache_dir.join("ffmpeg"), jobs, sysroot)
 }
 
 pub fn command(args: &[String]) {
@@ -201,6 +170,8 @@ pub fn command(args: &[String]) {
             _ => fail("tool ffmpeg [<dir>] [-j N]"),
         }
     }
-    let dir = dir.unwrap_or_else(|| crate::config().cache_dir().join("ffmpeg"));
-    println!("ffmpeg: {}", ensure(&dir, jobs).display());
+    let config = crate::config();
+    let dir = dir.unwrap_or_else(|| config.cache_dir().join("ffmpeg"));
+    let sysroot = crate::sysroot::find(&ounce_core::games::root().unwrap_or_else(|e| fail(e)), &config.cache_dir());
+    println!("ffmpeg: {}", ensure(&dir, jobs, &sysroot).display());
 }

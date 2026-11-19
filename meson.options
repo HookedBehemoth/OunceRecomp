@@ -8,5 +8,7 @@ option('march', type: 'string', value: 'x86-64-v3',
   description: 'The CPU level the renderer is compiled for (-march)')
 option('sysroot', type: 'string', value: '',
   description: 'A sysroot to compile and link against (--sysroot)')
+option('libcxx', type: 'string', value: '',
+  description: 'A static libc++ install (include/c++/v1, lib/libc++.a, lib/libc++abi.a) the renderer is built with instead of the compiler\'s libstdc++; a release\'s, ounce tool static-llvm makes it')
 option('exe', type: 'string', value: '',
   description: 'The game executable whose exports the renderer\'s undefined symbols are checked against; empty: the export patterns only')

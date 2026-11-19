@@ -67,7 +67,7 @@ fn static_llvm() {
     b.cpp(true).file("src/llvm_shim.cpp").file("src/lld_shim.cpp").warnings(false).cargo_metadata(false);
     if clang {
         b.file("src/clang_shim.cpp");
-        // (the resource headers the build tree has, until the builder ships its own)
+        // (the build tree's resource headers; a release has its own beside the executable, main.rs resource_dir)
         println!("cargo:rustc-env=HK_CLANG_RESOURCE_DIR={}", dir.join("lib/clang").join(run(&["--version"]).split('.').next().unwrap()).display());
     }
     for f in run(&["--cxxflags"]).split_whitespace() {
@@ -99,5 +99,6 @@ fn static_llvm() {
     for l in run(&["--link-static", "--system-libs"]).split_whitespace() {
         println!("cargo:rustc-link-arg={l}");
     }
-    println!("cargo:rustc-link-arg=-lstdc++");
+    // (the C++ library statically too: the shipped ounce needs no libstdc++ of the player's)
+    println!("cargo:rustc-link-arg=-l:libstdc++.a");
 }

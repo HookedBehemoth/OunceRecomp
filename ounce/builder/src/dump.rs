@@ -71,16 +71,34 @@ pub fn finish_romfs(h: JoinHandle<Result<(), String>>) -> Result<(), String> {
     h.join().map_err(|_| "the romfs thread panicked".to_string())?
 }
 
-/// `dump <src> --check`: `@@dump <what it is>`, then `@@identity pass <build id>` or `@@identity fail <why>` (exit 1):
-/// the exefs read in memory and checked against the game description, as `build --dump` does first
-fn check(src: &Path, title: Option<&str>, game: &Path) {
+/// `dump <src> --check [--game <dir>]`: `@@dump <what it is>`, then `@@game <name>` and `@@identity pass <build id>`,
+/// or `@@identity fail <why>` (exit 1): the exefs read in memory and checked against the game's description (every
+/// game of the checkout without --game), as `build --dump` does first
+fn check(src: &Path, title: Option<&str>, game: Option<&Path>) {
     let r = Dump::open(src, title, Path::new(".")).and_then(|d| {
         println!("@@dump {}", d.describe());
         let (files, _) = d.exefs_files()?;
-        ounce_lift::game::Game::load(game)?.check_exefs(&Exefs { files })
+        let ex = Exefs { files };
+        let root = ounce_core::games::root()?;
+        let dirs: Vec<PathBuf> = match game {
+            Some(g) => vec![g.to_path_buf()],
+            None => ounce_core::games::list(&root).iter().map(|n| root.join("games").join(n)).collect(),
+        };
+        let mut why = Vec::new();
+        for dir in dirs {
+            let g = ounce_lift::game::Game::load(&dir)?;
+            match g.check_exefs(&ex) {
+                Ok(id) => return Ok((g.name, id)),
+                Err(e) => why.push(e),
+            }
+        }
+        Err(why.join("; "))
     });
     match r {
-        Ok(id) => println!("@@identity pass {}", id.build_id),
+        Ok((name, id)) => {
+            println!("@@game {name}");
+            println!("@@identity pass {}", id.build_id)
+        }
         Err(e) => {
             println!("@@identity fail {}", e.replace('\n', "; "));
             std::process::exit(1)
@@ -115,8 +133,7 @@ pub fn command(args: &[String]) {
     }
     let Some(src) = src else { fail("dump <file.nup|folder> [--verify] [--check --game <dir>] [--extract <dir>] [--title <t>] [--only exefs|romfs] [--set]") };
     if identity {
-        let game = game.unwrap_or_else(|| fail("dump --check: --game games/<game> is needed"));
-        return check(&src, title.as_deref(), &game);
+        return check(&src, title.as_deref(), game.as_deref());
     }
     if set && out.is_none() && !src.is_dir() {
         fail("dump --set records a folder: pass the dump's folder, or --extract <folder> with a .nup");

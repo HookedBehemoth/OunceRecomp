@@ -16,13 +16,9 @@ pub struct CJob {
 
 const CPU: [&str; 2] = ["-march=x86-64-v3", "-ffp-contract=off"];
 
-/// the target flags every C compile starts with: the CPU, and OUNCE_SYSROOT's --sysroot (the AppImage's glibc)
+/// the target flags every C compile starts with: the CPU (and the build's --sysroot, sysroot.rs, given apart)
 pub fn target() -> Vec<String> {
-    let mut f: Vec<String> = CPU.iter().map(|x| x.to_string()).collect();
-    if let Some(r) = std::env::var_os("OUNCE_SYSROOT").filter(|v| !v.is_empty()) {
-        f.push(format!("--sysroot={}", r.to_string_lossy()));
-    }
-    f
+    CPU.iter().map(|x| x.to_string()).collect()
 }
 
 fn s(p: &Path) -> String {
@@ -81,7 +77,15 @@ fn mllvm(flags: &[String]) -> Vec<(String, u32)> {
 
 /// Compiles `jobs` into `out` with `threads` threads. Every job's -mllvm options must be the same (they are LLVM's
 /// globals, set for the phase). Returns how many came from the cache.
-pub fn compile(jobs: &[CJob], out: &Path, threads: usize, cache: Option<&Cache>, resource_dir: &Path, aux: &crate::lift::Aux) -> Result<usize, String> {
+/// The compiler's own folders: clang's resource headers and the sysroot (sysroot.rs). An object's cache key names
+/// neither by its path: the resource headers are clang's version, which the key names, and the sysroot is named by
+/// its recipe (sysroot::key).
+pub struct Toolchain<'a> {
+    pub resource_dir: &'a Path,
+    pub sysroot: &'a Path,
+}
+
+pub fn compile(jobs: &[CJob], out: &Path, threads: usize, cache: Option<&Cache>, tc: &Toolchain, aux: &crate::lift::Aux) -> Result<usize, String> {
     let opts = jobs.first().map(|j| mllvm(&j.flags)).unwrap_or_default();
     if jobs.iter().any(|j| mllvm(&j.flags) != opts) {
         return Err("a phase of C compiles with different -mllvm options".into());
@@ -96,7 +100,7 @@ pub fn compile(jobs: &[CJob], out: &Path, threads: usize, cache: Option<&Cache>,
                 let k = next.fetch_add(1, Ordering::Relaxed);
                 let Some(j) = jobs.get(k) else { break };
                 let t = std::time::Instant::now();
-                match one(j, cache, resource_dir, aux.gate) {
+                match one(j, cache, tc, aux.gate) {
                     Ok((o, hit)) => {
                         if let Some(p) = aux.progress {
                             p.done(&j.obj, t.elapsed().as_secs_f64(), hit);
@@ -119,22 +123,23 @@ pub fn compile(jobs: &[CJob], out: &Path, threads: usize, cache: Option<&Cache>,
 }
 
 /// the driver's arguments for a job (an -MD dependency file to `deps`)
-fn args(j: &CJob, resource_dir: &Path, deps: &Path) -> Vec<String> {
+fn args(j: &CJob, tc: &Toolchain, deps: &Path) -> Vec<String> {
     let mut a = j.flags.clone();
-    a.extend(["-fstack-protector-strong".into(), format!("-resource-dir={}", s(resource_dir))]);
+    a.extend(["-fstack-protector-strong".into(), format!("-resource-dir={}", s(tc.resource_dir)), format!("--sysroot={}", s(tc.sysroot))]);
     a.extend(["-MD".into(), "-MF".into(), s(deps), "-c".into(), s(&j.src)]);
     a
 }
 
 /// one job through the cache: the manifest (by source and flags) names the files the last compile read; the object
 /// is found by their contents. A miss compiles and records both.
-fn one(j: &CJob, cache: Option<&Cache>, resource_dir: &Path, gate: &crate::gate::Gate) -> Result<(Vec<u8>, bool), String> {
-    // (the manifest is found by the flags as given: which files a compile reads depends on the include folders. The
-    // object is found by the flags less those folders and the files' contents: what they hold is in the list)
+fn one(j: &CJob, cache: Option<&Cache>, tc: &Toolchain, gate: &crate::gate::Gate) -> Result<(Vec<u8>, bool), String> {
+    // (the manifest is found by the flags as given and the sysroot's path: which files a compile reads depends on the
+    // include folders. The object is found by the flags less those folders, the sysroot's recipe and the files'
+    // contents: what they hold is in the list)
     let flags: Vec<&str> = j.flags.iter().map(String::as_str).filter(|f| !f.starts_with("-I")).collect();
     let base = |kind: &str| {
-        let k = Key::new(kind).add(s(&j.src).as_bytes()).add(b"-fstack-protector-strong");
-        if kind == "manifest" { k.add(j.flags.join("\0").as_bytes()) } else { k.add(flags.join("\0").as_bytes()) }
+        let k = Key::new(kind).add(s(&j.src).as_bytes()).add(b"-fstack-protector-strong").add(crate::sysroot::key().as_bytes());
+        if kind == "manifest" { k.add(j.flags.join("\0").as_bytes()).add(s(tc.sysroot).as_bytes()) } else { k.add(flags.join("\0").as_bytes()) }
     };
     let content_key = |deps: &[String]| -> Option<Key> {
         let mut k = base("c");
@@ -154,7 +159,7 @@ fn one(j: &CJob, cache: Option<&Cache>, resource_dir: &Path, gate: &crate::gate:
     }
     let tmp = std::env::temp_dir().join(format!("hk-deps-{}-{}.d", std::process::id(), j.obj));
     let lease = gate.enter(crate::gate::NEED_C_MB);
-    let o = crate::clang::compile(&args(j, resource_dir, &tmp)).map_err(|e| format!("{}: {e}", j.src.display()))?;
+    let o = crate::clang::compile(&args(j, tc, &tmp)).map_err(|e| format!("{}: {e}", j.src.display()))?;
     drop(lease);
     let text = std::fs::read_to_string(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
     let _ = std::fs::remove_file(&tmp);

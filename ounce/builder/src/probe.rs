@@ -354,9 +354,33 @@ fn udmabuf() -> Item {
     }
 }
 
+/// Whether the back end would start on this PC: Err(the failed items) when it would not (no Vulkan, no GPU of 1.3)
+pub fn device_ready() -> Result<(), String> {
+    let failed: Vec<String> = checks().into_iter().filter(|i| i.state == "fail").map(|i| format!("{}: {}", i.key, i.value)).collect();
+    if failed.is_empty() { Ok(()) } else { Err(failed.join("; ")) }
+}
+
+/// SDL, which the game loads at run time for its window, sound and controllers (runtime/media/hos_sdl.c's names)
+fn sdl() -> Item {
+    // (a release puts its own beside the game)
+    if ounce_core::games::root().ok().and_then(|r| crate::sdl::prebuilt(&r)).is_some() {
+        return item("sdl", true, "SDL 3.4.20, the release's own");
+    }
+    for (name, what) in [(c"libSDL3.so.0", "SDL3"), (c"libSDL2-2.0.so.0", "SDL2")] {
+        // SAFETY: dlopen of a NUL-terminated name; the handle is closed at once
+        let h = unsafe { libc::dlopen(name.as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL) };
+        if !h.is_null() {
+            unsafe { libc::dlclose(h) };
+            return item("sdl", true, what);
+        }
+    }
+    optional("sdl", false, "neither SDL3 nor SDL2 is installed: the game runs without a window, sound or controllers. Install your distribution's SDL3 (or SDL2) package")
+}
+
 pub fn command() {
     let mut items = checks();
     items.push(udmabuf());
+    items.push(sdl());
     let failed: Vec<&str> = items.iter().filter(|i| i.state == "fail").map(|i| i.key).collect();
     for i in &items {
         println!("@@probe {} {} {}", i.key, i.state, i.value);

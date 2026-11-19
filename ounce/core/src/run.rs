@@ -124,8 +124,15 @@ pub fn run(layout: &Layout, config: &Config, game: &Game, o: &Options) -> Result
 
     let mut set: Vec<(String, String)> = Vec::new();
     let s = |p: &Path| p.to_string_lossy().into_owned();
-    // (the saves: a window run plays with the user's own, any other run with a copy of its own in the run folder)
-    let user = if o.headless || o.replay.is_some() { dir.join("user") } else { config.data_dir() };
+    // (the saves: a window run plays with the user's own (a player's game folder's user/, else the data folder), any
+    // other run with a copy of its own in the run folder)
+    let user = if o.headless || o.replay.is_some() {
+        dir.join("user")
+    } else if o.build.is_some() && folder.join("user").is_dir() {
+        folder.join("user")
+    } else {
+        config.data_dir()
+    };
     if let Some(r) = &o.record {
         let rec = layout.recordings(config).join(r);
         if rec.exists() {

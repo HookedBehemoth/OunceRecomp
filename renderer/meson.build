@@ -70,8 +70,7 @@ vk_so = shared_module('ounce_renderer', vk_sources, spv_headers,
   link_whole: [eden_lib, sirit_lib, zstd_lib] + stamped,
   name_prefix: '',
   link_args: target_args + ['-fuse-ld=lld', '-Wl,-Map=' + meson.current_build_dir() / 'ounce_renderer.so.map',
-                            '-Wl,-Bsymbolic', '-Wl,--gc-sections', '-static-libstdc++', '-static-libgcc',
-                            '-ldl', '-lpthread', '-lm'])
+                            '-Wl,-Bsymbolic', '-Wl,--gc-sections'] + cxx_link_args + ['-ldl', '-lpthread', '-lm'])
 
 # (the host dlopens it with RTLD_NOW: an unresolved symbol is a failed build here, not a black window)
 exe = get_option('exe') == '' ? '' : root / get_option('exe')

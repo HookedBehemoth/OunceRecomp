@@ -1,8 +1,10 @@
-//! ounce-gui: the builder's window. The player picks the game (one of the checkout's games/), the dump and the game
-//! folder; the dump and the PC are checked, the game folder is built and then played. Every step is an `ounce` child
-//! process whose `@@` lines the window reads (docs/builder-plan.md, "The window").
+//! ounce-gui: the builder's window. The player picks the dump and the game folder; the dump is checked against every
+//! game of the sources (which game it is), the PC's GPU is checked from the start, the game folder is built and then
+//! played. Every step is an `ounce` child process whose `@@` lines the window reads (docs/builder-plan.md, "The
+//! window").
 //!
-//! `ounce-gui [<dump> [<game folder>]]` fills the two fields.
+//! `ounce-gui [<dump> [<game folder>]]` fills the two fields; `ounce-gui <ounce command> ...` (build, probe, dump, ...)
+//! runs the `ounce` beside it instead, so the AppImage, whose AppRun is this program, is the command line too.
 
 mod child;
 
@@ -42,26 +44,19 @@ impl Paths {
         Paths { builder: s(builder), root: s(root) }
     }
 
-    fn games(&self) -> Vec<String> {
-        ounce_core::games::list(Path::new(&self.root))
-    }
-
-    /// games/<game>
-    fn game_dir(&self, game: &str) -> String {
-        Path::new(&self.root).join("games").join(game).to_string_lossy().into_owned()
-    }
-
-    /// the game's executable name (its game.toml's exe)
-    fn exe(&self, game: &str) -> Result<String, String> {
-        ounce_core::games::Game::load(Path::new(&self.root), game).map(|g| g.exe)
+    /// the game's title (its game.toml's title)
+    fn title(&self, game: &str) -> String {
+        ounce_core::games::Game::load(Path::new(&self.root), game).map_or_else(|_| game.to_string(), |g| g.title)
     }
 }
 
-/// `dump --check`: whether the dump is the game
+/// `dump --check`: which game the dump is
 #[derive(Default)]
 struct Identity {
     child: Option<Child>,
     what: String,
+    /// the game's name (`@@game`)
+    game: String,
     result: Option<Result<String, String>>,
 }
 
@@ -93,6 +88,8 @@ struct Build {
     tex: Option<(f64, f64)>,
     /// the shaders' step: (done, of) of its pack, then of its precompile
     shaders: Option<(bool, f64, f64)>,
+    /// why the precompile was left out (no GPU the back end starts on)
+    shaders_skipped: Option<String>,
     current: String,
     error: Option<String>,
     log: VecDeque<String>,
@@ -112,6 +109,7 @@ impl Build {
             eta: None,
             tex: None,
             shaders: None,
+            shaders_skipped: None,
             current: String::new(),
             error: None,
             log: VecDeque::new(),
@@ -148,6 +146,10 @@ impl Build {
                     self.tex = Some((b.parse().unwrap_or(0.0), of.parse().unwrap_or(1.0)));
                     self.current = path.to_string();
                 }
+            }
+            Some(("shaders", r)) if r.starts_with("skipped") => {
+                self.shaders_skipped = Some(r.trim_start_matches("skipped").trim().to_string());
+                self.shaders = Some((true, 0.0, 0.0));
             }
             Some(("shaders", r)) => {
                 // (`@@shaders pack <done> <of>` while the pack is made, `@@shaders <done> <of> <translated> <kept> <failed>`
@@ -207,7 +209,7 @@ impl Build {
 
 struct App {
     paths: Paths,
-    games: Vec<String>,
+    /// the dump's game (dump --check's), empty until one is found
     game: String,
     screen: Screen,
     dump: String,
@@ -266,13 +268,10 @@ fn state_color(state: &str) -> Option<Color32> {
 impl App {
     fn new(args: Vec<String>) -> App {
         let paths = Paths::find();
-        let games = paths.games();
-        let game = games.first().cloned().unwrap_or_default();
         App {
-            out: args.get(1).cloned().unwrap_or_else(|| default_out(&game)),
+            out: args.get(1).cloned().unwrap_or_default(),
             paths,
-            games,
-            game,
+            game: String::new(),
             screen: Screen::Game,
             dump: args.first().cloned().unwrap_or_default(),
             high: false,
@@ -296,9 +295,8 @@ impl App {
             return;
         }
         self.checked = self.dump.clone();
-        let game = self.paths.game_dir(&self.game);
         self.identity = Identity::default();
-        match self.spawn(ctx, &["dump", &self.dump.clone(), "--check", "--game", &game]) {
+        match self.spawn(ctx, &["dump", &self.dump.clone(), "--check"]) {
             Ok(c) => self.identity.child = Some(c),
             Err(e) => self.identity.result = Some(Err(e)),
         }
@@ -329,9 +327,17 @@ impl App {
                 match l {
                     Line::Out(s) => match tag(&s) {
                         Some(("dump", r)) => self.identity.what = r.to_string(),
+                        Some(("game", r)) => self.identity.game = r.trim().to_string(),
                         Some(("identity", r)) => {
                             let (state, why) = r.split_once(' ').unwrap_or((r, ""));
                             self.identity.result = Some(if state == "pass" { Ok(why.to_string()) } else { Err(why.to_string()) });
+                            if state == "pass" {
+                                // (the game folder offered follows the game, unless one was typed)
+                                if self.out.is_empty() || self.out == default_out(&self.game) {
+                                    self.out = default_out(&self.identity.game);
+                                }
+                                self.game = self.identity.game.clone();
+                            }
                             // (a dump folder that is the game becomes its dump in the config, as `ounce dump --set`)
                             if state == "pass" && Path::new(&self.checked).is_dir() {
                                 if let Err(e) = ounce_core::config::Config::load()
@@ -453,20 +459,16 @@ impl eframe::App for App {
 
 impl App {
     fn game_screen(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let before = self.game.clone();
-        egui::ComboBox::from_label("The game").selected_text(self.game.as_str()).show_ui(ui, |ui| {
-            for g in &self.games {
-                ui.selectable_value(&mut self.game, g.clone(), g.as_str());
-            }
-        });
-        if self.game != before {
-            // (another game: its own folder, and the dump checked against it)
-            if self.out == default_out(&before) {
-                self.out = default_out(&self.game);
-            }
-            self.checked.clear();
+        // (the first start's warning: /dev/udmabuf, which the player fixes once, with the probe's text)
+        if let Some((_, state, value)) = self.probe.items.iter().find(|i| i.0 == "udmabuf" && i.1 != "pass") {
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    dot(ui, state_color(state));
+                    ui.label(value.as_str());
+                });
+            });
+            ui.add_space(8.0);
         }
-        ui.add_space(8.0);
         if path_row(ui, "The dump: a .nup file, or a folder with exefs/ and romfs/", &mut self.dump, true) {
             self.check_dump(ctx);
         }
@@ -481,7 +483,7 @@ impl App {
             Some(Ok(id)) => {
                 dot(ui, Some(GREEN));
                 let what = self.identity.what.rsplit_once("; ").map_or("a dump folder", |w| w.1);
-                ui.label(format!("This is the game: {what}, build {}", &id[..id.len().min(16)]));
+                ui.label(format!("This is {}: {what}, build {}", self.paths.title(&self.game), &id[..id.len().min(16)]));
             }
             Some(Err(e)) => {
                 dot(ui, Some(RED));
@@ -507,7 +509,6 @@ impl App {
         let ok = matches!(self.identity.result, Some(Ok(_))) && !self.out.trim().is_empty();
         if ui.add_enabled(ok, egui::Button::new("Next: check this PC")).clicked() {
             self.screen = Screen::Device;
-            self.start_probe(ctx);
         }
     }
 
@@ -554,6 +555,9 @@ impl App {
         ui.horizontal(|ui| {
             if ui.button("Back").clicked() {
                 self.screen = Screen::Game;
+            }
+            if ui.add_enabled(self.probe.child.is_none(), egui::Button::new("Check again")).clicked() {
+                self.start_probe(ctx);
             }
             if ui.add_enabled(pass && !self.out.trim().is_empty(), egui::Button::new("Build")).clicked() {
                 self.start_build(ctx);
@@ -645,24 +649,25 @@ impl App {
         ui.label(format!("It is in {}", self.out));
         if let Some(b) = &self.build {
             ui.label(RichText::new(format!("The build took {}.", minutes(b.stage_started.duration_since(b.started).as_secs_f64()))).weak());
+            if let Some(why) = &b.shaders_skipped {
+                ui.label(RichText::new(format!("The shaders were not prepared ({why}): the game prepares them while it plays.")).color(YELLOW));
+            }
         }
         ui.add_space(12.0);
         ui.horizontal(|ui| {
-            if ui.button("Play").clicked() {
-                match self.paths.exe(&self.game) {
-                    Ok(name) => {
-                        let exe = Path::new(&self.out).join(name);
-                        match std::process::Command::new(&exe).current_dir(&self.out).spawn() {
-                            Ok(c) => self.played.push(c),
-                            Err(e) => self.note = format!("{}: {e}", exe.display()),
-                        }
-                    }
-                    Err(e) => self.note = e,
+            // (the game as `ounce run --build` starts a window run: the folder's romfs, saves and options file)
+            if ui.add_enabled(self.played.is_empty(), egui::Button::new("Play")).clicked() {
+                let args = play_args(&self.game, &self.out);
+                match std::process::Command::new(&self.paths.builder).args(&args).spawn() {
+                    Ok(c) => self.played.push(c),
+                    Err(e) => self.note = format!("{}: {e}", self.paths.builder),
                 }
             }
-            if ui.button("Open folder").clicked() {
-                if let Err(e) = std::process::Command::new("xdg-open").arg(&self.out).spawn() {
-                    self.note = format!("xdg-open: {e}");
+            if let Some(open) = on_path("xdg-open") {
+                if ui.button("Open folder").clicked() {
+                    if let Err(e) = std::process::Command::new(&open).arg(&self.out).spawn() {
+                        self.note = format!("{}: {e}", open.display());
+                    }
                 }
             }
         });
@@ -677,18 +682,56 @@ fn default_out(game: &str) -> String {
     format!("{}/Games/{game}", std::env::var("HOME").unwrap_or_default())
 }
 
+/// `ounce`'s arguments for Play: a window run of the game folder
+fn play_args(game: &str, folder: &str) -> Vec<String> {
+    ["run", game, "--build", folder].map(String::from).to_vec()
+}
+
+/// `name` in a folder of PATH
+fn on_path(name: &str) -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?).map(|d| d.join(name)).find(|p| p.is_file())
+}
+
+/// The first argument names one of ounce's commands: the window is not wanted
+fn is_command(args: &[String]) -> bool {
+    const COMMANDS: &[&str] = &["build", "run", "test", "profile", "probe", "dump", "config", "tool", "help", "-h", "--help"];
+    args.first().is_some_and(|a| COMMANDS.contains(&a.as_str()))
+}
+
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if is_command(&args) {
+        use std::os::unix::process::CommandExt;
+        let e = std::process::Command::new(&Paths::find().builder).args(&args).exec();
+        eprintln!("ounce-gui: {e}");
+        std::process::exit(127);
+    }
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([780.0, 560.0]).with_title("OunceRecomp"),
         ..Default::default()
     };
-    eframe::run_native("ounce-gui", opts, Box::new(|_| Ok(Box::new(App::new(args)))))
+    eframe::run_native("ounce-gui", opts, Box::new(|cc| {
+        let mut app = App::new(args);
+        // (the GPU is checked from the start: its warnings are shown with the first screen)
+        app.start_probe(&cc.egui_ctx);
+        Ok(Box::new(app))
+    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn commands_and_play() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(is_command(&a(&["probe"])) && is_command(&a(&["build", "oot"])));
+        assert!(!is_command(&a(&["/x/oot.nup", "/home/me/Games/oot"])) && !is_command(&[]));
+        assert_eq!(play_args("oot", "/g/oot"), a(&["run", "oot", "--build", "/g/oot"]));
+        let mut b = Build::new(None);
+        b.read(Line::Out("@@shaders skipped vulkan: libvulkan.so.1 is not installed".into()));
+        assert_eq!(b.shaders_skipped.as_deref(), Some("vulkan: libvulkan.so.1 is not installed"));
+    }
 
     #[test]
     fn reads_a_build() {

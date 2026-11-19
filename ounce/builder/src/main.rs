@@ -3,6 +3,8 @@
 //! build is made of, and the window's build of a player's game folder.
 
 #[cfg(feature = "clang")]
+mod appdir;
+#[cfg(feature = "clang")]
 mod clang;
 mod cache;
 #[cfg(feature = "clang")]
@@ -10,7 +12,9 @@ mod checks;
 mod commands;
 mod compile;
 mod dump;
+mod elf;
 mod exclusive;
+mod fetch;
 mod ffmpeg;
 mod gate;
 #[cfg(feature = "clang")]
@@ -26,6 +30,8 @@ mod profile;
 mod progress;
 mod smoke;
 mod static_llvm;
+mod sdl;
+mod sysroot;
 mod textures;
 #[cfg(feature = "clang")]
 mod version;
@@ -63,7 +69,7 @@ const HELP: &str = "ounce <command> ...
                                          limits.cache_days, limits.run_free_mem_gb,
                                          limits.build_mem)
   tool ...                               the low-level commands (ounce tool help)
-build, run, test and profile also take:
+build, run, test, profile and tool also take:
   --exclusive                            one build or game run at a time on this PC: waits for the others (a child
                                          ounce of the one holding it goes on); never wrap ounce in flock
   --mem <size>                           runs in a systemd user scope capped at <size> (MemoryMax, no swap); an
@@ -77,6 +83,7 @@ const TOOL_HELP: &str = "ounce tool <command> ...
   build <out dir> --direct <ounce_renderer.so> --ffmpeg <dir> --game <dir> --obj <dir> [-j N] [--cache <dir>] [--version <text>]
         [--check <obj dir>] [--gen <lift dir> [--gen-parts]] [--map <file>] [--progress] [--root <dir>] [--exefs <dir>]
         [--dump <file.nup|folder> [--title <t>] [--dump-dir <dir>]] [--no-textures] [--quality fast|high] [--shaders]
+        [--sysroot <dir>] [--resource-dir <dir>] [--sdl <libSDL3.so.0>]
                                        the lift, every compile and the link in this process (feature clang), then
                                        <out>/prepared, the texture store: without --dump kept while current, else copied
                                        from the main checkout's build or converted; --dump makes <out> a game folder: the
@@ -86,7 +93,7 @@ const TOOL_HELP: &str = "ounce tool <command> ...
                                        tools; objects, rt64/ and the link order go to --obj; a game folder (or
                                        --shaders) also gets shaders.pack and its shader caches filled by the game's
                                        --precompile
-  dump <src> --check --game <dir>      `@@` lines: whether the dump is the game (the window's check)
+  dump <src> --check [--game <dir>]    `@@` lines: which game the dump is (every game without --game; the window's check)
   link <out> <objs.rsp> [--order <hot_order.bin>] [--map <file>] [--labels <file>] [--print] [-- <libs>...]
                                        the game's link (a list of objects), lld in this process
   textures <out dir> --game <dir> [--romfs <dir>] [--fast] [-j N] [--only <prefix>]...
@@ -102,6 +109,21 @@ const TOOL_HELP: &str = "ounce tool <command> ...
   llvm-version                         the libLLVM this process uses
   static-llvm [<dir>] [-j N]           the static LLVM, clang and lld a release links (default work/llvm-static; needs
                                        git, cmake, ninja, clang and lld)
+  sysroot [<dir>]                      the sysroot every compile and link is made against: glibc 2.35, Linux 5.15's
+                                       headers, GCC 12's start files, libgcc and libstdc++ from Ubuntu 22.04's pinned
+                                       packages, in <dir>/<recipe> (default the cache folder's sysroot/; a release
+                                       ships it as prebuilt/sysroot; needs curl and tar)
+  sdl [<dir>] [-j N]                   the SDL3 a release puts beside the game (3.4.20, against the sysroot, its back
+                                       ends loaded at run time) in <dir>/<recipe> (default the cache folder's sdl/; a
+                                       release ships it as prebuilt/sdl; needs curl, tar, cmake, ninja and the back
+                                       ends' headers)
+  portable <file>...                   the libraries and glibc versions a program needs; fails on a library outside
+                                       glibc's and libgcc's, a glibc newer than the sysroot's, or a C++ library
+  appdir <dir> [--llvm <static LLVM dir>] [--appimage <file>] [-j N]
+                                       the release: the renderer, ounce (static LLVM) and ounce-gui built against the
+                                       sysroot and checked as portable, the AppDir in <dir>, then the AppImage (default
+                                       OunceRecomp-x86_64.AppImage beside <dir>); needs meson, ninja, cargo, clang, lld
+                                       and mksquashfs, and `tool static-llvm` first
   ffmpeg [<dir>] [-j N]                the FFmpeg the game links (VP9, dav1d's AV1, swscale; static) in <dir>/<recipe>
                                        (default the cache folder's ffmpeg/; a release ships it as prebuilt/ffmpeg; needs
                                        curl, tar, clang, meson, ninja, nasm, make and pkg-config)";
@@ -158,10 +180,10 @@ fn exclusive_flags(argv: &mut Vec<String>) {
     if !(exclusive || mem.is_some()) {
         return;
     }
-    if !matches!(cmd, "build" | "run" | "test" | "profile") {
-        fail(format!("{cmd}: --exclusive and --mem go with build, run, test and profile"));
+    if !matches!(cmd, "build" | "run" | "test" | "profile" | "tool") {
+        fail(format!("{cmd}: --exclusive and --mem go with build, run, test, profile and tool"));
     }
-    if mem.is_none() && exclusive && cmd == "build" {
+    if mem.is_none() && exclusive && matches!(cmd, "build" | "tool") {
         mem = config().build_mem();
     }
     if let Some(m) = &mem {
@@ -242,6 +264,11 @@ fn tool(argv: &[String]) {
         Some("version") => println!("{}", version::describe(std::path::Path::new(argv.get(1).map_or(".", |s| s.as_str())))),
         Some("static-llvm") => static_llvm::command(&argv[1..]),
         Some("ffmpeg") => ffmpeg::command(&argv[1..]),
+        Some("sysroot") => sysroot::command(&argv[1..]),
+        Some("sdl") => sdl::command(&argv[1..]),
+        Some("portable") => elf::command(&argv[1..]),
+        #[cfg(feature = "clang")]
+        Some("appdir") => appdir::command(&argv[1..]),
         Some("llvm-version") => println!("{}", llvm::version()),
         _ => println!("{TOOL_HELP}"),
     }
@@ -344,7 +371,8 @@ fn link_cmd(args: &[String]) {
         .map(|l| PathBuf::from(l.trim().trim_matches('"')))
         .filter(|p| !p.as_os_str().is_empty())
         .collect();
-    let sys = link::Sysroot::find().unwrap_or_else(|e| fail(e));
+    let root = ounce_core::games::root().unwrap_or_else(|e| fail(e));
+    let sys = link::Sysroot { root: sysroot::find(&root, &config().cache_dir()) };
     let dir = out.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
     let order = order.map(|b| link::order_file(&b, dir).unwrap_or_else(|e| fail(e)));
     let x = link::Exe { out, map: map.as_deref(), objects: &objects, order: order.as_deref(), libs: &libs };
@@ -409,9 +437,14 @@ fn lift_compile(args: &[String]) {
     }
 }
 
-/// the clang resource folder: --resource-dir, else the static LLVM's build tree's
+/// clang's resource headers: a release's `<prefix>/lib/clang/<major>` beside `<prefix>/bin/ounce`, as clang's own
+/// driver finds them, else the folder of the clang this ounce was built with (the system's, or the static LLVM's
+/// build tree)
 #[cfg(feature = "clang")]
-const RESOURCE_DIR: &str = env!("HK_CLANG_RESOURCE_DIR");
+fn resource_dir() -> PathBuf {
+    let beside = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.parent()?.join("lib/clang").join(LLVM_MAJOR.to_string())));
+    beside.filter(|d| d.join("include/stddef.h").is_file()).unwrap_or_else(|| PathBuf::from(env!("HK_CLANG_RESOURCE_DIR")))
+}
 
 /// `build <out dir> --direct <so> ...`: the game folder (builder, ounce_renderer.so, image.bin) from the dump,
 /// and its checks
@@ -435,12 +468,13 @@ fn build(args: &[String]) {
     let jobs = gate::default_jobs();
     let mut run = ounce_lift::pipeline::Run { jobs: std::thread::available_parallelism().map_or(1, |n| n.get()), hot_first: true, ..Default::default() };
     let (mut cjobs, mut out, mut check, mut direct) = (jobs, None::<PathBuf>, None::<PathBuf>, None::<PathBuf>);
-    let (mut cache_dir, mut version, mut resource) = (None::<PathBuf>, None::<String>, PathBuf::from(RESOURCE_DIR));
+    let (mut cache_dir, mut version, mut resource) = (None::<PathBuf>, None::<String>, resource_dir());
+    let mut sysroot_dir = None::<PathBuf>;
     let (mut gen, mut gen_parts, mut progress) = (None::<PathBuf>, false, false);
     let (mut dump_src, mut dump_dir, mut title) = (None::<PathBuf>, None::<PathBuf>, None::<String>);
     let mut settings = ounce_tex::convert::Settings::FAST;
     let (mut obj_dir, mut no_textures, mut map_file, mut with_shaders) = (None::<PathBuf>, false, None::<PathBuf>, false);
-    let mut ffmpeg = None::<PathBuf>;
+    let (mut ffmpeg, mut sdl_lib) = (None::<PathBuf>, None::<PathBuf>);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut val = || it.next().cloned().unwrap_or_else(|| fail(format!("{a} wants a value")));
@@ -452,6 +486,8 @@ fn build(args: &[String]) {
             "--cache" => cache_dir = Some(val().into()),
             "--version" => version = Some(val()),
             "--resource-dir" => resource = val().into(),
+            "--sysroot" => sysroot_dir = Some(val().into()),
+            "--sdl" => sdl_lib = Some(val().into()),
             "--gen" => gen = Some(val().into()),
             "--gen-parts" => gen_parts = true,
             "--progress" => progress = true,
@@ -516,6 +552,8 @@ fn build(args: &[String]) {
     }
     let cache_dir = cache_dir.unwrap_or_else(|| ounce_core::layout::Layout::cache(&config));
     let cache = cache::Cache::open(&cache_dir).unwrap_or_else(|e| fail(e));
+    let sysroot_dir = sysroot_dir.unwrap_or_else(|| sysroot::find(&root, &config.cache_dir()));
+    let tc = host::Toolchain { resource_dir: &resource, sysroot: &sysroot_dir };
     let gate = gate::Gate::new();
     let prog = progress::Progress::new(progress, cjobs, &cache_dir);
     if gen_parts && gen.is_none() {
@@ -540,8 +578,8 @@ fn build(args: &[String]) {
     let sources = game.sources(&root).unwrap_or_else(|e| fail(e));
     let host_jobs = host::host_jobs(&root, &rt64, &sources, &version, &ffmpeg).unwrap_or_else(|e| fail(e));
     let rt = host::rt_job(&root, &rt64);
-    let hits = host::compile(&host_jobs, &obj, cjobs, Some(&cache), &resource, &aux).unwrap_or_else(|e| fail(e))
-        + host::compile(std::slice::from_ref(&rt), &obj, 1, Some(&cache), &resource, &aux).unwrap_or_else(|e| fail(e));
+    let hits = host::compile(&host_jobs, &obj, cjobs, Some(&cache), &tc, &aux).unwrap_or_else(|e| fail(e))
+        + host::compile(std::slice::from_ref(&rt), &obj, 1, Some(&cache), &tc, &aux).unwrap_or_else(|e| fail(e));
     println!("host C: {} files ({hits} from the cache) in {:.1} s", host_jobs.len() + 1, t.elapsed().as_secs_f64());
     // (the patch declarations the lift scans, against what the compiler made of them)
     let host_objs: Vec<PathBuf> = host_jobs.iter().filter(|j| j.obj.starts_with("host_")).map(|j| obj.join(&j.obj)).collect();
@@ -578,7 +616,7 @@ fn build(args: &[String]) {
     let order_bin = game_dir.join("hot_order.bin");
     let order = order_bin.exists().then(|| link::order_file(&order_bin, &obj).unwrap_or_else(|e| fail(e)));
     let libs: Vec<String> = ffmpeg::LIBS.iter().map(|l| ffmpeg.join("lib").join(l).to_string_lossy().into_owned()).collect();
-    let sys = link::Sysroot::find().unwrap_or_else(|e| fail(e));
+    let sys = link::Sysroot { root: sysroot_dir.clone() };
     let x = link::Exe { out: &exe, map: Some(&map), objects: &objects, order: order.as_deref(), libs: &libs };
     stage("link", "linking");
     let t = Instant::now();
@@ -590,7 +628,10 @@ fn build(args: &[String]) {
     println!("linked {} ({} MB, {n} functions named) in {:.1} s", out.join(&game.exe).display(), std::fs::metadata(&exe).map_or(0, |m| m.len() >> 20), t.elapsed().as_secs_f64());
     checks::backend_symbols(&direct, &exe).unwrap_or_else(|e| fail(e));
     // (the folder the game runs from: the image beside the executable, where hos_main.c looks without an argument)
-    for (from, to) in [(direct.clone(), out.join("ounce_renderer.so")), (obj.join("image.bin"), out.join("image.bin"))] {
+    let mut installs = vec![(direct.clone(), out.join("ounce_renderer.so")), (obj.join("image.bin"), out.join("image.bin"))];
+    // (a release's SDL, which the game loads from beside itself before the system's)
+    installs.extend(sdl_lib.iter().map(|l| (l.clone(), out.join(sdl::LIB))));
+    for (from, to) in installs {
         if from != to {
             install(&from, &to, false).unwrap_or_else(|e| fail(e));
         }

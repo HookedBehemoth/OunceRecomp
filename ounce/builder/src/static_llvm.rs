@@ -1,9 +1,11 @@
 //! `ounce tool static-llvm [<dir>]`: the static LLVM the shipped ounce links (`--features static-llvm,clang`). LLVM,
 //! clang and lld of one pinned release, X86 only, the libraries alone (no tools, tests, docs, bindings, terminfo,
-//! libxml2, zlib or zstd), built for x86-64-v3 like the game, in `<dir>/build` from a shallow clone in `<dir>/src`
-//! (default work/llvm-static). Then: `LLVM_STATIC_DIR=<dir>/build cargo build --release -p ounce --features
-//! static-llvm,clang`. About 10 minutes on 16 threads and 4.4 GB at the peak with 12 jobs (-j), 3.9 GB on disk.
-//! LLVM is built with git, CMake, Ninja, clang and lld, run as child processes.
+//! libxml2, zlib or zstd), built for x86-64-v3 like the game against the build's sysroot (sysroot.rs: they then run
+//! on glibc 2.35), in `<dir>/build` from a shallow clone in `<dir>/src` (default work/llvm-static). Then:
+//! `LLVM_STATIC_DIR=<dir>/build cargo build --release -p ounce --features static-llvm,clang` (`ounce tool appdir`
+//! does it). It also builds libc++ from the same sources into `<dir>/libcxx`, which the release's renderer links.
+//! About 10 minutes on 16 threads and 4.4 GB at the peak with 12 jobs (-j), 3.9 GB on disk. LLVM is built with git,
+//! CMake, Ninja, clang and lld, run as child processes.
 
 use crate::fail;
 use std::path::{Path, PathBuf};
@@ -52,7 +54,9 @@ pub fn command(args: &[String]) {
             _ => fail("tool static-llvm [<dir>] [-j N]"),
         }
     }
-    let dir = dir.unwrap_or_else(|| ounce_core::games::root().unwrap_or_else(|e| fail(e)).join("work/llvm-static"));
+    let root = ounce_core::games::root().unwrap_or_else(|e| fail(e));
+    let dir = dir.unwrap_or_else(|| root.join("work/llvm-static"));
+    let sysroot = crate::sysroot::find(&root, &crate::config().cache_dir());
     let src = dir.join("src");
     std::fs::create_dir_all(&dir).unwrap_or_else(|e| fail(format!("{}: {e}", dir.display())));
     if !src.join(".git").is_dir() {
@@ -68,10 +72,35 @@ pub fn command(args: &[String]) {
     let log = std::fs::File::create(dir.join("configure.log")).unwrap_or_else(|e| fail(e));
     let mut c = Command::new("cmake");
     c.args(["-G", "Ninja", "-S"]).arg(src.join("llvm")).arg("-B").arg(&build).args(CMAKE_OPTIONS.iter().map(|o| format!("-D{o}"))).stdout(log);
+    c.arg(format!("-DCMAKE_SYSROOT={}", sysroot.display()));
     run(c, "LLVM's configure (configure.log)");
     let mut c = Command::new("ninja");
     c.arg("-C").arg(&build).arg("-j").arg(jobs.to_string()).args(TARGETS);
     run(c, "LLVM's build");
     let version = Command::new(Path::new(&build).join("bin/llvm-config")).arg("--version").output().map_or(String::new(), |o| String::from_utf8_lossy(&o.stdout).trim().to_string());
     println!("static-llvm: {} ({version})", build.display());
+    // (libc++ for the release's renderer: the sysroot's libstdc++ is GCC 12's, which has no <format>)
+    let rt = dir.join("libcxx-build");
+    let log = std::fs::File::create(dir.join("libcxx-configure.log")).unwrap_or_else(|e| fail(e));
+    let mut c = Command::new("cmake");
+    c.args(["-G", "Ninja", "-S"]).arg(src.join("runtimes")).arg("-B").arg(&rt).args(LIBCXX_OPTIONS.iter().map(|o| format!("-D{o}"))).stdout(log);
+    c.arg(format!("-DCMAKE_SYSROOT={}", sysroot.display())).arg(format!("-DCMAKE_INSTALL_PREFIX={}", dir.join(LIBCXX).display()));
+    run(c, "libc++'s configure (libcxx-configure.log)");
+    let mut c = Command::new("ninja");
+    c.arg("-C").arg(&rt).arg("-j").arg(jobs.to_string()).args(["install-cxx", "install-cxxabi"]);
+    run(c, "libc++'s build");
+    println!("static-llvm: libc++ in {}", dir.join(LIBCXX).display());
 }
+
+/// libc++ and libc++abi, static and PIC, on libgcc's unwinder: `<dir>/libcxx`, what the release's renderer links
+/// (renderer's meson option `libcxx`)
+pub const LIBCXX: &str = "libcxx";
+
+const LIBCXX_OPTIONS: &[&str] = &[
+    "CMAKE_BUILD_TYPE=Release", "CMAKE_C_COMPILER=clang", "CMAKE_CXX_COMPILER=clang++", "LLVM_ENABLE_RUNTIMES=libcxx;libcxxabi",
+    "CMAKE_C_FLAGS=-march=x86-64-v3 -ffunction-sections -fdata-sections",
+    "CMAKE_CXX_FLAGS=-march=x86-64-v3 -ffunction-sections -fdata-sections", "CMAKE_POSITION_INDEPENDENT_CODE=ON",
+    "LIBCXX_ENABLE_SHARED=OFF", "LIBCXXABI_ENABLE_SHARED=OFF", "LIBCXX_ENABLE_STATIC_ABI_LIBRARY=ON",
+    "LIBCXXABI_USE_LLVM_UNWINDER=OFF", "LIBCXX_INCLUDE_TESTS=OFF", "LIBCXX_INCLUDE_BENCHMARKS=OFF", "LIBCXXABI_INCLUDE_TESTS=OFF",
+    "LIBCXX_INCLUDE_DOCS=OFF", "LIBCXX_HARDENING_MODE=none", "LLVM_INCLUDE_TESTS=OFF",
+];

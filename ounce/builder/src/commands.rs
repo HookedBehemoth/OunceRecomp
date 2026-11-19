@@ -113,7 +113,8 @@ pub fn build(args: &[String]) {
     let log = layout.build_log();
     std::fs::write(&log, "").unwrap_or_else(|e| fail(format!("{}: {e}", log.display())));
     let so = renderer(&layout, &log);
-    let ffmpeg = crate::ffmpeg::find(&layout.root, &config.cache_dir(), jobs.unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get())));
+    let sysroot = crate::sysroot::find(&layout.root, &config.cache_dir());
+    let ffmpeg = crate::ffmpeg::find(&layout.root, &config.cache_dir(), jobs.unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get())), &sysroot);
     let s = |p: &Path| p.to_string_lossy().into_owned();
     let mut a: Vec<String> = vec!["tool".into(), "build".into()];
     match (&out, &dump) {
@@ -125,7 +126,10 @@ pub fn build(args: &[String]) {
         }
     }
     a.extend(["--direct".into(), s(&so), "--ffmpeg".into(), s(&ffmpeg), "--game".into(), s(&game.dir), "--root".into(), s(&layout.root)]);
-    a.extend(["--obj".into(), s(&layout.obj_dir())]);
+    a.extend(["--obj".into(), s(&layout.obj_dir()), "--sysroot".into(), s(&sysroot)]);
+    if let Some(l) = crate::sdl::prebuilt(&layout.root) {
+        a.extend(["--sdl".into(), s(&l)]);
+    }
     if let Some(j) = jobs {
         a.extend(["-j".into(), j.to_string()]);
     }

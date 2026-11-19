@@ -6,25 +6,29 @@ with no Python and no compiler on the player's PC. Read it before you work on th
 
 ## What ships
 
-- `ounce.AppImage`: the builder, `libLLVM.so.23` and lld (linked dynamically), the prebuilt host (its
-  objects and `ounce_renderer.so`, built in CI), and the link's sysroot (glibc 2.35's start files and stub libraries).
-  `ounce-gui` (`ounce/gui`) is its window: it runs the builder as a child process and reads its `@@` lines
-  ([the window](#the-window)).
-- A folder of the source the lift reads: `runtime/` (its C files and `sources.txt`), `games/oot/` (`game.toml`, the labels,
-  the hot list `hot_funcs.bin` and the link order `hot_order.bin`), `ounce/lift/data/horizon.toml` and
-  `third_party/a64-kit/rt/`.
-
-Everything is built for x86-64-v3; a CPU without AVX2 is refused.
+`OunceRecomp-x86_64.AppImage`, made by `ounce tool appdir` ([the release](#the-release)). The player double-clicks
+it, picks the dump and the game folder, and builds; nothing else is installed. It runs on any x86-64 Linux with
+glibc 2.35 or later (Ubuntu 22.04, Debian 12, Fedora 36 and newer) and a CPU with AVX2 (x86-64-v3, which everything is
+built for).
 
 The AppImage's layout is the one `ounce` looks for:
 
-- `usr/bin/ounce` and `usr/bin/ounce-gui`; the window runs the `ounce` beside it.
-- `usr/share/ounce/`: the sources above (`games/`, `runtime/`, ...), found as the checkout is (`games/` and
-  `runtime/sources.txt`), a `VERSION` file with the release name, and `prebuilt/ounce_renderer.so`, which `ounce build`
-  takes instead of building the renderer with Meson, and `prebuilt/ffmpeg/`, the FFmpeg the game links
-  ([FFmpeg](#ffmpeg)).
+- `AppRun`, which is `usr/bin/ounce-gui` ([the window](#the-window)); with an `ounce` command as its first argument
+  (`probe`, `build`, `dump` and so on) it runs `usr/bin/ounce` instead, so the AppImage is the command line too.
+- `usr/bin/ounce`: the builder with LLVM, clang and lld linked statically; `usr/lib/clang/23/include`, clang's
+  resource headers, where `ounce` looks beside itself.
+- `usr/share/ounce/`: the sources a build reads (`games/`, `runtime/`, `renderer/api/`, `third_party/opus`,
+  `third_party/a64-kit`, `third_party/zstd`, `ounce/lift/data`), found as the checkout is (`games/` and
+  `runtime/sources.txt`), `VERSION` with the release name, and `prebuilt/`: `ounce_renderer.so`, which `ounce build`
+  takes instead of building the renderer with Meson, `ffmpeg/`, the FFmpeg the game links ([FFmpeg](#ffmpeg)), and
+  `sysroot/`, what every compile and link is made against ([the sysroot](#the-sysroot)), and `sdl/`, the game's SDL.
 - Without `.git` in it, a build's own files (objects, the log) go to `~/.cache/ounce/work/<game>/`, not into the
   read-only image.
+
+No game data is in it. Vulkan is the system's loader (`libvulkan.so.1`), loaded at run time. SDL is the release's
+own: `prebuilt/sdl/libSDL3.so.0`, which `ounce build` puts beside the game, where the game loads it before the
+system's ([SDL](#sdl)). The button prompts of other
+controllers are not made by a player's build ([button prompts](#button-prompts)).
 
 ## The steps and their budget
 
@@ -134,20 +138,24 @@ looks without an argument; `ounce run` takes the image from beside the executabl
   its last compile read (clang's dependency list) and their contents; both keys name the LLVM version and the
   builder's recipes. Files no build used for `OUNCE_OBJCACHE_DAYS` (3) days are removed at the end of a build.
   A rebuild with nothing changed takes 8 to 10 s, most of it the lift.
-- `OUNCE_SYSROOT` gives the link and the C compiles a sysroot (the AppImage's glibc).
+- Every C compile and the link take `--sysroot` ([the sysroot](#the-sysroot)); `tool build --sysroot <dir>` names
+  another one.
 
 ## Building the builder
 
 - Development: `cargo build --release -p ounce` (the default `clang` feature) links the system's
   `libLLVM.so` and `libclang-cpp.so` of LLVM 23, and uses the system clang's resource headers.
 - Shipping: `ounce tool static-llvm` builds a static LLVM, clang and lld of the pinned release for
-  x86-64-v3; `LLVM_STATIC_DIR=<its build> cargo build --release -p ounce --features static-llvm,clang`
-  links them. LTO is not set up: the archives would hold bitcode, and the Rust link would have to run LTO.
+  x86-64-v3 against the sysroot, and libc++ for the renderer; `ounce tool appdir` links them into `ounce`
+  (`--features static-llvm,clang`, libstdc++ static). LTO is not set up: the archives would hold bitcode, and the Rust
+  link would have to run LTO.
+- clang's resource headers are `<prefix>/lib/clang/23` beside `<prefix>/bin/ounce` when that folder has them (a
+  release), else the folder of the clang `ounce` was built with.
 
 ## The link
 
-- The command line is the one clang's driver gives `ld.lld` for `clang -fuse-ld=lld`: a PIE against glibc with libgcc's
-  start and end files, `--gc-sections`, and the symbols `ounce_renderer.so` calls in the executable exported
+- The command line is the one clang's driver gives `ld.lld` for `clang --sysroot=<sysroot> -fuse-ld=lld`: a PIE
+  against the sysroot's glibc with GCC 12's start and end files, `--gc-sections`, and the symbols `ounce_renderer.so` calls in the executable exported
   (`os_*`, `hos_mem_ledger`).
 - The link order (`hot_order.bin`) becomes lld's symbol-ordering file, `hot_order.txt` beside the executable.
 - The labels rename `f_<address>` to `<label>.f_<address>` in the symbol table only.
@@ -180,6 +188,61 @@ of archives, of which the link keeps 5.0 MB (swscale 1.9, avcodec 1.8, dav1d 1.1
 - FFmpeg is LGPL 2.1 or later, dav1d BSD. Linking it statically meets the LGPL here because the player's PC links
   the game from its objects: another build of the libraries can be linked in the same way. A release ships the
   licenses and `ffmpeg.txt` with the folder.
+
+## The sysroot
+
+Every compile and link of a build is made against one sysroot, on a developer's PC as on a player's, so the game
+needs glibc 2.35 and nothing newer whatever the building PC has: the game's executable needs `libc.so.6` and
+`libm.so.6` alone, at `GLIBC_2.35` at the newest.
+
+- `ounce tool sysroot [<dir>]` makes it from Ubuntu 22.04's packages of its release pocket, which the archive keeps:
+  glibc 2.35 (`libc6`, `libc6-dev`), Linux 5.15's headers (`linux-libc-dev`), and GCC 12's start files, libgcc and
+  libstdc++ (`libgcc-12-dev`, `libgcc-s1`, `libstdc++-12-dev`, `libstdc++6`). Each is pinned by its SHA-256 from the
+  release's signed package index (`ounce/builder/src/sysroot.rs`), unpacked unmodified, with the documentation and the
+  runtimes no build links left out and the absolute links made relative: 40 MB, in 2 s.
+- The result is `<dir>/<recipe>/` with `sysroot.txt`, the packages and their hashes; the default `<dir>` is the cache
+  folder's `sysroot/`. `ounce build` takes `prebuilt/sysroot` when the sources have one (a release, 18 MB without
+  its C++ library), else the cache's, which the first build makes.
+- The C objects' cache keys name the sysroot's recipe, and FFmpeg's recipe does too.
+- The packages' glibc has security bugs fixed in later updates. They do not matter: the game is linked against it,
+  and runs with the player's own glibc.
+- `ounce tool portable <file>...` lists what a program needs: its libraries and glibc versions. It fails on a library
+  other than glibc's and libgcc's, a glibc newer than 2.35, or a C++ library linked dynamically.
+
+## The release
+
+`ounce tool appdir <dir> [--llvm <static LLVM dir>]` makes the release in one step, after `ounce tool static-llvm`:
+
+1. the sysroot, FFmpeg and SDL, from the cache;
+2. the renderer with Meson against the sysroot, libc++ (the sysroot's libstdc++ is GCC 12's, which has no
+   `<format>`) and the Vulkan headers 1.4.363, pinned by hash, all linked statically into `ounce_renderer.so`;
+3. `ounce` (`--features static-llvm,clang`) and `ounce-gui`, with clang and lld as the linker against the sysroot,
+   stripped, in `work/release/target`;
+4. `tool portable` on the three;
+5. the AppDir in `<dir>` (the layout above, a desktop file and an icon);
+6. the AppImage: the AppDir as a zstd squashfs (`mksquashfs`) behind AppImage's type-2 runtime (release 20251108,
+   pinned by hash), `OunceRecomp-x86_64.AppImage` beside `<dir>` (`--appimage <file>` names another).
+
+It needs meson, ninja, cargo, clang, lld, curl, tar and mksquashfs.
+
+## SDL
+
+`ounce tool sdl [<dir>]` builds the SDL3 a release ships: SDL 3.4.20 (the version of the Windows build's), the
+release tarball pinned by SHA-256, built unmodified by clang against the sysroot. SDL loads its back ends at run time
+(X11, Wayland, PipeWire, PulseAudio, ALSA, udev, D-Bus), so it needs their headers to build, taken from the
+building PC's `/usr/include` after the sysroot's, and none of their libraries: `libSDL3.so.0` needs `libc.so.6` and
+`libm.so.6` alone. A function the sysroot's glibc lacks fails its link (`--no-undefined`). The result, 4.2 MB, is
+`<dir>/<recipe>/` beside its zlib license; the default `<dir>` is the cache folder's `sdl/`. A developer's build
+takes the system's SDL as before.
+
+## Button prompts
+
+The button prompts of other controllers (`tools/prompts/prompt_assets.py`, the game's icon font and textures redrawn per
+controller face) are not made by any build, a developer's or a player's: the tool is run by hand into a game folder's `prompts/`
+([builder notes](builder-notes.md)). Without that folder the game draws its own font and textures, the Switch's
+icons, and nothing is missing. Porting it into `ounce` needs an OpenType font editor (fontTools: glyphs drawn into
+the font's CFF outlines, its cmap segments), font rendering and Lanczos scaling (Pillow), and an ASTC encoder and
+decoder for the textures, which `ounce` does not have; it is its own task.
 
 ## The generated code
 
@@ -250,9 +313,19 @@ the romfs copy is 15.9 GB instead of 25.0 GB, and the folder about 30 GB with it
 
 ## The window
 
-`ounce-gui` picks the dump and the game folder, runs `dump --check` and `probe`, then `build --dump --progress`,
-each as a child process, so a step that crashes never takes the window down. It runs `ounce build <game> --out <dir> --dump <dump>`
-from beside itself or `ounce/target/release`, and lists the games under the checkout's `games/`.
+`ounce-gui` picks the dump and the game folder, runs `probe` at its start and `dump --check` on the dump, then `build
+--dump --progress`, each as a child process, so a step that crashes never takes the window down. It runs `ounce` from
+beside itself or `ounce/target/release`.
+
+- The game is the dump's: `dump --check` checks the exefs against every game under the sources' `games/` and names
+  the one it is (`@@game`).
+- The probe's warnings are shown on the first screen, so a PC without `/dev/udmabuf` gets the fix with the first
+  look; its verdict decides whether Build is offered.
+- A PC whose GPU the back end does not start on (no Vulkan loader, no GPU of Vulkan 1.3: a container) is offered no
+  Build. A build there from the command line makes the shader pack without the precompile (`@@shaders skipped
+  <why>`), and the game makes its programs while it plays.
+- Play runs `ounce run <game> --build <folder>`: a window run of the folder, with its romfs, its `user/` saves and
+  its `ounce_options.ini`. Open folder is offered when `xdg-open` is on the `PATH`.
 It is built on its own, `cargo build --profile gui -p ounce-gui`, without LTO (34 s cold, 7.0 MB); the
 workspace's default members leave it out. eframe has only glow, X11 and its default fonts (Wayland desktops run it
 through XWayland; the `wayland` feature adds 7 s and 1.4 MB). The file dialogs are rfd's desktop portal over a
@@ -262,13 +335,14 @@ The lines it reads, one per line on standard output:
 
 | Line | When |
 |---|---|
-| `@@dump <what>`, `@@identity <pass\|fail> <build id or why>` | `dump --check` |
+| `@@dump <what>`, `@@game <name>`, `@@identity <pass\|fail> <build id or why>` | `dump --check` |
 | `@@probe <key> <state> <value>`, `@@probe verdict <pass\|fail> <keys>` | `probe` |
 | `@@stages <key>...` | `build --progress`: the steps this build runs, of `dump host lift link romfs textures shaders` |
 | `@@stage <key> <what>` | a step begins; `@@stage done <folder>` ends a build |
 | `@@plan <modules> <modules>`, `@@file <name> <seconds> <new\|cached>`, `@@eta <seconds>` | the lift's compiles, the estimate from the last build's seconds (`seconds.txt` in the cache) |
 | `@@tex <files done> <files> <bytes done> <bytes> <path>` | the texture step, at most four a second |
 | `@@shaders pack <files done> <files>`, `@@shaders <done> <programs> <translated> <kept> <failed>` | the shader step: the pack, then the game's precompile, four a second |
+| `@@shaders skipped <why>` | no precompile: the back end does not start on this PC |
 | `@@error <message>` | the build failed (the message on one line; the log has the rest) |
 
 Stopping a build kills the process, and a build run again over the same folder finishes it:
@@ -336,6 +410,7 @@ An item should fail only when the back end does not start without it, and warn w
 | `sparse_queue` | | no sparse-binding family of its own, or none at all | starts; binds on another queue with sparse binding, and with none layer 0 is off |
 | `maintenance7` | | missing | starts; the game's command jobs are not executed |
 | `sparse_residency`, `udmabuf` | | missing | starts; layer 0 is off: the game's memory is not mapped on the GPU |
+| `sdl` | | no SDL of the release's, and neither SDL3 nor SDL2 loads (a developer's PC) | the game runs without a window, sound or controllers |
 | `vram` | | under 10 GB; under 8 GB the textures may not fit | starts |
 
 When `/dev/udmabuf` cannot be opened, the `udmabuf` line tells the player how to fix it: load the module and let the
@@ -348,9 +423,9 @@ user open the device (the group that owns it, often `kvm`).
 1. The compile, lld and the generated code as IR in this process (done).
 2. `ounce-lift` as a library, the partitions handed to the compile in memory (done).
 3. The builder as the development build too (done: `ounce build`).
-4. CI: the host and `ounce_renderer.so` prebuilt; the sysroot.
+4. The release: the sysroot, the host and `ounce_renderer.so` prebuilt, the AppImage (done: `ounce tool appdir`).
 5. The dump reader in Rust (done: `ounce/dump`).
 6. The texture converter in Rust (done: `ounce/tex`).
-7. The game folder and the host's defaults for it (done); the AppImage.
+7. The game folder and the host's defaults for it (done).
 8. Shaders ahead of time (graphics done; compute at its first dispatch).
 9. FFmpeg linked into the game, built from source (done); the release copies it to `prebuilt/ffmpeg/`.

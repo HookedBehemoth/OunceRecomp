@@ -31,6 +31,15 @@ foreach h : ['algorithm', 'cstdio', 'cstdlib', 'cstring', 'functional', 'string'
 endforeach
 renderer_cpp_args = target_args + ['-D_GNU_SOURCE'] + std_includes + [
   '-std=c++20', '-O2', '-g0', '-DNDEBUG', '-Wno-everything', '-DVK_NO_PROTOTYPES', '-DMKWVK_BUILDING']
+# (the C++ library, linked statically: the compiler's libstdc++, or a release's libc++, whose sysroot's libstdc++ is
+# too old for <format>; its symbols are kept local to the renderer)
+libcxx = get_option('libcxx')
+if libcxx != ''
+  renderer_cpp_args = ['-nostdinc++', '-isystem', libcxx / 'include/c++/v1'] + renderer_cpp_args
+  cxx_link_args = ['-nostdlib++', libcxx / 'lib/libc++.a', libcxx / 'lib/libc++abi.a', '-Wl,--exclude-libs,ALL', '-static-libgcc']
+else
+  cxx_link_args = ['-static-libstdc++', '-static-libgcc']
+endif
 
 # (the header packages, each a package root with include/<probe>; options relative to the source root)
 header_dirs = []

@@ -9,7 +9,7 @@ const SOURCES: [&str; 3] = ["runtime", "renderer", "games"];
 const SOURCE_EXT: [&str; 12] = [".c", ".cc", ".cpp", ".h", ".hpp", ".inc", ".py", ".glsl", ".comp", ".vert", ".frag", ".spv"];
 
 /// OUNCE_VERSION, else the first line of VERSION or version.txt, else `git describe` of a checkout; "unknown"
-fn release(root: &Path) -> String {
+pub fn release(root: &Path) -> String {
     if let Some(v) = std::env::var("OUNCE_VERSION").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) {
         return v;
     }

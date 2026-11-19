@@ -90,7 +90,9 @@ pub fn precompile(folder: &Path, exe: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The build's step: the folder's pack made again when its inputs changed (`shaders.pack.key`), then the precompile
+/// The build's step: the folder's pack made again when its inputs changed (`shaders.pack.key`), then the precompile.
+/// A PC whose GPU the back end cannot start on (a build in a container) gets the pack alone, and `@@shaders skipped
+/// <why>`: the game makes the programs while it plays, as after a driver update.
 pub fn step(romfs: &Path, g: &ounce_lift::game::Game, folder: &Path) -> Result<(), String> {
     let (pack_at, key_at) = (folder.join(PACK), folder.join(format!("{PACK}.key")));
     let key = format!("{:016x}\n", ounce_shaders::inputs_key(romfs, ounce_shaders::Scope::Reached));
@@ -99,6 +101,13 @@ pub fn step(romfs: &Path, g: &ounce_lift::game::Game, folder: &Path) -> Result<(
     } else {
         pack(romfs, &dictionaries(romfs, g), ounce_shaders::Scope::Reached, &pack_at)?;
         std::fs::write(&key_at, key).map_err(|e| format!("{}: {e}", key_at.display()))?;
+    }
+    if let Err(why) = crate::probe::device_ready() {
+        println!("shaders: no precompile, the back end does not start on this PC ({why}): the game makes its programs while it plays");
+        if crate::progress_on() {
+            println!("@@shaders skipped {why}");
+        }
+        return Ok(());
     }
     precompile(folder, &g.exe)
 }

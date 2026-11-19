@@ -1,5 +1,6 @@
 //! The game's link: lld in this process (src/lld_shim.cpp), with the command line clang's driver gives ld.lld for
-//! `clang -fuse-ld=lld -o <exe> ...` (a PIE against glibc, libgcc's start and end files).
+//! `clang --sysroot=<the build's sysroot> -fuse-ld=lld -o <exe> ...` (a PIE against its glibc, libgcc's start and end
+//! files).
 
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
@@ -22,53 +23,18 @@ pub fn lld(args: &[String]) -> Result<String, String> {
     if code == 0 { Ok(text) } else { Err(text) }
 }
 
-/// Where the start files and the system's libraries are: the AppImage's sysroot (OUNCE_SYSROOT: start files and
-/// libraries in its lib/), else this system's (glibc's in /usr/lib64 or /usr/lib, libgcc's in its gcc folder)
+/// The start files and the libraries' link names: the build's sysroot (sysroot.rs), glibc's in its LIB, GCC's in its
+/// GCC folder
 pub struct Sysroot {
-    /// Scrt1.o, crti.o, crtn.o
-    pub crt: PathBuf,
-    /// crtbeginS.o, crtendS.o, libgcc.a
-    pub gcc: PathBuf,
-    /// the -L folders, in the driver's order
-    pub lib: Vec<PathBuf>,
+    pub root: PathBuf,
 }
 
 impl Sysroot {
-    pub fn find() -> Result<Sysroot, String> {
-        if let Some(r) = std::env::var_os("OUNCE_SYSROOT").filter(|v| !v.is_empty()) {
-            let lib = PathBuf::from(r).join("lib");
-            return Ok(Sysroot { crt: lib.clone(), gcc: lib.clone(), lib: vec![lib] });
-        }
-        let crt = ["/usr/lib64", "/usr/lib/x86_64-linux-gnu", "/usr/lib"]
-            .iter()
-            .map(PathBuf::from)
-            .find(|d| d.join("Scrt1.o").exists())
-            .ok_or("no Scrt1.o (glibc's start file) in /usr/lib64, /usr/lib/x86_64-linux-gnu or /usr/lib: set OUNCE_SYSROOT")?;
-        // (the newest gcc's folder: /usr/lib{,64}/gcc/x86_64-*/<version>/crtbeginS.o)
-        let mut gccs: Vec<(Vec<u32>, PathBuf)> = Vec::new();
-        for base in ["/usr/lib/gcc", "/usr/lib64/gcc"] {
-            for triple in std::fs::read_dir(base).into_iter().flatten().flatten() {
-                if !triple.file_name().to_string_lossy().starts_with("x86_64") {
-                    continue;
-                }
-                for v in std::fs::read_dir(triple.path()).into_iter().flatten().flatten() {
-                    let ver: Vec<u32> = v.file_name().to_string_lossy().split('.').filter_map(|x| x.parse().ok()).collect();
-                    if v.path().join("crtbeginS.o").exists() {
-                        gccs.push((ver, v.path()));
-                    }
-                }
-            }
-        }
-        gccs.sort();
-        let gcc = gccs.pop().ok_or("no gcc folder with crtbeginS.o (libgcc's start file): set OUNCE_SYSROOT")?.1;
-        let mut lib = vec![gcc.clone(), crt.clone()];
-        for d in ["/lib64", "/usr/lib64", "/lib", "/usr/lib"] {
-            let d = PathBuf::from(d);
-            if d.exists() && !lib.contains(&d) {
-                lib.push(d);
-            }
-        }
-        Ok(Sysroot { crt, gcc, lib })
+    fn crt(&self, f: &str) -> PathBuf {
+        self.root.join(crate::sysroot::LIB).join(f)
+    }
+    fn gcc(&self, f: &str) -> PathBuf {
+        self.root.join(crate::sysroot::GCC).join(f)
     }
 }
 
@@ -108,10 +74,14 @@ pub fn exe_args(x: &Exe, s: &Sysroot) -> Vec<String> {
         .map(|s| s.to_string())
         .collect();
     a.push(p(x.out));
-    a.push(p(&s.crt.join("Scrt1.o")));
-    a.push(p(&s.crt.join("crti.o")));
-    a.push(p(&s.gcc.join("crtbeginS.o")));
-    a.extend(s.lib.iter().map(|d| format!("-L{}", p(d))));
+    a.push(format!("--sysroot={}", p(&s.root)));
+    a.push(p(&s.crt("Scrt1.o")));
+    a.push(p(&s.crt("crti.o")));
+    a.push(p(&s.gcc("crtbeginS.o")));
+    // (the driver's -L folders for a Debian sysroot; libc.so's script names /lib/... inside --sysroot)
+    for d in [crate::sysroot::GCC, crate::sysroot::LIB, "lib/x86_64-linux-gnu", "usr/lib"] {
+        a.push(format!("-L{}", p(&s.root.join(d))));
+    }
     if let Some(m) = x.map {
         a.push(format!("-Map={}", p(m)));
     }
@@ -129,7 +99,7 @@ pub fn exe_args(x: &Exe, s: &Sysroot) -> Vec<String> {
     for l in ["-lpthread", "-ldl", "-lm", "-lgcc", "--as-needed", "-lgcc_s", "--no-as-needed", "-lc", "-lgcc", "--as-needed", "-lgcc_s", "--no-as-needed"] {
         a.push(l.into());
     }
-    a.push(p(&s.gcc.join("crtendS.o")));
-    a.push(p(&s.crt.join("crtn.o")));
+    a.push(p(&s.gcc("crtendS.o")));
+    a.push(p(&s.crt("crtn.o")));
     a
 }
