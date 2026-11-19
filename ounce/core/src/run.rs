@@ -46,7 +46,8 @@ pub fn stale_warning(layout: &Layout, stamp: &Path) -> Option<String> {
     let built = std::fs::read_to_string(stamp).ok()?.lines().next()?.trim().to_string();
     let head = Command::new("git").arg("-C").arg(&layout.root).args(["rev-parse", "HEAD"]).output().ok()?;
     let head = String::from_utf8_lossy(&head.stdout).trim().to_string();
-    (built != head).then(|| {
+    // (a release's build names no commit)
+    (built != head && built != "unknown").then(|| {
         format!("warning: this build is of {}, the checkout is at {}: run `ounce build {}`", short(&built), short(&head), layout.game)
     })
 }
