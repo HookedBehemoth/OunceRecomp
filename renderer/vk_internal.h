@@ -27,7 +27,7 @@
     X(vkCreateCommandPool) X(vkResetCommandPool) X(vkAllocateCommandBuffers) X(vkBeginCommandBuffer)                   \
     X(vkEndCommandBuffer) X(vkCmdPipelineBarrier2) X(vkCmdClearColorImage) X(vkCreateFence) X(vkWaitForFences)         \
     X(vkResetFences) X(vkCreateSemaphore) X(vkDestroySemaphore) X(vkWaitSemaphores) X(vkGetSemaphoreCounterValue)      \
-    X(vkCreateImage) X(vkGetImageMemoryRequirements) X(vkBindImageMemory) X(vkAllocateMemory) X(vkFreeMemory)          \
+    X(vkCreateImage) X(vkGetImageMemoryRequirements) X(vkGetImageSparseMemoryRequirements) X(vkBindImageMemory) X(vkAllocateMemory) X(vkFreeMemory)          \
     X(vkCreateBuffer) X(vkGetBufferMemoryRequirements) X(vkGetBufferDeviceAddress) X(vkGetMemoryFdPropertiesKHR)         \
     X(vkGetMemoryHostPointerPropertiesEXT)                                                                             \
     X(vkDestroyImage) X(vkCreateImageView) X(vkDestroyImageView) X(vkDestroyBuffer) X(vkCmdBeginRendering)               \
@@ -100,6 +100,7 @@ enum MemOwner : int {
     MO_TABLES,      // (the window table, the zero buffer)
     MO_UPLOAD,
     MO_TRANSIENT,
+    MO_SPARSE,      // (the physical pools' memory for sparse textures: vk_sparse.cpp)
     MO_L0_VRAM,
     MO_L0_IMPORT,   // (guest memory imported: the guest's pages, not new memory)
     MO_IMAGE_STORE,

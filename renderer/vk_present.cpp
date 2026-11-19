@@ -16,6 +16,7 @@
 #include "os.h"
 #include "vk_assets.h"
 #include "vk_cmd.h"
+#include "vk_sparse.h"
 #include "vk_draw.h"
 #include "vk_task.h"
 #include "vk_dump.h"
@@ -345,6 +346,8 @@ void log_line() {
     if (own) logf("direct: images' memory: %s", own + 2);
     image_pool_stats(b, sizeof b);
     logf("direct: %s", b);
+    sparse_stats(b, sizeof b);
+    logf("direct: %s", b);
     static const bool log_pass = dbg_log(SET_DBG_LOGPASS), log_lists = dbg_log(SET_DBG_LOGLISTS);
     pool_stale_census(b, sizeof b);
     char text[8192 + 32];
@@ -399,6 +402,8 @@ void stats_after_start() {
         image_stats(b, sizeof b);
         logf("direct: %s", b);
         image_pool_stats(b, sizeof b);
+        logf("direct: %s", b);
+        sparse_stats(b, sizeof b);
         logf("direct: %s", b);
     }).detach();
 }
@@ -469,6 +474,7 @@ void present(const nvn_tex* t, const int* crop) {   // (the guest's Presentation
     strict_present(n);   // (M6b: arming)
     cmd_frame_presented(n);
     image_sweep(n);
+    sparse_sweep();
     mem_budget_sample(image_dying_bytes());   // 
     assets_present(n);
     dump_present(n);

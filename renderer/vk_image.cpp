@@ -1,7 +1,7 @@
 // Images of NVN textures (vk_image.h). Lifted from gpu/legacy/vk/vk_texture.cpp (texture_key, create's usage and flags,
-// format_class, linear_twin, widened) and gpu/legacy/vk/vk_xfer.cpp (resolve), without its cache's uploads, decoders, eviction,
-// sparse images and pools. An image made is initialized at once on the making thread's upload: moved to GENERAL and,
-// for an uncompressed one, cleared to zero (an asset's content is not set here).
+// format_class, linear_twin, widened) and gpu/legacy/vk/vk_xfer.cpp (resolve), without its cache's uploads, decoders and eviction.
+// An image made is initialized at once on the making thread's upload: moved to GENERAL and, for an uncompressed one
+// that is not sparse, cleared to zero (an asset's content is not set here; a sparse one's is its pages').
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -16,6 +16,7 @@
 #include "vk_cmd.h"
 #include "vk_pool.h"
 #include "vk_image.h"
+#include "vk_sparse.h"
 
 namespace hsd {
 namespace {
@@ -182,7 +183,7 @@ void init_image(Image& im) {
     if (im.aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
         const VkClearDepthStencilValue z{0.0f, 0};
         vkCmdClearDepthStencilImage(u.cb, im.image, VK_IMAGE_LAYOUT_GENERAL, &z, 1, &b.subresourceRange);
-    } else if (!im.compressed) {
+    } else if (!im.compressed && !im.sparse) {
         const VkClearColorValue z{};
         vkCmdClearColorImage(u.cb, im.image, VK_IMAGE_LAYOUT_GENERAL, &z, 1, &b.subresourceRange);
     }
@@ -236,7 +237,10 @@ int shape(const nvn_texdesc& d, const FormatInfo& fi, Image& im, VkImageCreateIn
     const uint32_t max_levels = 1 + (uint32_t)std::floor(std::log2((double)std::max({im.width, im.height, im.depth})));
     im.levels = nvn_tex_is_linear(&d) ? 1 : std::clamp<uint32_t>(d.levels, 1, max_levels);
     im.samples = (VkSampleCountFlagBits)std::clamp(d.samples, 1, 16);
-    VkImageCreateFlags flags = 0;
+    im.sparse = (d.flags & NVN_TEXTURE_FLAGS_SPARSE) != 0;
+    // (a page of the game's may be mapped at two places: the binds alias)
+    VkImageCreateFlags flags = im.sparse ? VK_IMAGE_CREATE_SPARSE_BINDING_BIT | VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT |
+                                               VK_IMAGE_CREATE_SPARSE_ALIASED_BIT : 0;
     VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     if (depth) {
         usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
@@ -353,6 +357,15 @@ Image* make(const nvn_tex* t, const Key& k, const FormatInfo& fi, int bw, int bh
     if (pooled) {
         if (!pool_image(ci, im, t)) return name_placeholder(t, "no room at its offset in the transient pool", st_ph_refused), &placeholder;
         st_pool_made.fetch_add(1, std::memory_order_relaxed), st_pool_made_total.fetch_add(1, std::memory_order_relaxed);
+    } else if (im.sparse) {
+        if (vkCreateImage(dev.device, &ci, nullptr, &im.image) != VK_SUCCESS)
+            return name_placeholder(t, "the driver refuses the sparse image", st_ph_refused), &placeholder;
+        object_made(1, "an image");
+        init_image(im);
+        if (!sparse_image_made(&im, t)) {
+            vkDestroyImage(dev.device, im.image, nullptr);
+            return name_placeholder(t, "a sparse texture whose tiles are not bound", st_ph_refused), &placeholder;
+        }
     } else {
         if (!mem_image(ci, im.image, im.mem, MO_IMAGE)) return name_placeholder(t, "no memory for it", st_ph_refused), &placeholder;
         init_image(im);
@@ -448,7 +461,10 @@ void destroy(Image* im) {
     for (const Image::PoolView& v : im->pool_views)
         if (v.view) vkDestroyImageView(dev.device, v.view, nullptr);
     st_bytes.fetch_sub((int64_t)mem_size(im->mem), std::memory_order_relaxed);
-    if (im->pooled) {   // (the pool keeps its memory)
+    if (im->sparse) {   // (its tiles' memory is the physical pools')
+        sparse_image_gone(im);
+        vkDestroyImage(dev.device, im->image, nullptr);
+    } else if (im->pooled) {   // (the pool keeps its memory)
         pool.images.erase(std::remove(pool.images.begin(), pool.images.end(), im), pool.images.end());
         vkDestroyImage(dev.device, im->image, nullptr);
         st_pool_pruned.fetch_add(1, std::memory_order_relaxed);
@@ -919,7 +935,7 @@ void image_sweep(uint64_t present) {
             continue;
         }
         const int64_t size = (int64_t)mem_size(im->mem);
-        if (!im->pooled && !im->asset && !im->no_data && im->span &&
+        if (!im->pooled && !im->sparse && !im->asset && !im->no_data && im->span &&
             (im->written.load(std::memory_order_relaxed) & (W_ATTACHMENT | W_COPY)) && held_bytes + size <= kHeldBytes) {
             im->held = true, held_bytes += size;
             i++;

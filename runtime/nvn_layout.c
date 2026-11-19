@@ -140,6 +140,9 @@ void nvn_tex_layout(const nvn_texdesc *d, nvn_texlayout *o) {
         uint64_t minimal = layer_bytes(d, dpl, layered, w, h, z, 0, 0, t);
         if (minimal != ls) { tileH = tileD = 0; ls = minimal; }
     }
+    /* SPARSE (0x20): a layer is whole 64 KiB tiles, so each layer's mip tail has pages of its own (the game maps a
+       layer's tail at layer x pages-per-layer + its tiled pages: MKW sparse_page_map) */
+    if (d->flags & 0x20) ls = (ls + 0xFFFF) & ~0xFFFFull;
     o->tileH = tileH; o->tileD = tileD;
     o->layer_size = ls;
     o->size = layered ? ls * z : ls;

@@ -16,6 +16,7 @@ made from the game belongs in these pages or in the repository; it stays under `
 - [The register-pressure pass](spv-late.md): reordering translated mesh stages, and its gate.
 - [Render targets](render-targets.md): sizes, switches, the allocator hook, shadows and upscaling.
 - [The transient pool](transient-pool.md): one allocation for the transient render targets.
+- [Sparse textures](sparse-textures.md): device memory for the pages the game maps into sparse textures.
 
 ## Textures and assets
 

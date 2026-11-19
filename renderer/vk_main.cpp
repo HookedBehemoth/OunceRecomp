@@ -20,6 +20,7 @@
 #include "vk_image.h"
 #include "vk_pool.h"
 #include "vk_shader.h"
+#include "vk_sparse.h"
 #include "vk_query.h"
 #include "vk_upscale.h"
 #include "vk_check.h"
@@ -353,7 +354,7 @@ void write_texels(const nvn_tex* t, unsigned level, unsigned layer0, const NVNco
     image_write_texels(t, level, layer0, r, src, row, img);
 }
 void invalidate(uint64_t, uint64_t) {}
-void vmap_changing(uint64_t, uint64_t) {}
+void vmap_mapped(uint64_t gpu, uint64_t size, uint64_t phys) { sparse_mapped(gpu, size, phys); }
 void wait_writebacks_reading(const void*, uint64_t) {}
 void pool_created(uint64_t gpu, uint64_t size) {
     count(R_POOL);
@@ -361,6 +362,7 @@ void pool_created(uint64_t gpu, uint64_t size) {
 }
 void pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t key, int on) {
     count(R_POOL_NATIVE);
+    sparse_pool(gpu, size, flags, on);
     layer0_pool_native(gpu, size, flags, key, on);
 }
 int guest_imported(uint64_t lo, uint64_t hi) { return layer0_bound(lo, hi) ? 1 : 0; }
@@ -432,7 +434,7 @@ extern "C" MKWVK_EXPORT const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
     table.nvn_invalidate = invalidate;
     table.nvn_pool_created = pool_created;
     table.guest_imported = guest_imported;
-    table.nvn_vmap_changing = vmap_changing;
+    table.nvn_vmap_mapped = vmap_mapped;
     table.nvn_texture_created = texture_created;
     table.nvn_program_set = program_set;
     table.nvn_pool_native = pool_native;
