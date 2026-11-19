@@ -226,9 +226,10 @@ public:
 };
 
 /// vk_shader.cpp make_profile on this card (RX 6950 XT, RADV), pinned to 32 lanes as profile_graphics; and its
-/// per-GPU settings (frag_nan_guard, position_invariant on AMD)
+/// per-GPU settings (frag_nan_guard, position_invariant on AMD). Made on the first call (set explicit_shared before it), so
+/// translations on several threads share it
 inline bool explicit_shared = false;   // (the translator-fix prototype: shared memory in explicit layout, typed 8/16-bit access)
-inline Shader::Profile profile() {
+inline Shader::Profile make_profile() {
     Shader::Backend::SPIRV::frag_nan_guard = true;
     Shader::Backend::SPIRV::position_invariant = true;
     Shader::Profile p{};
@@ -255,6 +256,10 @@ inline Shader::Profile profile() {
     p.min_ssbo_alignment = 4;
     p.ssbo_bda = true, p.ssbo_bda_wide = true, p.pool_handles = true;
     if (explicit_shared) p.support_explicit_workgroup_layout = p.support_workgroup_layout_8bit_access = p.support_workgroup_layout_16bit_access = true;
+    return p;
+}
+inline const Shader::Profile& profile() {
+    static const Shader::Profile p = make_profile();
     return p;
 }
 inline Shader::HostTranslateInfo host_info() {

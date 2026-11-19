@@ -3,6 +3,9 @@
     work/venv/bin/python -I tools/shadercensus/shadermap.py map <romfs> --out work/shadermap/<game> [--jobs 8]
     work/venv/bin/python -I tools/shadercensus/shadermap.py stats work/shadermap/<game>
     work/venv/bin/python -I tools/shadercensus/shadermap.py check work/shadermap/<game> <log> [--models <list>]
+    work/venv/bin/python -I tools/shadercensus/shadermap.py list work/shadermap/<game> --scope all|shapes|material|none
+                                                         [--other <romfs>] [--models <models>] --to <list>
+    work/venv/bin/python -I tools/shadercensus/shadermap.py scene <romfs> <banc files>... --to <models>
 
 map: every model (bfres) is read for its materials, every material resolved to the programs of its shader archive (bfsha)
 that its options select, with the vertex layouts and topology of the shapes that use it, its fixed-function state (render
@@ -15,6 +18,13 @@ stats: how many materials resolve to one program, to a set, to none; the program
 vertex-format and texture-type sets; the shader objects a load would compile (distinct code keys per stage) and the
 pipelines the files describe (program, state, pass, vertex layout, topology; the pass stands for its render targets, which
 no file gives).
+
+list: the programs of a scope (all: every program a material reaches; shapes: those of its shapes' skinning; material: of
+those, the material pass), a line each, its stages' code keys; --other adds the programs of the archives that are not a
+bfsha (seed.py's walk). censustool precompile takes it.
+
+scene: the models a scene's own files name (its placement files' actors, each actor's pack, its model components), a bfres
+basename a line, for list --models and check --models.
 
 check: the programs one frame of a run drew (HOS_DBG=drawlog:<present>: each draw's stages' code keys and its first colour
 target's format) against the programs the map predicts; --models limits the prediction to the bfres files named in a list
@@ -462,11 +472,13 @@ STAGE_NAMES = {"0": "vertex", "1": "fragment", "2": "tess control", "3": "tess e
                "6": "task", "7": "mesh"}
 
 
-def compile_counts(ok, progs, dyn):
-    """What a scene load would compile: distinct shader objects per stage (by code key) and distinct pipelines"""
-    stages = {(p["archive"], p["shading_model"], p["program"]): p.get("stages") for p in progs}
-    sets = {"every pass, every skinning (the exact sets)": [], "every pass, the shapes' skinning": [],
-            "the material pass alone, the shapes' skinning": []}
+SCOPES = {"all": "every pass, every skinning (the exact sets)", "shapes": "every pass, the shapes' skinning",
+          "material": "the material pass alone, the shapes' skinning"}
+
+
+def scope_sets(ok, dyn):
+    """The programs a load would compile, per scope (SCOPES), and the pipelines the files describe"""
+    sets = {k: set() for k in SCOPES}
     pipes, pipes_no_layout = set(), set()
     for m in ok:
         skins = {str(s["skin"]) for s in m["shapes"]}
@@ -474,30 +486,159 @@ def compile_counts(ok, progs, dyn):
         for p in m["exact_programs"]:
             p = tuple(p)
             d = dyn[p]
-            sets["every pass, every skinning (the exact sets)"].append(p)
+            sets["all"].add(p)
             if d.get("gsys_weight") in skins:
-                sets["every pass, the shapes' skinning"].append(p)
+                sets["shapes"].add(p)
                 if d.get("gsys_assign_type") in (None, "gsys_assign_material"):
-                    sets["the material pass alone, the shapes' skinning"].append(p)
+                    sets["material"].add(p)
             # (a pipeline: the program, a shape's vertex layout and topology, the material's fixed-function state, and the
             # pass, which stands for its render targets: the files give no target formats)
             for s in m["shapes"]:
                 if d.get("gsys_weight") != str(s["skin"]):
                     continue
-                key = (tuple(stages.get(p) or (p,)), state, d.get("gsys_assign_type"))
+                key = (p, state, d.get("gsys_assign_type"))
                 pipes_no_layout.add(key)
                 pipes.add(key + (tuple(tuple(x) for x in s.get("layout", ())), s.get("topology")))
+    return sets, pipes, pipes_no_layout
+
+
+def compile_counts(ok, progs, dyn):
+    """What a scene load would compile: distinct shader objects per stage (by code key) and distinct pipelines"""
+    stages = {(p["archive"], p["shading_model"], p["program"]): p.get("stages") for p in progs}
+    sets, pipes, pipes_no_layout = scope_sets(ok, dyn)
     for what, ps in sets.items():
-        ps = set(ps)
         by = collections.defaultdict(set)
         for p in ps:
             for st in stages.get(p) or ():
                 k, key = st.split(":")
                 by[STAGE_NAMES.get(k, k)].add(key)
         print("objects to compile, %s: %d programs; %s" % (
-            what, len(ps), ", ".join("%s %d" % (k, len(v)) for k, v in sorted(by.items()))))
+            SCOPES[what], len(ps), ", ".join("%s %d" % (k, len(v)) for k, v in sorted(by.items()))))
     print("pipelines (program, state, pass; + vertex layout and topology): %d without the layout, %d with" % (
-        len(pipes_no_layout), len(pipes)))
+        len({tuple(stages.get(k[0]) or (k[0],)) + k[1:] for k in pipes_no_layout}),
+        len({tuple(stages.get(k[0]) or (k[0],)) + k[1:] for k in pipes})))
+
+
+def other_programs(romfs):
+    """The programs of the romfs's shader archives that are not a bfsha (seed.py's walk without them: agl, gsys, terrain,
+    Layout2Shader, effects, networks), each as its stages' "<stage>:<code key>" """
+    import zstandard as zs
+    dicts = seed.dictionaries(romfs, zs)
+    out, stats = set(), collections.Counter()
+    for path in seed.archives(romfs):
+        if ".bfsha" in os.path.basename(path):
+            continue
+        try:
+            for data in seed.blobs(seed.unpack(open(path, "rb").read(), dicts, zs), dicts, zs):
+                try:
+                    found = list(seed.programs_in(data, stats))
+                except Exception:
+                    continue
+                for stages in found:
+                    keys = set()
+                    for st, control, code in stages:
+                        end = struct.unpack_from("<I", control, 0x44)[0]
+                        keys.add("%d:%016x" % (st, fnv(code[:end] if end <= len(code) else code, fnv(control[:0xd8]))))
+                    out.add(tuple(sorted(keys)))
+        except Exception as e:
+            print("%s skipped: %s" % (os.path.relpath(path, romfs), e), file=sys.stderr)
+    return out
+
+
+def sarc_named(data):
+    """A SARC's files by name"""
+    start, count = struct.unpack_from("<I", data, 0x0c)[0], struct.unpack_from("<H", data, 0x1a)[0]
+    names = 0x20 + count * 16 + 8
+    for k in range(count):
+        _, attr, st, end = struct.unpack_from("<IIII", data, 0x20 + k * 16)
+        at = names + (attr & 0xffffff) * 4
+        yield data[at:data.index(b"\0", at)].decode(), data[start + st:start + end]
+
+
+def placed(doc):
+    """The actor names a placement file gives: OoT's banc (Actors[].Gyaml), DKB's stage (each list's objects'
+    UnitConfigName, and ModelName where it is a model's name)"""
+    if isinstance(doc, dict) and "Actors" in doc:
+        for act in doc["Actors"] or ():
+            yield act["Gyaml"], None
+        return
+    for top in doc if isinstance(doc, list) else [doc]:
+        for lst in top.values():
+            for o in lst if isinstance(lst, list) else ():
+                if isinstance(o, dict) and o.get("UnitConfigName"):
+                    m = o.get("ModelName")
+                    yield o["UnitConfigName"], m if m and "/" not in m else None
+
+
+def cmd_scene(a):
+    """The models a scene's own files name: each actor its placement files place, the actor's pack
+    (Pack/Actor/<name>.pack.zs) and its model components: OoT's ModelInfo (Model/<ModelProjectName>.<FmdbName>.bfres.zs),
+    DKB's ModelParam (ModelArcName: Model/<arc>.*.bfres.zs); DKB's objects also name their model (ModelName)"""
+    import zstandard as zs
+    sys.path.insert(0, os.path.join(os.path.dirname(HERE), "dump"))
+    import byml
+    dicts = seed.dictionaries(a.romfs, zs)
+    model_dir = os.path.join(a.romfs, "Model")
+    by_arc = collections.defaultdict(set)
+    for name in os.listdir(model_dir):
+        if name.endswith(".bfres.zs") and ".anim." not in name:
+            by_arc[name.split(".")[0]].add(name)
+    actors, direct = collections.Counter(), set()
+    for path in a.banc:
+        data = seed.unpack(open(path, "rb").read(), dicts, zs)
+        docs = [byml.load(b) for _, b in sarc_named(data)] if data[:4] == b"SARC" else [byml.load(data)]
+        for doc in docs:
+            for actor, model in placed(doc):
+                actors[actor] += 1
+                if model:
+                    direct |= by_arc.get(model, set())
+    models, no_pack, no_model = set(direct), [], []
+    for g in sorted(actors):
+        pack = os.path.join(a.romfs, "Pack", "Actor", g + ".pack.zs")
+        if not os.path.exists(pack):
+            no_pack.append(g)
+            continue
+        found = False
+        for name, data in sarc_named(seed.unpack(open(pack, "rb").read(), dicts, zs)):
+            if "/ModelInfo/" in name:
+                info = byml.load(data)
+                if info.get("ModelProjectName") and info.get("FmdbName"):
+                    bfres = "%s.%s.bfres.zs" % (info["ModelProjectName"], info["FmdbName"])
+                    if os.path.exists(os.path.join(model_dir, bfres)):
+                        models.add(bfres)
+                        found = True
+            elif "ModelParam" in name:
+                arc = byml.load(data).get("ModelArcName")
+                if arc in by_arc:
+                    models |= by_arc[arc]
+                    found = True
+        if not found:
+            no_model.append(g)
+    with open(a.to, "w") as f:
+        f.writelines(m + "\n" for m in sorted(models))
+    print("%d actor kinds placed (%d placements); %d without a pack, %d whose pack names no model; %d models (%d named by the "
+          "objects themselves) -> %s" % (len(actors), sum(actors.values()), len(no_pack), len(no_model), len(models), len(direct), a.to))
+
+
+def cmd_list(a):
+    """A scope's programs, a line each (its stages' "<stage>:<code key>"), for censustool precompile"""
+    progs = [json.loads(l) for l in open(os.path.join(a.out, "programs.jsonl"))]
+    dyn = {(p["archive"], p["shading_model"], p["program"]): p["dynamic"] for p in progs}
+    stages = {(p["archive"], p["shading_model"], p["program"]): p.get("stages") for p in progs}
+    lines = set()
+    if a.scope != "none":
+        files = {l.strip() for l in open(a.models) if l.strip()} if a.models else None
+        ok = (m for m in map(json.loads, open(os.path.join(a.out, "materials.jsonl")))
+              if "exact_programs" in m and (files is None or os.path.basename(m["file"]) in files))
+        sets, _, _ = scope_sets(ok, dyn)
+        lines = {tuple(sorted(stages[p])) for p in sets[a.scope] if stages.get(p)}
+    bfres = len(lines)
+    if a.other:
+        lines |= other_programs(a.other)
+    with open(a.to, "w") as f:
+        for ln in sorted(lines):
+            f.write(" ".join(ln) + "\n")
+    print("%s: %d programs (%d from bfres%s)" % (a.to, len(lines), bfres, ", the rest the other archives'" if a.other else ""))
 
 
 def cmd_stats(a):
@@ -615,8 +756,18 @@ def main():
     c.add_argument("out")
     c.add_argument("log")
     c.add_argument("--models")
+    li = sub.add_parser("list")
+    li.add_argument("out")
+    li.add_argument("--scope", choices=list(SCOPES) + ["none"], default="all")
+    li.add_argument("--other", metavar="ROMFS", help="also the programs of the romfs's other shader archives")
+    li.add_argument("--models", help="only the materials of these bfres files (a basename a line: scene's list)")
+    li.add_argument("--to", required=True)
+    sc = sub.add_parser("scene")
+    sc.add_argument("romfs")
+    sc.add_argument("banc", nargs="+", help="the scene's placement files (OoT: Banc/<area>/*.bcett.byml.zs; DKB: StageData/<stage>.alsarc.zs)")
+    sc.add_argument("--to", required=True)
     a = p.parse_args()
-    return {"map": cmd_map, "stats": cmd_stats, "check": cmd_check}[a.cmd](a)
+    return {"map": cmd_map, "stats": cmd_stats, "check": cmd_check, "list": cmd_list, "scene": cmd_scene}[a.cmd](a)
 
 
 if __name__ == "__main__":
