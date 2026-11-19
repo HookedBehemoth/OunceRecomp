@@ -1,0 +1,59 @@
+# Mario Kart World (the Switch 2 build, update 917504), as the lift and the build take it.
+name = "mkw"
+
+# guest address -> our label (a file beside this one)
+labels = "labels.txt"
+
+# the hot list (docs/lifter.md, "Game description files"): empty until a profile makes one; no link order yet
+hot = "hot_funcs.bin"
+
+# the game's executable in its folder (a file name) and the window's title
+exe = "Mario Kart World"
+title = "Mario Kart World"
+
+# the game's patch files (C, beside this file): none yet (runtime/game_hooks.c's weak hook points are neutral)
+patches = []
+
+# the main module's build id and the SHA-256 of exefs/main: another dump stops the lift and the build
+[identity]
+build_id = "d00e4f399e411d0613aa8d26b1c02fef00000000"
+main_sha256 = "29040941362bf30175134a580a06fff7ffb8bb27e9cfed60d9ace9e9e2d982fe"
+
+# the prepared assets (ounce tool textures): no zstd dictionary file (the romfs's .zs frames name none), and the
+# top-level folders that hold no BNTX (audio, movies, physics, the environment's light probes, the culling grids,
+# TerrainArc's TARB tiles, the staff ghosts)
+[assets]
+texture_skip_dirs = ["Sound", "Movie", "Phive", "Env", "Cull", "TerrainArc", "StaffGhost"]
+
+# zstd_decompress_sequences' local continuations (f_80104e20, the same code as DKB's): `adr x19, <label>` ... `br x19`
+# inside the function, pc: word; the code pointer audit accepts them, ounce/lift/src/plan.rs
+[[local_continuations]]
+pc = 0x80105138
+word = 0x10FFFCB3
+
+[[local_continuations]]
+pc = 0x801051c0
+word = 0x10000053
+
+# subsdk1's Mono runtime (dotnet/runtime): MONO_CONTEXT_GET_CURRENT's `adr x8, .` (the next instruction), stored as a
+# captured context's pc for its stack walks (two thread state captures, the interpreter's two native calls, the GC's
+# stop of the world). No branch of the function takes it
+[[local_continuations]]
+pc = 0x839a824c
+word = 0x10000028
+
+[[local_continuations]]
+pc = 0x839a8358
+word = 0x10000028
+
+[[local_continuations]]
+pc = 0x83a049c4
+word = 0x10000028
+
+[[local_continuations]]
+pc = 0x83a04db4
+word = 0x10000028
+
+[[local_continuations]]
+pc = 0x83b0a260
+word = 0x10000028

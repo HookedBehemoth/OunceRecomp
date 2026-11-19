@@ -100,7 +100,7 @@ pub fn build(args: &[String]) {
             "--out" => out = Some(val().into()),
             "--dump" => dump = Some(val()),
             "--quality" => pass.extend(["--quality".into(), val()]),
-            "--gen-parts" | "--progress" | "--shaders" => pass.push(a.clone()),
+            "--gen-parts" | "--progress" | "--shaders" | "--no-textures" => pass.push(a.clone()),
             _ => fail(format!("build: what is {a}? (ounce help)")),
         }
     }

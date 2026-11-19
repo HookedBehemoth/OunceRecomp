@@ -1,0 +1,10 @@
+# Labels for the lifted game's functions (tools/re/labels.py): <guest address> <label> [# where it is documented: what]
+# Descriptions of ours, not the game's names. Lower case, digits, underscores; every address and label once.
+# An entry is a function's entry address in this lift (of the build games/mkw/game.toml names). Add what an analysis
+# finds, with its note (docs/reverse-engineering.md, "Label a function").
+80104e20 zstd_decompress_sequences        # games/mkw/game.toml local_continuations: ZSTD_decompressSequences, the same code as DKB's 80403180 (adr/br continuations)
+839a8140 mono_thread_state_capture        # games/mkw/game.toml local_continuations: subsdk1 Mono, fills a thread state with MONO_CONTEXT_GET_CURRENT and mono_domain_get ?
+839a82b0 mono_thread_state_capture_current # games/mkw/game.toml local_continuations: subsdk1 Mono, the same capture of the calling thread ?
+83a048d0 mono_interp_native_call          # games/mkw/game.toml local_continuations: subsdk1 Mono interpreter, a native call with a captured context (its resume pc 0x83a04a28) ?
+83a04b40 mono_interp_native_call_2        # games/mkw/game.toml local_continuations: subsdk1 Mono interpreter, a second native call of that form ?
+83b0a100 mono_sgen_stop_world             # games/mkw/game.toml local_continuations: subsdk1 Mono sgen, stops the world ("mono_coop_mutex_lock"), the GC thread's own context captured
