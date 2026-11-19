@@ -629,6 +629,15 @@ Id EmitIsbeRead(EmitContext& ctx, Id address) {
                         word);
 }
 
+/// (fork) what the stage wrote to its output attribute region, read back: a task's payload word, a mesh's attribute word
+Id EmitIsbeReadOutput(EmitContext& ctx, Id address) {
+    const Id index{ctx.OpShiftRightLogical(ctx.U32[1], address, ctx.Const(2U))};
+    if (ctx.stage == Stage::Task) {
+        return LoadWord(ctx, PayloadWord(ctx, index));
+    }
+    return ctx.OpLoad(ctx.U32[1], SharedWord(ctx, ctx.mesh_attributes, Clamped(ctx, index, ctx.mesh_attribute_words)));
+}
+
 void EmitIsbeWriteAttribute(EmitContext& ctx, Id address, Id value) {
     const Id index{ctx.OpShiftRightLogical(ctx.U32[1], address, ctx.Const(2U))};
     if (ctx.stage == Stage::Task) {

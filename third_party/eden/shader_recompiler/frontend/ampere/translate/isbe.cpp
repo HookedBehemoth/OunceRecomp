@@ -5,7 +5,8 @@
 // (fork) The direct Ampere front's stage buffer: ISBERD and ISBEWR, [Ra + offset 40-55], the size 74-75 (U8, U16,
 // B32), the region 76-77 (map, patch, primitive, attribute), .SKEW 78 (lane-interleaved), the output buffer 79.
 // - Task and mesh stages: the IR's ISBE ops, with the back end's model of the buffer (emit_spirv_mesh.cpp): reads of
-//   the input attribute region (IsbeRead), writes to the output attribute region (IsbeWriteAttribute) and to the map
+//   the input attribute region (IsbeRead) and of the output one (IsbeReadOutput), writes to the output attribute region
+//   (IsbeWriteAttribute) and to the map
 //   (IsbeWriteMapU8, IsbeWriteMapU32). That model lays the buffer out by address alone, so .SKEW changes nothing.
 // - Geometry stages: a map read (U8) is an input vertex's handle. The handle is opaque and only ALD consumes it, so
 //   it is the map index itself, which SR_INVOCATION_INFO (special.cpp) makes the input vertex number.
@@ -43,10 +44,12 @@ void ISBERD(Translator& t) {
     if (stage != Stage::Task && stage != Stage::Mesh) {
         t.Fail("stage buffer read outside task, mesh and geometry stages");
     }
-    if (region != Region::Attribute || size != 2 || output) {
+    if (region != Region::Attribute || size != 2) {
         t.Fail("stage buffer read mode");
     }
-    t.SetR(t.insn.Dst(), t.ir.IsbeRead(IsbeAddress(t)));
+    // (the output buffer: what this stage wrote there, read back; a task stage that keeps its meshlet count in its
+    // payload and adds to it)
+    t.SetR(t.insn.Dst(), output ? t.ir.IsbeReadOutput(IsbeAddress(t)) : t.ir.IsbeRead(IsbeAddress(t)));
 }
 
 void ISBEWR(Translator& t) {
