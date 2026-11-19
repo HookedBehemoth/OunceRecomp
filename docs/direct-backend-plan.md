@@ -86,8 +86,8 @@ Each item is open at the time of writing. Remove an item when you close it.
 ### Memory and features
 
 - **Memory accounting per owner** in the periodic log. The per-slot arenas, task pools and query pools never shrink.
-- **An upscaler.** The game's NDSR stage runs at ratio 1.0 and its network evaluations go to the host's upscaler,
-  which is not written yet; the game writes no motion vectors. Rendering below the window's size needs it; see
+- **An upscaler.** In both games the NDSR stage runs at ratio 1.0 and its network evaluations go to the host's upscaler,
+  which is not written yet (a call stops the game); OoT writes no motion vectors. Rendering below the window's size needs it; see
   [render targets](direct/render-targets.md#upscaling).
 
 ## Checks

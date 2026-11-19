@@ -95,6 +95,9 @@ network of matrix multiplies, which this GPU runs in software, would take it to 
 1.0. The patch keeps them from running, and their evaluation calls go to the host's upscaler
 (`runtime/upscale.h`), which is not written yet.
 
+Donkey Kong Bananza's patch (`games/dkb/patches/ndsr.c`) does the same: it cuts its network's ratio table to 1.0, so
+SMAA writes the output directly, and its network evaluation goes to the same interface.
+
 The upscaler gets the SMAA-resolved color, the frame image, their sizes and one parameter of the stage. The game
 writes no motion-vector target and no target carries color across frames, so a spatial upscaler fits as it is. A
 temporal one also needs:
