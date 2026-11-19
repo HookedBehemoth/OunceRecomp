@@ -1,7 +1,8 @@
 # The shader census
 
 This page describes the tools that measure what the game's shaders cost, offline and in the game, and what their
-results tell you about where shader work would pay. Read it before you rewrite a shader by hand or change the
+results tell you about where shader work would pay. It also shows how to predict the programs a scene needs and time
+making them ahead of their draws. Read it before you rewrite a shader by hand or change the
 translator for speed.
 
 ## What the numbers say
@@ -33,15 +34,52 @@ a result.
 
 ## Run the offline census
 
-1. Build the tool: `tools/shadercensus/build.sh`.
-2. Make the shader seed, `ounce_shaders.bin`, from the romfs. No tool in the tree makes it.
+1. Build `censustool` into `work/shadercensus/`: `tools/shadercensus/build.sh`.
+2. Make the shader seed, every shader program in the romfs:
+
+   ```
+   work/venv/bin/python -I tools/shadercensus/seed.py <romfs> --out work/shadercensus/<game>.seed
+   ```
+
 3. Run the census, which is sharded and resumable:
 
    ```
-   python -I tools/shadercensus/census.py <seed> --out <dir> --compile
+   work/venv/bin/python -I tools/shadercensus/census.py <seed> --out <dir> --compile
    ```
 
 4. Aggregate it with `tools/shadercensus/report.py`.
 
 The census translates each stage as the back end does and, with `--compile`, has RADV compile it and records its
 statistics. It draws nothing and needs no GPU lock. Its output is made from the game's code and stays under `work/`.
+`ounce profile --shaders` reads the newest `work/shadercensus/*/census_<game>/stages.jsonl`.
+
+## Find the programs a scene needs
+
+`tools/shadercensus/shadermap.py` reads the game's models and shader archives and predicts, before anything draws,
+which programs each model's materials select. Its subcommands:
+
+- `map <romfs> --out work/shadermap/<game>` resolves every material to its programs, with the vertex layouts, the
+  fixed-function state and the texture types it uses.
+- `stats` summarizes the map: how many materials reach one program, programs no model reaches, and how many shader
+  objects and pipelines a load would make.
+- `scene <romfs> <banc files>... --to <models>` lists the models a scene's own placement files name.
+- `list <map> --scope all|shapes|material --to <list>` writes the programs of a scope (every program a material
+  reaches, those of its shapes' skinning, or those of its material pass); `--models` limits it to a scene's models,
+  and `--other <romfs>` adds the programs of the archives that are not shader archives (`--scope none` lists only
+  those).
+- `check <map> <log>` compares one frame's draws (`HOS_DBG=drawlog:<present>`) against the prediction.
+
+## Time a precompile
+
+To measure what making a list of programs ahead of their draws would cost, run:
+
+```
+censustool <seed> precompile <list> [--workers N] [--binaries <file>] [--warm]
+```
+
+`<list>` is a `shadermap.py list` output, or `-` for the whole seed. The tool translates each stage and makes it into
+the shader object the back end would make, on a worker pool the size of the back end's. A cold run has the driver
+compile from SPIR-V and, with `--binaries`, saves each binary in the format of `ounce_renderer_shader_objects.bin`;
+`--warm` makes every object from those binaries instead. It prints one JSON line: translation and driver CPU time,
+wall time, peak memory, and the CPU other processes took meanwhile. Run it with `MESA_SHADER_CACHE_DISABLE=true` so a
+cold run is cold.

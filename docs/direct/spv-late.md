@@ -49,7 +49,7 @@ The pass's count of live values is not ACO's register allocation. `tools/shaders
 other. Run it before you change the pass's defaults, after a translator change and after a driver update:
 
 ```
-python3 -I tools/shaders/late_gate.py seed --censustool <censustool> --spvlate <spvlate> --seed <ounce_shaders.bin> --out <dir> --kinds mesh
+python3 -I tools/shaders/late_gate.py seed --censustool <censustool> --spvlate <spvlate> --seed <seed> --out <dir> --kinds mesh
 ```
 
 It compiles every mesh stage of the game's shader seed before and after the pass. The gate fails when a stage starts

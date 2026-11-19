@@ -32,4 +32,5 @@ made from the game belongs in these pages or in the repository; it stays under `
 
 ## Tools
 
-- [The shader census](shader-costs.md): what the game's shaders cost, offline and in the game.
+- [The shader census](shader-costs.md): what the game's shaders cost, offline and in the game, which programs a scene
+  needs, and what making them ahead of time costs.
