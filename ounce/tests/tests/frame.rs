@@ -178,7 +178,8 @@ fn dlss_math() {
 /// A frame-rate cap above 60 steps the game by the frames' own time: the two At probes after the engine's step divides
 /// (oot_probes.c hos_oot_frame_step, as the lifter scans them) take the time nn_vi.c realtime_step publishes while the
 /// cap is above 60; at 60 the bits stay 0 (the lifted code as shipped, a long unpaced stretch repaying bounded debt); at 30
-/// the engine's rate follows the frames down to 30.
+/// the engine's rate follows the frames down to 30. Above 60 the rate the game asks of its limiter and the layer
+/// (frame_rate.c oot_vrr_rate) is the cap, whatever its controller's; at 60 and 30 the controller's own.
 #[test]
 fn frame_rate_cap_step() {
     let sites: Vec<_> = scan().at.iter().filter(|r| r.fname.starts_with("hos_oot_frame_step")).collect();
@@ -204,6 +205,8 @@ fn frame_rate_cap_step() {
     let vi = read("runtime/nn_vi.c");
     let frame = read("games/oot/patches/frame_rate.c");
     let host = [block_top(&vi, "static int fps_max(void) {"), "int hos_fps_max(void) { return fps_max(); }",
+                block_top(&vi, "static int pace_rate(void) {"), "int hos_pace_rate(void) { return pace_rate(); }",
+                block_top(&frame, "PATCH_AT(0x804fc110, word(0x2a0203f5), instead, w21, oot_vrr_rate,"),
                 { let s = find(&frame, "static float text_scale("); &frame[s..s + find(&frame[s..], "\n")] }, block_top(&frame, "static int realtime_rate("),
                 block_top(&frame, "void game_frame_timing(")]
         .join("\n");

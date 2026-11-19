@@ -245,8 +245,10 @@ void hos_vi_native_presented(void) {
         if (on)
             hos_log("vi: %lld frames presented (%.1f fps over the last %.1f s, interval %d)", (long long)n,
                     frames_in_window * 1e9 / (double)(now - window_start), (now - window_start) / 1e9, present_interval);
-        hos_log("vi: present intervals: <15.5 ms %d, 15.5-17.8 %d, 17.8-22 %d, 22-30 %d, 30-40 %d, over 40 %d", hist[0],
-                hist[1], hist[2], hist[3], hist[4], hist[5]);
+        /* (and what the frames are paced to: shown faster than these, the frames are as fast as the PC makes them) */
+        hos_log("vi: present intervals: <15.5 ms %d, 15.5-17.8 %d, 17.8-22 %d, 22-30 %d, 30-40 %d, over 40 %d; paced to %.1f fps "
+                "(cap %d, display %.2f Hz, the game asks %d)", hist[0], hist[1], hist[2], hist[3], hist[4], hist[5],
+                1e9 / (double)period, fps_max(), hos_display_refresh_mhz() / 1000.0, layer_fps);
         memset(hist, 0, sizeof hist);
         window_start = now, frames_in_window = 0;
     }

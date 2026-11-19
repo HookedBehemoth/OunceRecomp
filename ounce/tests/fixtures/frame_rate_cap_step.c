@@ -47,13 +47,14 @@ int main(int argc, char **argv) {
     hos_step_probe = 0x2000;   /* (the lifted code's frame step sets it) */
     game_frame_timing(now);
     if (!strcmp(mode, "cap 120")) {
-        CHECK(near(frames(72000, 1.0 / 120), 1.0 / 120) && *rate == 60 && *limit == 120);   /* (the rate stays the engine's) */
+        CHECK(near(frames(72000, 1.0 / 120), 1.0 / 120) && *rate == 60);   /* (the rate stays the engine's) */
+        CHECK(oot_vrr_rate(60) == 120 && oot_vrr_rate(45) == 120 && oot_vrr_rate(240) == 240);   /* (the limiter's and the layer's rate) */
         CHECK(near(lifted_step(60.0f, (float)*rate), 0.5) && near(lifted_step(30.0f, (float)*rate), 0.25));   /* (half a 60th a frame) */
         CHECK(near(frames(10, 1.0 / 40), 1.0 / 40) && *rate == 40 && near(lifted_step(60.0f, (float)*rate), 1.5));
         CHECK(near(frames(10, 1.0 / 1000), 1.0 / 240));   /* (the shortest step) */
         CHECK(near(frames(10, 0.2), 4.0 / 60));           /* (the longest, as the rate's 15) */
     } else if (!strcmp(mode, "cap 60")) {
-        CHECK(frames(72000, 1.0 / 120) == 0.0f && *rate == 60 && *limit == 60);
+        CHECK(frames(72000, 1.0 / 120) == 0.0f && *rate == 60 && *limit == 60 && oot_vrr_rate(45) == 45);
         /* A long unpaced stretch must repay only bounded debt, including the five-frame smoothing transition. */
         int recovered = 0;
         for (int i = 0; i < 24; i++) {
@@ -62,7 +63,7 @@ int main(int argc, char **argv) {
         }
         CHECK(recovered && lifted_step(60.0f, (float)*rate) == 1.5f);
     } else {   /* (cap 30: the rate follows the frames, a 60th's two steps each) */
-        CHECK(frames(600, 1.0 / 30) == 0.0f && *rate == 30);
+        CHECK(frames(600, 1.0 / 30) == 0.0f && *rate == 30 && oot_vrr_rate(60) == 60);
         CHECK(lifted_step(60.0f, (float)*rate) == 2.0f);
     }
     printf("PASS: %s\n", mode);

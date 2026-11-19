@@ -141,7 +141,7 @@
 8306f530 frame_time_object_getter         # nx2/step_readers.py: returns the frame-time object in x0
 80706be0 module_calc                      # docs/direct/frame-loop.md: moduleCalc_: the three module-graph stages of a frame (A game logic, B, C jobs and layer lists)
 80527f00 frame_submit_queues              # work/assets/native/command-lists.md, work/assets/native/engine-frame.md: Presentation thread: submits compute + heads
-804fc0f0 frame_variable_refresh           # runtime/nn_vi.c: variable refresh (+0x231)
+804fc0f0 frame_variable_refresh           # games/oot/patches/frame_rate.c: a rate the game asks for (module, out interval, fps): under VRR (+0x231, +0x232) from 40 up the limiter +0xfc and SetLayerExtendedSwapInterval(layer +0x1b0, 1, fps); else VRR off, the limiter 60 / interval
 
 # --- jobs: the task graph, the scheduler, render jobs and their sync
 800ad2b0 job_calc_once_a                  # docs/direct/frame-loop.md: once a frame in the calc runner (one thread, ~0.3 ms): f_836c06d0 over 14 object lists of [0x84ca2bc8]

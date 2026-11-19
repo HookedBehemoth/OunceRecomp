@@ -9,6 +9,19 @@
 #include <stdlib.h>
 #include <string.h>
 int hos_fps_max(void);                  /* (runtime/nn_vi.c) */
+int hos_pace_rate(void);                /* (runtime/nn_vi.c) */
+
+/* The game's frame rate under a variable refresh. While the cap is above 60 the runtime reports one (runtime/nn_vi.c), and
+   every rate the game asks for goes through frame_variable_refresh (f_804fc0f0: the frame-rate controller's each frame, the
+   movies' and a menu's): from 40 up it makes the rate the limiter's (+0xfc) and the layer's
+   (SetLayerExtendedSwapInterval, which the runtime paces to). The controller's rate is at most 60, so frames were paced
+   to 60 at a cap of 120 or a 144 Hz display's VSync. Game time follows the frames' own time above 60
+   (game_frame_timing), so the rate asked for is raised to the pacing's there: the limiter and the layer get it, and the
+   controller keeps its own (the caller's w21) */
+PATCH_AT(0x804fc110, word(0x2a0203f5), instead, w21, oot_vrr_rate, as(x2, asked)) {   /* mov w21, w2 */
+    const int rate = hos_pace_rate(), fps = (int)(uint32_t)asked;
+    return (uint32_t)(rate > 60 && fps < rate ? rate : fps);
+}
 
 /* Game time follows the clock. The engine steps every frame by ratio = 60 / <the graphics module's nominal fps,
    an int at +0x2c8> (main+0x6e6cc4, f_83b6e300 makes seconds = ratio / 60 and the rest), so at 50 fps the game ran at 83%
@@ -163,10 +176,10 @@ void game_frame_timing(int64_t now) {
     const uint64_t mod = hos_gfx_module;
     if (!mod) return;
     const int cap = hos_fps_max();   /* (the frame_rate setting: it may change while the game runs) */
-    {   /* The frame limiter (f_8042cd20 sleeps to 1 / +0xfc). The engine's adaptive controller writes +0xfc when
-           variable refresh is on (+0x231, f_804fc0f0), any rate from 40 up. A cap above 60 raises it to the cap. A cap of 30
-           leaves it: the engine writes its 60 back every frame, and the display pacing (runtime/nn_vi.c) holds the frames to
-           30, the game's rate (+0x2c8) following them. log.fps: what the game asks for, every 300 presents */
+    {   /* The frame limiter (f_8042cd20 sleeps to 1 / +0xfc): frame_variable_refresh writes it (oot_vrr_rate above
+           raises it with the layer's rate). A cap of 30 leaves it: the engine writes its 60 back every frame, and the
+           display pacing (runtime/nn_vi.c) holds the frames to 30, the game's rate (+0x2c8) following them. log.fps: what
+           the game asks for, every 300 presents */
         static int log_on = -1;
         static long long n;
         if (log_on < 0) log_on = setting_bool(SET_LOG_FPS);
@@ -187,7 +200,6 @@ void game_frame_timing(int64_t now) {
             }
             clock_before = game_clock, at_before = now;
         }
-        if (cap > 60 && *limit > 0 && *limit < cap) *limit = cap;
     }
     /* (a benchmark: a frame is a 60th of a second of game time, at any cap) */
     if (hos_bench_on()) {

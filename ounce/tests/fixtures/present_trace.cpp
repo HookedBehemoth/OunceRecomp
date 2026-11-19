@@ -20,6 +20,9 @@ void hos_code_ptr_report(void) {}   /* (runtime/code_ptrs.c) */
 static void hos_log(const char *fmt, ...) { (void)fmt; }
 static int hos_log_switch(setting_id id) { (void)id; return 0; }
 static int64_t frame_period(void) { return 1000000000LL / 60 * present_interval; }   /* (nn_vi.c: the console's 60 here) */
+static int fps_max(void) { return 60; }   /* (the 5-s line's pacing: the cap, the display, the game's request) */
+static int hos_display_refresh_mhz(void) { return 0; }
+static volatile int layer_fps;
 @HELPER@
 @PRESENTED@
 
