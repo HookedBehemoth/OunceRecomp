@@ -15,6 +15,7 @@ void nvn_list_drop(nvn_lw *w) { (void)w; drops++; }
 static uint8_t *A64_MEM;
 #define GP(a) ((void *)(A64_MEM + (uint64_t)(a)))
 #define HOS_SPACE_END ((uint64_t)WINDOW)
+#define HOS_SYSTEM_BASE 0x100ull   /* (the window's unmapped first pages: hos.h's, scaled to the test window) */
 typedef int os_mutex;
 #define OS_MUTEX_INIT 0
 static void os_mutex_lock(os_mutex *l) { (void)l; }
@@ -46,6 +47,7 @@ int main(void) {
     require(A64_MEM != NULL, "test window");
     /* the guest window */
     require(hos_guest_range(0x1000, 16) == A64_MEM + 0x1000, "a range inside the window");
+    require(hos_guest_range(0x80, 16) == NULL, "a range below the window's first mapped page");
     require(hos_guest_range(WINDOW - 16, 16) != NULL, "a range ending at the window's end");
     require(hos_guest_range(WINDOW - 16, 17) == NULL, "a range past the window's end");
     require(hos_guest_range(WINDOW, 0) == NULL, "an address at the window's end");
