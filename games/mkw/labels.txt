@@ -16,3 +16,16 @@
 80d8cd50 friends_init                     # runtime/nn_answers.c nn::friends: friends::Initialize once, then SetAllocator
 80d8d7e0 friends_availability_check       # runtime/nn_answers.c nn::friends: the play history key and CheckFriendListAvailability; EnsureFriendListAvailable when the list is out of date
 80c8de50 audio_capture_buffer_size        # runtime/nn_audio.c capture: GetRequiredBufferSizeForCapture plus the game's own per-channel buffers
+800a1d60 bake_world_arrays_init           # sparse textures (report 2026-11-19): World_Game03's baked lighting arrays, 8192x8192 with 0x4c / 0x3a layers ("BakeShadow/GIMask/Sky", "BakeStaticLocal", "BakeDirBounce"), and the "Shadow" / "StaticLocal" heaps
+800a1bf0 bake_array_texture_init          # sparse textures: one named bake array, its texture built (f_804e6fa0) and made sparse (f_800a0ed0)
+800a1600 bake_shadow_pages_map            # sparse textures: the shadow bake array's pages mapped (three MapVirtual sites, f_825ceb90 per page)
+800a0ed0 sparse_texture_init              # sparse textures: a sparse texture over its virtual pool, its tile layout read (nvnTextureGetSparseTileLayout), initialized through f_800ca9d0
+800a0cf0 sparse_virtual_pool_init         # sparse textures: a virtual pool for a sparse texture of the given format, size and layers ?
+825ceb90 sparse_page_map                  # sparse textures: maps one page of a texture to a physical page from the page allocator (f_825e1ad0); MapVirtual
+825e1ad0 sparse_page_alloc                # sparse textures: hands out a free physical page index (16 bits) ?
+800a2350 rut_mask_textures_init           # sparse textures: the "RutMaskHistory" sparse arrays (3072 and 6144, 2 layers, RGBA8SN) and their pages, mapped whole at init (five MapVirtual sites)
+8009f7a0 shadow_bake_texture_init         # sparse textures: the ShadowBake texture's two sparse arrays and their pages, mapped at init (four MapVirtual sites)
+80e45ae0 shadow_bake_system_init          # sparse textures: makes the "ShadowBake" and "Texture" heaps and calls shadow_bake_texture_init
+805e6690 world_scene_gfx_init             # sparse textures: "World_Game03" scene graphics set-up; calls bake_world_arrays_init
+8098aa90 bake_material_bind               # sparse textures: binds a material's baked lighting samplers ("bake_light0", "bake_shadow0", "bake_tex_st0/1") ?
+800ca9d0 gfx_texture_init_from_builder    # sparse textures: the texture initialize helper (324 callers): builder flags, storage, nvnTextureInitialize
