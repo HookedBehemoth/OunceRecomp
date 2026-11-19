@@ -11,7 +11,8 @@ usage: work/venv/bin/python tools/dump/make_chisel_overlay.py <out_dir> --route 
            scene frame then waits for ~2200 more actor files), so off by default. --skip-fades: the loading fade opens
            at once and the scene fades in at once; the load starts ~1 s earlier but ends no earlier (no gain), off by
            default. Both: work/assets/native/boot-speed.md.
-Reads the sequence graphs from the config's oot dump (ounce config; --romfs: another romfs folder). Then run the game with
+Reads the sequence graphs from the config's oot dump (ounce config; --romfs: another romfs folder), and writes the resource
+size table with the entries of the graphs that grew raised (tools/dump/rstb.py). Then run the game with
 HOS_FS_OVERLAY=<out_dir>.
 """
 import sys, os, argparse
@@ -26,8 +27,10 @@ def default_romfs():
     return os.path.join(ounce_config.dump('oot'), 'romfs')
 sys.path.insert(0, HERE)
 import ainb_patch
+import rstb
 
 SEQ = None   # (the romfs's Sequence folder: set in main)
+SIZES = {}   # (romfs path -> (old size, new size) of each file emitted: their size table entries)
 BP = 'Work/Banc/GameBancParam/{}.game__banc__GameBancParam.gyml'
 
 
@@ -36,6 +39,7 @@ def emit(out, name, ops):
     data = ainb_patch.patch(open(src, 'rb').read(), ops)
     os.makedirs(f'{out}/Sequence', exist_ok=True)
     open(f'{out}/Sequence/{name}', 'wb').write(data)
+    SIZES[f'Sequence/{name}'] = (os.path.getsize(src), len(data))
     print(f'{name}: {len(ops)} edits, {os.path.getsize(src)} -> {len(data)} bytes')
 
 
@@ -104,6 +108,8 @@ def main():
             emit(a.out, 'TitleToMainWithLoadSave.module.ainb', ops)
         if a.slot is not None:
             emit(a.out, 'OnLoadGameSaveData.module.ainb', [f'unlink:2:Int:Index={a.slot}'])
+    # (a graph's resource heap is its size table entry: a patched graph that grew past it fails its node allocations)
+    rstb.raise_sizes(romfs, a.out, SIZES)
 
 
 if __name__ == '__main__':

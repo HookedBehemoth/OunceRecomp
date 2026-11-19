@@ -81,24 +81,27 @@ Shadow filter widths are in texels, so a larger map gives a narrower penumbra un
 
 ## Upscaling
 
-The game's NDSR upscaler is off (`games/oot/patches/ndsr.c`): the main scene's `CreateNdsr` reads False, as the UI
-scene's does, and the networks are never built. The game's path, after the scene, lighting, fog and post effects:
+The game's NDSR upscaler keeps its stage and renders at ratio 1.0 (`games/oot/patches/ndsr.c`). After the scene,
+lighting, fog and post effects:
 
 1. The lit color is copied for anti-aliasing (`color(AA)`), at the frame's size.
-2. The UI is composed over the frame into the window texture.
+2. SMAA resolves it straight into the frame (R11G11B10F), the game's own path when no network runs.
+3. The UI is composed over the frame into the window texture.
 
-With NDSR on, SMAA resolved the copy into `ndsr::smaa_output` (RGB9E5F) and a network of matrix multiplies, which
-this GPU runs in software, took it to the frame (R11G11B10F): about 1.4 ms a frame.
-Neither runs now.
+The game picks the internal size from its networks' ratio tables: each network lists the output-to-input ratios of
+its layer configurations, and the stage picks the one nearest the dynamic resolution's request. The patch cuts every
+table to 1.0. At a ratio above 1.0, SMAA would resolve into `ndsr::smaa_output` (RGB9E5F) at the smaller size, and a
+network of matrix multiplies, which this GPU runs in software, would take it to the frame. Two of the three networks also run at
+1.0. The patch keeps them from running, and their evaluation calls go to the host's upscaler
+(`runtime/upscale.h`), which is not written yet.
 
-The game writes no motion-vector target and no target carries color across frames. Rendering below the window's size
-and upscaling needs an upscaler of ours; the inputs it needs are:
+The upscaler gets the SMAA-resolved color, the frame image, their sizes and one parameter of the stage. The game
+writes no motion-vector target and no target carries color across frames, so a spatial upscaler fits as it is. A
+temporal one also needs:
 
-- the color before the UI (`color(AA)`);
 - depth (`RawDepth(Full)`, D32F, 0 at the near plane);
 - a jittered projection and motion vectors, which the game does not provide: camera motion can be derived from depth
-  and the two frames' view-projection matrices;
-- the hand-back point: before the UI.
+  and the two frames' view-projection matrices.
 
 ## Things to keep consistent
 

@@ -29,9 +29,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 import byml_write as B
+import rstb
 import zs
 MARK = '.zoo'   # (in every overlay this tool writes: its scene file; a folder without it is never emptied)
-TABLE = 'System/Resource/ResourceSizeTable.Product.111.Nin_Ounce_NVN2.rsizetable.zs'
 
 
 def default_romfs():
@@ -148,33 +148,10 @@ def build(a):
         open(f'{a.out}/{rel}.zs', 'wb').write(frame)
         sizes[rel] = (len(zs.decompress(raw)), len(data))
         print(f'{rel}: {len(kept)} actors ({len(added) if part == "Dynamic" else 0} added), {len(data)} bytes')
-    size_table(romfs, a.out, sizes)
+    rstb.raise_sizes(romfs, a.out, sizes)
     if 'hour' in desc:
         open(os.path.join(a.out, 'live.txt'), 'w').write('!cheat %d\n' % (100 + int(desc['hour']) % 24))
     open(os.path.join(a.out, MARK), 'w').write(os.path.abspath(a.scene) + '\n')
-
-
-def size_table(romfs, out, sizes):
-    """the resource size table with each banc's entry at least its new size plus the entry's allowance over the old"""
-    import zstandard
-    src = os.path.join(romfs, TABLE)
-    b = bytearray(zs.decompress(open(src, 'rb').read()))
-    assert b[:6] == b'RESTBL', src
-    _ver, name_len, hashed, named = struct.unpack_from('<IIII', b, 6)
-    want = {zlib.crc32(rel.encode()): (rel, old, new) for rel, (old, new) in sizes.items()}
-    raised = 0
-    for i in range(hashed):
-        at = 22 + 8 * i
-        h, entry = struct.unpack_from('<II', b, at)
-        if h in want:
-            rel, old, new = want.pop(h)
-            if new + (entry - old) > entry:
-                struct.pack_into('<I', b, at + 4, new + (entry - old)); raised += 1
-    if want:
-        sys.exit('no size table entry for ' + ', '.join(r for r, _, _ in want.values()))
-    os.makedirs(os.path.dirname(os.path.join(out, TABLE)), exist_ok=True)
-    open(os.path.join(out, TABLE), 'wb').write(zstandard.ZstdCompressor(level=3).compress(bytes(b)))
-    print(f'size table (from {os.path.relpath(src, ROOT)}): {raised} entries raised')
 
 
 if __name__ == '__main__':

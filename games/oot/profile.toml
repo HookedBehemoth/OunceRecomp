@@ -3,8 +3,7 @@
 # with tools/dump/make_chisel_overlay.py --route newgame) that `ounce profile` makes in the data folder's
 # oot/profile/<scene>/ when it is missing. `banc` is the map (its GameBancParam name), `start` a StartPos name ("" the
 # map's own), `note` what the scene stands for. A new game is at night, and no run can set the time of day yet: every
-# outdoor scene is a night scene. Kakariko Village (child), Death Mountain Crater, the Desert Colossus and Gerudo Valley are left out: a chiseled boot into
-# them crashes at about 3.5 s (an access violation in a module worker, 2026-11-19).
+# outdoor scene is a night scene.
 
 [scenes.kokiri]
 banc = "KokiriForest_Child"
@@ -30,6 +29,22 @@ note = "the Lost Woods: dense foliage"
 [scenes.deku_tree]
 banc = "InsideTheDekuTree"
 note = "inside the Deku Tree: a dungeon interior"
+
+[scenes.kakariko]
+banc = "KakarikoVillage_Child"
+note = "Kakariko Village as a child: a village, houses and people"
+
+[scenes.crater]
+banc = "DeathMountainCrater_Adult"
+note = "Death Mountain Crater: lava, heat haze"
+
+[scenes.colossus]
+banc = "DesertColossus_Adult"
+note = "the Desert Colossus: open desert"
+
+[scenes.gerudo_valley]
+banc = "GerudoValley_Adult"
+note = "Gerudo Valley: a canyon, the waterfall and bridge"
 
 [scenes.zora_domain]
 banc = "ZoraDomain_Child"

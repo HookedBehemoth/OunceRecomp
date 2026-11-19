@@ -1,6 +1,7 @@
 # The runtime's C files, relative to this folder, in the link's order. ounce build compiles them with the game's
 # patch files (its game.toml's `patches`), and the lift's patch scan reads both.
 bench.c
+upscale.c
 game_hooks.c
 code_ptrs.c
 cxx_throw.c

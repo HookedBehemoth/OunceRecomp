@@ -59,7 +59,9 @@ static int reserve_guest(void) {
     void hos_commit_init(void);
     hos_commit_init();   /* (the crash report) */
     if (os_guest_reserve((void *)A64_HOST_BASE, GUEST_SPACE) < 0) return 0;   /* (os_guest.h: how the GPU sees it) */
-    return 1;
+    /* Nothing is mapped below the system region, as on the console: a null guest pointer faults instead of reading
+       or writing the window's first pages. */
+    return os_mem_protect(A64_MEM, HOS_SYSTEM_BASE, OS_PROT_NONE) == 0;
 #endif
 }
 
