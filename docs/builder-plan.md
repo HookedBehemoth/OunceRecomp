@@ -16,6 +16,15 @@ with no Python and no compiler on the player's PC. Read it before you work on th
 
 Everything is built for x86-64-v3; a CPU without AVX2 is refused.
 
+The AppImage's layout is the one `ounce` looks for:
+
+- `usr/bin/ounce` and `usr/bin/ounce-gui`; the window runs the `ounce` beside it.
+- `usr/share/ounce/`: the sources above (`games/`, `runtime/`, ...), found as the checkout is (`games/` and
+  `runtime/sources.txt`), a `VERSION` file with the release name, and `prebuilt/ounce_renderer.so`, which `ounce build`
+  takes instead of building the renderer with Meson.
+- Without `.git` in it, a build's own files (objects, the log) go to `~/.cache/ounce/work/<game>/`, not into the
+  read-only image.
+
 ## The steps and their budget
 
 The target is 15 minutes on a 16-thread PC. Measured on a Ryzen 7 5800X3D (16 threads, 32 GB):

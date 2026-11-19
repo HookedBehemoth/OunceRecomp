@@ -9,6 +9,8 @@
 //! work/renderer/            the renderer's Meson build, shared by the games (it is the same for each)
 //! ```
 //!
+//! A release (sources without .git, the AppImage's) writes the same folders under `~/.cache/ounce/work/` instead.
+//!
 //! What is shared lives in the config's folders: the object cache (`<cache>/objects`) and, per game, the data folder's
 //! `<game>/golden/` (the smoke tests' goldens) and `<game>/rec/` (input recordings).
 
@@ -25,8 +27,18 @@ impl Layout {
         Layout { root, game: game.to_string() }
     }
 
+    /// A checkout's work/, or for a release (its sources in a read-only folder, no .git) the cache folder's work/
+    fn work_base(&self) -> PathBuf {
+        if self.root.join(".git").exists() {
+            return self.root.join("work");
+        }
+        std::env::var_os("XDG_CACHE_HOME").filter(|v| !v.is_empty()).map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache"))
+            .join("ounce/work")
+    }
+
     pub fn work(&self) -> PathBuf {
-        self.root.join("work").join(&self.game)
+        self.work_base().join(&self.game)
     }
 
     pub fn game_dir(&self) -> PathBuf {
@@ -42,7 +54,7 @@ impl Layout {
     }
 
     pub fn renderer_build(&self) -> PathBuf {
-        self.root.join("work").join("renderer")
+        self.work_base().join("renderer")
     }
 
     pub fn build_log(&self) -> PathBuf {

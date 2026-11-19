@@ -6,12 +6,17 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// The checkout: the nearest folder above this executable, else above the current folder, that holds
-/// `games/` and `runtime/sources.txt`.
+/// The checkout: a release's `<prefix>/share/ounce` beside `<prefix>/bin/ounce`, else the nearest folder above this
+/// executable, else above the current folder, that holds `games/` and `runtime/sources.txt`.
 pub fn root() -> Result<PathBuf, String> {
     let is_root = |d: &Path| d.join("games").is_dir() && d.join("runtime/sources.txt").is_file();
     let exe = std::env::current_exe().ok();
     let cwd = std::env::current_dir().ok();
+    // (a release keeps the sources beside its programs: <prefix>/bin/ounce and <prefix>/share/ounce, the AppImage's usr/)
+    let share = exe.as_deref().and_then(Path::parent).and_then(Path::parent).map(|p| p.join("share/ounce"));
+    if let Some(d) = share.filter(|d| is_root(d)) {
+        return Ok(d);
+    }
     for start in [exe.as_deref().and_then(Path::parent), cwd.as_deref()].into_iter().flatten() {
         if let Some(d) = start.ancestors().find(|d| is_root(d)) {
             return Ok(d.to_path_buf());
