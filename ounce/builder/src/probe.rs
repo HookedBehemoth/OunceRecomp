@@ -28,7 +28,7 @@ const ST_DRIVER_PROPS: u32 = 1000196000;
 const ST_V12_FEATURES: u32 = 51;
 const ST_V13_FEATURES: u32 = 53;
 const ST_SHADER_OBJECT: u32 = 1000482000;
-const ST_DESCRIPTOR_HEAP: u32 = 1000135009;
+const ST_ROBUSTNESS2: u32 = 1000286000;
 const ST_EDS3: u32 = 1000455000;
 const ST_MAINTENANCE7: u32 = 1000562000;
 
@@ -227,30 +227,32 @@ unsafe fn device_checks(vk: &mut Vk, out: &mut Vec<Item>) {
         exts(d, null(), &mut ne, eb.as_mut_ptr());
         let names: Vec<String> = eb.chunks_exact(260).map(|e| cstr(&e[..256])).collect();
         let has = |n: &str| names.iter().any(|e| e == n);
-        // (the device is not made without the first three; without the next three it draws nothing)
+        // (the device is not made without any of these)
         for (key, ext) in [
             ("swapchain", "VK_KHR_swapchain"),
             ("external_memory_fd", "VK_KHR_external_memory_fd"),
             ("dma_buf", "VK_EXT_external_memory_dma_buf"),
             ("shader_object", "VK_EXT_shader_object"),
-            ("descriptor_heap", "VK_EXT_descriptor_heap"),
             ("extended_dynamic_state3", "VK_EXT_extended_dynamic_state3"),
         ] {
             out.push(item(key, has(ext), if has(ext) { ext.to_string() } else { format!("{ext} missing") }));
         }
+        // (null descriptors: VK_KHR_robustness2, or the same structure as VK_EXT_robustness2)
+        let robust2_ext = if has("VK_KHR_robustness2") { Some("VK_KHR_robustness2") } else if has("VK_EXT_robustness2") { Some("VK_EXT_robustness2") } else { None };
+        out.push(item("robustness2", robust2_ext.is_some(), robust2_ext.unwrap_or("VK_KHR_robustness2 missing")));
         let m7_ext = has("VK_KHR_maintenance7");
         // the features the back end turns on and needs
         let mut f12 = Feat::<47>::new(ST_V12_FEATURES);
         let mut f13 = Feat::<15>::new(ST_V13_FEATURES);
         let mut so = Feat::<1>::new(ST_SHADER_OBJECT);
-        let mut dh = Feat::<2>::new(ST_DESCRIPTOR_HEAP);
+        let mut rb = Feat::<3>::new(ST_ROBUSTNESS2);
         let mut e3 = Feat::<31>::new(ST_EDS3);
         let mut m7 = Feat::<1>::new(ST_MAINTENANCE7);
         f12.next = (&mut f13 as *mut Feat<15>).cast();
         let mut tail: *mut *mut c_void = &mut f13.next;
         for (ext, s) in [
             ("VK_EXT_shader_object", (&mut so as *mut Feat<1>).cast::<c_void>()),
-            ("VK_EXT_descriptor_heap", (&mut dh as *mut Feat<2>).cast()),
+            (robust2_ext.unwrap_or(""), (&mut rb as *mut Feat<3>).cast()),
             ("VK_EXT_extended_dynamic_state3", (&mut e3 as *mut Feat<31>).cast()),
             ("VK_KHR_maintenance7", (&mut m7 as *mut Feat<1>).cast()),
         ] {
@@ -269,11 +271,19 @@ unsafe fn device_checks(vk: &mut Vk, out: &mut Vec<Item>) {
         if has("VK_EXT_shader_object") {
             out.push(item("shader_object_feature", so.on[0] != 0, "shaderObject"));
         }
-        if has("VK_EXT_descriptor_heap") {
-            out.push(item("descriptor_heap_feature", dh.on[0] != 0, "descriptorHeap"));
+        if robust2_ext.is_some() {
+            out.push(item("robustness2_feature", rb.on[2] != 0, "nullDescriptor"));
         }
+        // (the pools' set, vk_pool.cpp draw_features_resolved: descriptor indexing with update after bind; and 64-bit
+        // integers for the uniform buffers' addresses)
+        let indexing = [(29, "runtimeDescriptorArray"), (14, "shaderSampledImageArrayNonUniformIndexing"), (16, "shaderStorageImageArrayNonUniformIndexing"), (21, "descriptorBindingSampledImageUpdateAfterBind"), (22, "descriptorBindingStorageImageUpdateAfterBind"), (26, "descriptorBindingUpdateUnusedWhilePending")];
+        let mut missing: Vec<&str> = indexing.iter().filter(|w| f12.on[w.0] == 0).map(|w| w.1).collect();
+        if f2.on[40] == 0 {
+            missing.push("shaderInt64");
+        }
+        out.push(item("descriptor_indexing", missing.is_empty(), if missing.is_empty() { "the six the pools' set needs, shaderInt64".into() } else { format!("missing {}", missing.join(" ")) }));
         if has("VK_EXT_extended_dynamic_state3") {
-            // (vk_heap.cpp's eds3_ok: polygon mode, depth clamp, blend enable, equation, write mask, alpha to
+            // (vk_pool.cpp's eds3_ok: polygon mode, depth clamp, blend enable, equation, write mask, alpha to
             // coverage, samples, sample mask, alpha to one, logic op)
             let want = [(2, "PolygonMode"), (1, "DepthClampEnable"), (8, "ColorBlendEnable"), (9, "ColorBlendEquation"), (10, "ColorWriteMask"), (5, "AlphaToCoverageEnable"), (3, "RasterizationSamples"), (4, "SampleMask"), (6, "AlphaToOneEnable"), (7, "LogicOpEnable")];
             let missing: Vec<&str> = want.iter().filter(|w| e3.on[w.0] == 0).map(|w| w.1).collect();

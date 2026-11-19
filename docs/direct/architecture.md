@@ -61,7 +61,7 @@ all its state, and a render condition is begun and ended inside it.
 | Data | How it reaches the GPU | CPU work per draw |
 |---|---|---|
 | uniform, storage, vertex and index buffers | the guest address, through a window buffer or a device address | arithmetic |
-| textures and samplers bound by handle | descriptor-heap index = the NVN pool id, written at registration | none |
+| textures and samplers bound by handle | an index in one descriptor set (descriptor indexing, updated after bind) = the NVN pool id, written at registration | none |
 | deferred handle arrays | the bind reserves words in the frame arena; one copy from the game's array runs at the guest's submit | none |
 | handles and addresses inside uniform buffers | read by the shader from the buffer | none |
 | inline uniform updates | the bytes go to the frame arena; later draws of the list bind that copy | a range lookup |

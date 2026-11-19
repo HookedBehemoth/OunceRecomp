@@ -7,6 +7,7 @@
 #pragma once
 
 #include <array>
+#include <unordered_map>
 
 #include <sirit/sirit.h>
 #include "common/container/unordered_set.h"
@@ -48,7 +49,7 @@ struct TextureDefinition {
     u32 count;
     bool is_multisample;
     bool is_integer;
-    bool is_depth{};   // (Profile::heap_handles: its sampler from the depth-compare array)
+    bool is_depth{};   // (Profile::pool_handles: its sampler from the depth-compare array)
 };
 
 struct TextureBufferDefinition {
@@ -269,11 +270,25 @@ public:
     std::vector<ImageBufferDefinition> image_buffers;
     std::vector<TextureDefinition> textures;
     std::vector<ImageDefinition> images;
-    // (direct back end, M3b, Profile::heap_handles) the sampler heap's two arrays, indexed by a handle's sampler bits
-    Id heap_sampler_type{};
-    Id heap_sampler_pointer{};
-    Id heap_samplers{};
-    Id heap_compare_samplers{};
+    // (direct back end, Profile::pool_handles) the sampler pool's two arrays, indexed by a handle's sampler bits
+    Id pool_sampler_type{};
+    Id pool_sampler_pointer{};
+    Id pool_samplers{};
+    Id pool_compare_samplers{};
+    // (Profile::pool_handles) the uniform buffers by device address: cbufs[i].* is constant buffer i's address, a Private u64
+    // stored in the entry block from the pushed table; uniform_types.* point at an element, uniform_blocks.* at the block
+    UniformDefinitions uniform_blocks{};
+    std::vector<Id> uniform_addresses;   // (the Private u64 of each constant buffer descriptor, in Info's order)
+    Id uniform_table_block{};            // (a PhysicalStorageBuffer pointer to the table: a block of u64, and to an entry)
+    Id uniform_table_entry{};
+    u32 uniform_table_member_index{};
+    /// The runtime array of element_type at a pool binding (one variable per binding and type)
+    Id PoolVariable(u32 binding, Id element_type);
+    std::unordered_map<u64, Id> pool_variables;
+    /// A handle's image id as the pool's index (low 20 bits, clamped to kPoolNullSlot)
+    Id PoolImageIndex(Id handle);
+    /// A load of a `type` element of constant buffer `index` (one of UniformDefinitions' views of it, its elements `size` bytes)
+    Id CbufLoad(Id type, u32 index, Id UniformDefinitions::*member, u32 size, Id element);
 
     Id workgroup_id{};
     Id num_workgroups{};
@@ -353,7 +368,10 @@ public:
     Id bda_flag{};                    // (RX_VK_BDA_CHECK: bda_flag)
     Bda::PtrCache bda_ptrs;
     std::vector<StorageBufferDescriptor> bda_descs;
-    /// The entry block's part: the table's address, each storage buffer's base (and bound). Traverse calls it first
+    /// The entry block's part, which Traverse emits first: the uniform buffers' addresses, then the storage buffers'
+    void EmitEntryPrologue();
+    bool entry_prologue{};
+    /// The window table's address, each storage buffer's base (and bound)
     void EmitBdaPrologue();
     /// The pushed table and virtual range, loaded here (in the function being emitted)
     Bda::Pushed BdaPushed();

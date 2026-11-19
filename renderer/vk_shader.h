@@ -1,5 +1,5 @@
 // Programs: NVN programs through Eden's
-// translator (linked from the frozen back end's objects, unchanged) to shader objects with descriptor-heap mappings.
+// translator (linked from the frozen back end's objects, unchanged) to shader objects on the pools' set (vk_pool.h).
 //
 // A program is a slot found by its NVN serial in a table read without a lock. Its stages' code is read and lowered when the
 // game sets them (nvnProgramSetShaders), on a worker; the variants kept in the direct back end's own cache file for those
@@ -48,21 +48,17 @@ struct DrawProg {
     uint8_t frag_stores = 0;        // (bit i: the fragment stage writes colour output i)
     uint8_t frag_components[8]{};   // (and which of its components)
     bool uses_render_area = false;
-    uint8_t vk_ubos = 0;   // (HOS_DBG=ubopush: the first ones' addresses pushed at 192)
-    uint32_t push_bytes = 0;        // (the push data a draw writes: Eden's block, then the address table's and the banks')
-    /// The uniform buffers in the address table's order (push data at kTablePush holds the table's address)
+    uint32_t push_bytes = 0;        // (the push data a draw writes: Eden's block, then each stage's part of the address table)
+    /// The uniform buffers in the address table's order: each stage's in its descriptors' order, the stage's part from
+    /// table_first[slot], its address pushed at kTablePush + 8 * slot (the translator's UniformTableSlot)
+    uint8_t table_first[3]{};
+    uint8_t table_slots = 0;   // (bit slot: a stage there reads uniform buffers)
     struct Ubo {
         uint8_t stage;   // (NVN stage)
         uint8_t index;   // (Eden's constant buffer index: c0 / c2 the driver banks, c1 the program's constants, c3+ the game's)
         uint32_t bytes;  // (c0 / c2: the bank bytes the stage reads, the copy's size)
     };
     std::vector<Ubo> ubos;
-    /// Constant buffers whose address is pushed for textures that read their handle from them (HEAP_WITH_INDIRECT_INDEX)
-    struct Pushed {
-        uint8_t stage, index;
-        uint16_t push_off;
-    };
-    std::vector<Pushed> pushed;
     VkDeviceAddress c1[8]{};   // (each stage's c1 by NVN stage, made at load)
     /// The textures a draw checks against the translation from the code alone (c0 / c2 words; one in a game buffer it does
     /// not see): vk_shader.cpp check_textures
@@ -89,8 +85,8 @@ struct DrawProg {
     char shape[160]{};   // (logs: per stage the textures by their handle's source, images, storage buffers, global memory)
 };
 
-constexpr uint32_t kTablePush = 120;
-constexpr uint32_t kMeshFirstPush = 56;   // (M4b: a mesh draw's first workgroup, a u32: Eden's MESH_FIRST_PUSH_OFFSET)   // (push data: Eden's block is 120 bytes (PUSH_CONSTANTS_END rounded to 8))
+constexpr uint32_t kTablePush = 120;   // (Eden's UNIFORM_TABLE_PUSH_OFFSET: after its block)
+constexpr uint32_t kMeshFirstPush = 56;   // (M4b: a mesh draw's first workgroup, a u32: Eden's MESH_FIRST_PUSH_OFFSET)
 
 /// (the game's thread, nvnProgramSetShaders) the program's stages read and its kept variants made, on a worker
 void shader_program_set(const nvn_prog* p);

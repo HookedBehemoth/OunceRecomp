@@ -95,7 +95,7 @@ enum MemOwner : int {
     MO_TASK,
     MO_QUERY,       // (the report buffers; the query pools are the driver's)
     MO_CONST,       // (the programs' constants)
-    MO_HEAP,        // (the descriptor heaps, the window table, the zero buffer)
+    MO_TABLES,      // (the window table, the zero buffer)
     MO_UPLOAD,
     MO_TRANSIENT,
     MO_L0_VRAM,
@@ -144,7 +144,7 @@ void mem_budget_sample(int64_t pending);   // (M6f: free VRAM once a present, wi
 extern std::atomic<int64_t> vram_free_now;   // (M6f: the heaps' usage and budget, VMA's blocks)
 extern std::atomic<int64_t> st_objects;   // (Vulkan objects made since the start: images, views, buffers, pools, command buffers)
 
-// ---- vk_heap.cpp: mapped buffers with an allocation of their own ----
+// ---- vk_pool.cpp: mapped buffers with an allocation of their own ----
 /// A buffer in device-local, host-visible memory (the BAR) where there is one, mapped, with its device address
 bool mapped_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer, VkDeviceMemory& memory, uint8_t*& map,
                    VkDeviceAddress& address, MemOwner owner);

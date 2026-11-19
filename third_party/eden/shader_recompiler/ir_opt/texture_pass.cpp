@@ -32,12 +32,12 @@ struct TextureInst {
     ConstBufferAddr cbuf;
     IR::Inst* inst;
     IR::Block* block;
-    IR::Value handle{};   // (HostTranslateInfo::heap_handles: the handle the shader reads, which replaces Arg(0))
+    IR::Value handle{};   // (HostTranslateInfo::pool_handles: the handle the shader reads, which replaces Arg(0))
 };
 
-/// (heap_handles) a handle the shader computes with no single constant buffer word to name it (a handle program's, a dynamic
+/// (pool_handles) a handle the shader computes with no single constant buffer word to name it (a handle program's, a dynamic
 /// index's, two words'): its descriptor has no answer the bound state could give
-constexpr u32 kHeapComputed = 0xFFFFFFFEU;
+constexpr u32 kComputedHandle = 0xFFFFFFFEU;
 
 using TextureInstVector = boost::container::small_vector<TextureInst, 24>;
 
@@ -939,12 +939,12 @@ std::optional<ConstBufferAddr> TryGetConstBuffer(const IR::Inst* inst, Environme
 
 TextureInst MakeInst(Environment& env, IR::Block* block, IR::Inst& inst, const HostTranslateInfo& host_info) {
     ConstBufferAddr addr;
-    if (host_info.heap_handles) {
+    if (host_info.pool_handles) {
         // (the shader reads the handle: a bound instruction's from its constant buffer word, a bindless one's as the program
         // computed it. The word it names, if one, is kept for the descriptor's answers)
         addr = ConstBufferAddr{.index = 0, .offset = 0, .shift_left = 0, .secondary_index = 0, .secondary_offset = 0,
                                .secondary_shift_left = 0, .dynamic_offset = {}, .count = 1, .has_secondary = false,
-                               .handle_program = kHeapComputed};
+                               .handle_program = kComputedHandle};
         IR::Value handle;
         if (IsBindless(inst)) {
             handle = inst.Arg(0);
@@ -1133,11 +1133,11 @@ private:
     ImageDescriptors& image_descriptors;
 };
 
-IR::Inst* PatchImageSampleImplicitLod(IR::Block& block, IR::Inst& inst, IR::Value heap_handle = {}) {
+IR::Inst* PatchImageSampleImplicitLod(IR::Block& block, IR::Inst& inst, IR::Value pool_handle = {}) {
     IR::IREmitter ir{block, IR::Block::InstructionList::s_iterator_to(inst)};
     const auto info{inst.Flags<IR::TextureInstInfo>()};
     const IR::Value coord(inst.Arg(1));
-    const IR::Value handle(heap_handle.IsEmpty() ? IR::Value{ir.Imm32(0)} : heap_handle);   // (heap_handles: the sample's own)
+    const IR::Value handle(pool_handle.IsEmpty() ? IR::Value{ir.Imm32(0)} : pool_handle);   // (pool_handles: the sample's own)
     const IR::U32 lod{ir.Imm32(0)};
     const IR::U1 skip_mips{ir.Imm1(true)};
     const IR::Value texture_size = ir.ImageQueryDimension(handle, lod, skip_mips, info);
@@ -1301,7 +1301,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
         auto flags{inst->Flags<IR::TextureInstInfo>()};
         bool is_multisample{false};
         bool type_asked{false};   // (the descriptor's type is the bound texture's: TextureDescriptor::type_fixed)
-        IR::Inst* rect_query{};   // (heap_handles: the size query a rectangle's sample made, given the sample's descriptor)
+        IR::Inst* rect_query{};   // (pool_handles: the size query a rectangle's sample made, given the sample's descriptor)
         switch (inst->GetOpcode()) {
         case IR::Opcode::ImageQueryDimensions:
             if (const auto it{handle_program_types.find(cbuf.handle_program)};
@@ -1351,7 +1351,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
         }
         u32 index;
         u32 size_shift = cbuf.count > 1 ? DynamicDescriptorSizeShift(cbuf.dynamic_offset) : DESCRIPTOR_SIZE_SHIFT;
-        u32 count = host_info.heap_handles ? 1 : cbuf.count;
+        u32 count = host_info.pool_handles ? 1 : cbuf.count;
         switch (inst->GetOpcode()) {
         case IR::Opcode::ImageRead:
         case IR::Opcode::ImageAtomicIAdd32:
@@ -1451,7 +1451,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
             rect_query->SetFlags(qflags);
         }
 
-        if (host_info.heap_handles) {
+        if (host_info.pool_handles) {
             inst->SetArg(0, texture_inst.handle);
         } else if (count > 1) {
             const auto insert_point{IR::Block::InstructionList::s_iterator_to(*inst)};

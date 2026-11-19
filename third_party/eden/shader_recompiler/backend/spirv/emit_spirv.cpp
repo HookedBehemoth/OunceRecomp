@@ -153,11 +153,11 @@ void Traverse(EmitContext& ctx, IR::Program& program) {
             if (current_block) {
                 ctx.OpBranch(label);
             }
-            const bool entry{current_block == nullptr && !Sirit::ValidId(ctx.bda_table)};
+            const bool entry{current_block == nullptr && !ctx.entry_prologue};
             current_block = node.data.block;
             ctx.AddLabel(label);
             if (entry) {
-                ctx.EmitBdaPrologue();   // (fork, Info::ssbo_bda: the storage buffers' bases, in the entry block)
+                ctx.EmitEntryPrologue();   // (the uniform buffers' addresses and the storage buffers' bases, in the entry block)
             }
             bool probed{!probe};
             for (IR::Inst& inst : node.data.block->Instructions()) {

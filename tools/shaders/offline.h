@@ -253,7 +253,7 @@ inline Shader::Profile profile() {
     p.support_sampled_image_array_nonuniform_indexing = true;
     p.max_subgroup_size = 32;
     p.min_ssbo_alignment = 4;
-    p.ssbo_bda = true, p.ssbo_bda_wide = true, p.heap_handles = true;
+    p.ssbo_bda = true, p.ssbo_bda_wide = true, p.pool_handles = true;
     if (explicit_shared) p.support_explicit_workgroup_layout = p.support_workgroup_layout_8bit_access = p.support_workgroup_layout_16bit_access = true;
     return p;
 }
@@ -261,7 +261,7 @@ inline Shader::HostTranslateInfo host_info() {
     Shader::HostTranslateInfo h{};
     h.support_float64 = h.support_float16 = h.support_int64 = true;
     h.support_snorm_render_buffer = h.support_viewport_index_layer = h.support_conditional_barrier = true;
-    h.min_ssbo_alignment = 4, h.heap_handles = true;
+    h.min_ssbo_alignment = 4, h.pool_handles = true;
     return h;
 }
 

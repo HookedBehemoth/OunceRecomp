@@ -27,13 +27,13 @@ bool info_get(const uint8_t*& p, const uint8_t* end, Shader::Info& i);
 /// What translated code depends on besides the translator's own code: the device's subgroup answers, the record layout
 uint64_t device_stamp();
 /// The driver binaries of shader objects (ounce_renderer_shader_objects.bin), by a hash of the create info
-uint64_t object_key(const VkShaderCreateInfoEXT& ci, const VkShaderDescriptorSetAndBindingMappingInfoEXT& mi, bool size32);
+uint64_t object_key(const VkShaderCreateInfoEXT& ci, bool size32);
 /// The binary kept for key, or empty
 std::vector<uint8_t> object_binary(uint64_t key);
 /// Keeps a shader object made from SPIR-V
 void object_keep(uint64_t key, VkShaderEXT obj);
 std::string program_dir();
-/// A texture handle's answer (heap_answer; not registered: Color2D)
+/// A texture handle's answer (pool_answer; not registered: Color2D)
 uint8_t answer_of(uint32_t handle);
 uint8_t answer_canonical(uint8_t type, bool dim_fixed, uint8_t desc_type, bool depth_float);
 

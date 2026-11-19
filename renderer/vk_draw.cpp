@@ -20,7 +20,7 @@
 #include "vk_marks.h"
 #include "vk_pstats.h"
 #include "vk_draw.h"
-#include "vk_heap.h"
+#include "vk_pool.h"
 #include "vk_image.h"
 #include "vk_shader.h"
 #include "vk_state.h"
@@ -230,7 +230,7 @@ struct ListDraw {
     DState s;
     // (what the command buffer being recorded has: set again from nothing for each new one)
     VkCommandBuffer cb = VK_NULL_HANDLE;
-    bool heap = false, dyn_valid = false, vi_valid = false, vb_valid = false, ib_valid = false, push_valid = false;
+    bool bound = false, dyn_valid = false, vi_valid = false, vb_valid = false, ib_valid = false, push_valid = false;
     VkShaderEXT vs = VK_NULL_HANDLE, fs = VK_NULL_HANDLE, ms = VK_NULL_HANDLE, gs = VK_NULL_HANDLE;
     bool shaders = false;
     uint32_t vb_bound = 0;   // (the vertex bindings given a buffer in this command buffer)
@@ -445,7 +445,7 @@ uint64_t mix(uint64_t h, uint64_t v) {
 void cb_fresh(ListDraw& d, VkCommandBuffer cb) {
     if (d.cb == cb) return;
     d.cb = cb;
-    d.heap = d.dyn_valid = d.vi_valid = d.vb_valid = d.ib_valid = d.push_valid = d.shaders = false;
+    d.bound = d.dyn_valid = d.vi_valid = d.vb_valid = d.ib_valid = d.push_valid = d.shaders = false;
     d.vb_bound = 0;
 }
 
@@ -752,7 +752,7 @@ Reason ubo_address(List* l, ListDraw& x, const DrawProg& p, const DrawProg::Ubo&
     return R_DRAWN;
 }
 
-/// The address table and the pushed addresses (push data from 120); false: a reason
+/// The address table, and each stage's part's address pushed (from kTablePush); false: a reason
 Reason bind_data(List* l, ListDraw& x, const DrawProg& p, uint8_t push[256]) {
     bool same = x.table_prog == &p && x.table_ubo_gen == x.s.ubo_gen &&
                 !std::memcmp(x.table_bank_gen, x.s.bank_gen, sizeof x.table_bank_gen);
@@ -773,22 +773,13 @@ Reason bind_data(List* l, ListDraw& x, const DrawProg& p, uint8_t push[256]) {
         std::memcpy(x.table_bank_gen, x.s.bank_gen, sizeof x.table_bank_gen);
         bump(me().tables);
     }
-    std::memcpy(push + kTablePush, &x.table_addr, 8);
-    for (uint32_t i = 0; i < p.vk_ubos && i < x.table_entries.size(); i++) std::memcpy(push + 192 + 8 * i, &x.table_entries[i], 8);
-    for (const DrawProg::Pushed& q : p.pushed) {
-        VkDeviceAddress a = 0;
-        for (size_t i = 0; i < p.ubos.size(); i++)
-            if (p.ubos[i].stage == q.stage && p.ubos[i].index == q.index) a = x.table_entries[i];
-        if (!a) {   // (a buffer only a texture reads: not in the table)
-            const DrawProg::Ubo u{q.stage, q.index, 0xA00};
-            const Reason r = ubo_address(l, x, p, u, a);
-            if (r != R_DRAWN) return r;
+    for (uint32_t slot = 0; slot < 3; slot++)
+        if (p.table_slots >> slot & 1) {
+            const VkDeviceAddress a = x.table_addr + 8ull * p.table_first[slot];
+            std::memcpy(push + kTablePush + 8 * slot, &a, 8);
         }
-        std::memcpy(push + q.push_off, &a, 8);
-    }
     return R_DRAWN;
 }
-
 
 /// HOS_DBG=drawlog:<present>: the recording lists' draws of the frame after that present, each with what it was drawn with
 bool drawlog_on() {
@@ -798,7 +789,7 @@ bool drawlog_on() {
     }();
     return at >= 0 && (int64_t)present_count() == at;
 }
-/// HOS_DBG=phlog: the first draw that samples each heap id holding the placeholder (or no image), named once: the
+/// HOS_DBG=phlog: the first draw that samples each texture id holding the placeholder (or no image), named once: the
 /// texture, the list's kind and return address, the program
 void phlog(const List* l, const DrawProg* p) {
     static const bool on = dbg("phlog");
@@ -812,7 +803,7 @@ void phlog(const List* l, const DrawProg* p) {
         if (cap) {
             const uint32_t hc = t.bank < 3 && !t.computed && !t.secondary ? bank_word(s, t.bank, t.stage, t.offset) : 0;
             char e[320] = "";
-            if (hc) heap_describe(hc & 0xFFFFF, e, sizeof e);
+            if (hc) pool_describe(hc & 0xFFFFF, e, sizeof e);
             logf("capture:   texture word c%u+%#x stage %u%s%s: handle %#x %s", t.bank, t.offset, t.stage, t.computed ? " computed" : "",
                  t.secondary ? " secondary" : "", hc, e);
         }
@@ -820,17 +811,17 @@ void phlog(const List* l, const DrawProg* p) {
         const uint32_t h = t.bank < 3 ? bank_word(s, t.bank, t.stage, t.offset) : 0, id = h & 0xFFFFF;
         if (!h) continue;
         if (strict_on()) {   // (M6b: every draw that samples one, by a handle in a driver bank; handles in game buffers are not seen here)
-            if (heap_stale(id)) {   // (the transient pool: a target sampled after another took its memory)
+            if (pool_stale(id)) {   // (the transient pool: a target sampled after another took its memory)
                 char e[320], w[512];
-                heap_describe(id, e, sizeof e);
+                pool_describe(id, e, sizeof e);
                 pass_where(l, w, sizeof w);
                 image_stale_bound();
                 strict_event("a transient target sampled after another took its memory", "handle %#x (c%u+%#x of stage %u), "
                              "program %016llx: %s; %s", h, t.bank, t.offset, t.stage, (unsigned long long)p->key, e, w);
             }
-            if (const int ph = heap_placeholder(id)) {
+            if (const int ph = pool_placeholder(id)) {
                 char e[320], w[512];
-                heap_describe(id, e, sizeof e);
+                pool_describe(id, e, sizeof e);
                 pass_where(l, w, sizeof w);
                 strict_event(ph == 1 ? "the placeholder texture sampled" : "a texture with no image sampled",
                              "handle %#x (c%u+%#x of stage %u), program %016llx: %s; %s", h, t.bank, t.offset, t.stage,
@@ -843,10 +834,10 @@ void phlog(const List* l, const DrawProg* p) {
             if (seen[id]) continue;
             seen[id] = 1;
         }
-        const int ph = heap_placeholder(id);
+        const int ph = pool_placeholder(id);
         if (!ph) continue;
         char e[320];
-        heap_describe(id, e, sizeof e);
+        pool_describe(id, e, sizeof e);
         logf("direct: phlog: %s sampled (handle %#x, c%u+%#x of stage %u) by a draw in a list of kind %u (lr %#llx) at present %llu, "
              "program %016llx: %s", ph == 1 ? "the placeholder" : "no image", h, t.bank, t.offset, t.stage, l->info.kind,
              (unsigned long long)l->info.lr, (unsigned long long)present_count(), (unsigned long long)p->key, e);
@@ -870,13 +861,12 @@ void drawlog(const List* l, const char* what, const DrawProg* p, const Dyn* d, u
     int k = std::snprintf(b, sizeof b, "direct: drawlog lr %#llx kind %u rt %llu %ux%u c0 %d: %s", (unsigned long long)l->info.lr, l->info.kind,
                           (unsigned long long)l->pass.set_rt_at, l->pass.w, l->pass.h, l->pass.n ? (int)l->pass.color[0].format : -1, what);
     if (p)
-        k += std::snprintf(b + std::min<int>(k, (int)sizeof b - 1), k < (int)sizeof b - 1 ? sizeof b - 1 - k : 1, " prog %016llx codes %016llx/%016llx vs_loads %#x stores %#x comp %x push %u ubos %zu pushed %zu ra %d", (unsigned long long)p->key, (unsigned long long)p->codes[0], (unsigned long long)p->codes[1],
-                           p->vs_loads, p->frag_stores, p->frag_components[0], p->push_bytes, p->ubos.size(), p->pushed.size(), p->uses_render_area);
+        k += std::snprintf(b + std::min<int>(k, (int)sizeof b - 1), k < (int)sizeof b - 1 ? sizeof b - 1 - k : 1, " prog %016llx codes %016llx/%016llx vs_loads %#x stores %#x comp %x push %u ubos %zu ra %d", (unsigned long long)p->key, (unsigned long long)p->codes[0], (unsigned long long)p->codes[1],
+                           p->vs_loads, p->frag_stores, p->frag_components[0], p->push_bytes, p->ubos.size(), p->uses_render_area);
     if (p) {
         for (const auto& u : p->ubos)
             k += std::snprintf(b + std::min<int>(k, (int)sizeof b - 1), k < (int)sizeof b - 1 ? sizeof b - 1 - k : 1, " u%u.%u%s%llx", u.stage, u.index, u.index >= 3 ? "=" : "",
                                u.index >= 3 && u.stage < kBankStages ? (unsigned long long)l->dctx->s.ubo[u.stage][u.index - 3].addr : 0ull);
-        for (const auto& q : p->pushed) k += std::snprintf(b + std::min<int>(k, (int)sizeof b - 1), k < (int)sizeof b - 1 ? sizeof b - 1 - k : 1, " p%u.%u@%u", q.stage, q.index, q.push_off);
         const DState& s = l->dctx->s;
         for (int i = 0; i < 16 && k < 7000; i++)
             if (p->vs_loads >> i & 1) {
@@ -918,8 +908,8 @@ void drawlog(const List* l, const char* what, const DrawProg* p, const Dyn* d, u
             uint32_t h = word(t.bank, t.stage, t.offset) << t.shift;
             if (t.secondary) h |= word(t.sbank, t.stage, t.soffset) << t.sshift;
             char e[400], sm[200];
-            heap_describe(h & 0xFFFFF, e, sizeof e);
-            heap_sampler_describe(h >> 20, sm, sizeof sm);
+            pool_describe(h & 0xFFFFF, e, sizeof e);
+            pool_sampler_describe(h >> 20, sm, sizeof sm);
             k += std::snprintf(b + k, sizeof b - k, " tex[s%u type %u] c%u+%#x", t.stage, t.type, t.bank, t.offset);
             if (t.secondary) k += std::snprintf(b + k, sizeof b - k, "|c%u+%#x", t.sbank, t.soffset);
             k += std::snprintf(b + k, sizeof b - k, "=%#x(%s; %s)", h, e, sm);
@@ -1131,7 +1121,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         uint64_t t0 = __builtin_ia32_rdtsc();
         ~Timer() { bump(me().ns, (int64_t)(__builtin_ia32_rdtsc() - t0)); }
     } timer;
-    if (!heap_on()) return count(l, R_NOT_GRAPHICS);
+    if (!pool_on()) return count(l, R_NOT_GRAPHICS);
     ListDraw& x = ctx(l);
     const DState& s = x.s;
     // (M4b: the draw's kind: arrays, elements, either indirect (with a count or not), or mesh (direct or indirect))
@@ -1301,7 +1291,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         if (!l->secondary) x.push_valid = false;   // (the compute step pushed into this command buffer)
     }
     // (recorded)
-    if (!x.heap) heap_bind(cb), x.heap = true;
+    if (!x.bound) pool_bind(cb, VK_PIPELINE_BIND_POINT_GRAPHICS), x.bound = true;
     const VkShaderEXT want_vs = mesh ? VK_NULL_HANDLE : prog->vs, want_ms = mesh ? prog->ms : VK_NULL_HANDLE;
     const VkShaderEXT want_fs = prog->fs, want_gs = mesh ? VK_NULL_HANDLE : prog->gs;
     if (!x.shaders || x.vs != want_vs || x.fs != want_fs || x.ms != want_ms || x.gs != want_gs) {
@@ -1349,7 +1339,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         x.ib = ib, x.io = io, x.it = it, x.ib_valid = true;
     }
     if (!x.push_valid || x.push_n != prog->push_bytes || std::memcmp(x.push, push, prog->push_bytes)) {
-        heap_push(cb, push, prog->push_bytes);
+        pool_push(cb, push, prog->push_bytes);
         std::memcpy(x.push, push, prog->push_bytes);
         x.push_n = prog->push_bytes, x.push_valid = true;
     }
@@ -1474,14 +1464,14 @@ void draw_window_made(uint32_t k, uint64_t a) {
     if (window_table && k < kWindows) __atomic_store_n(&window_table[k], a, __ATOMIC_RELEASE);
 }
 
-/// (vk_heap.cpp draw_device_created) the window table: an entry a layer-0 window, the null window past them; the zero buffer
+/// (vk_pool.cpp draw_device_created) the window table: an entry a layer-0 window, the null window past them; the zero buffer
 double seconds_since_device() { return (host->now_ns() - t_device) / 1e9; }
 void draw_window_table_init() {
     t_device = host->now_ns(), tsc_device = __builtin_ia32_rdtsc();
     VkBuffer b;
     VkDeviceMemory m;
     uint8_t* map;
-    if (!mapped_buffer(kTableBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, b, m, map, window_table_address, MO_HEAP)) return logf("direct: no window table");
+    if (!mapped_buffer(kTableBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, b, m, map, window_table_address, MO_TABLES)) return logf("direct: no window table");
     {   // (the null window: a 4 GB sparse buffer with nothing bound, which reads zeros)
         VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
         bi.flags = VK_BUFFER_CREATE_SPARSE_BINDING_BIT | VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT;
@@ -1502,7 +1492,7 @@ void draw_window_table_init() {
     {   // (attributes no stream supplies, uniform buffers not bound: 64 KB of zeros)
         VkDeviceMemory zm;
         uint8_t* zmap;
-        if (mapped_buffer(64 << 10, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, zero_buffer, zm, zmap, zero_address, MO_HEAP))
+        if (mapped_buffer(64 << 10, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, zero_buffer, zm, zmap, zero_address, MO_TABLES))
             std::memset(zmap, 0, 64 << 10);
     }
 }
@@ -1584,7 +1574,7 @@ void draw_log(double frames) {
         task_stats(out, cap, frames);
         logf("direct: %s", out);
     }
-    heap_stats(out, cap);
+    pool_stats(out, cap);
     logf("direct: %s", out);
     if (log_draw) {
         state_stats(out, cap, frames);

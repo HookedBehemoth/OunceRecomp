@@ -27,11 +27,11 @@ Id ImageAtomicU32(EmitContext& ctx, IR::Inst* inst, const IR::Value& index, Id c
                   Id (Sirit::Module::*atomic_func)(Id, Id, Id, Id, Id)) {
     const auto info{inst->Flags<IR::TextureInstInfo>()};
     Id image{};
-    if (ctx.profile.heap_handles && info.type != TextureType::Buffer) {
-        // (direct back end, M3b) a pointer to the storage region's entry of the handle's image id
+    if (ctx.profile.pool_handles && info.type != TextureType::Buffer) {
+        // (direct back end) a pointer to the storage binding's entry of the handle's image id
         const ImageDefinition def{ctx.images.at(info.descriptor_index)};
         const Id h{index.IsImmediate() ? ctx.Const(index.U32()) : ctx.Def(index)};
-        const Id id{ctx.OpBitwiseAnd(ctx.U32[1], h, ctx.Const(0xFFFFFU))};
+        const Id id{ctx.PoolImageIndex(h)};
         image = ctx.OpAccessChain(def.pointer_type, def.id, id);
         if (!index.IsImmediate()) {
             ctx.Decorate(id, spv::Decoration::NonUniform);

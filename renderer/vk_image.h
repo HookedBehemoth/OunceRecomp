@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 
 #include "vk_internal.h"
 
@@ -43,7 +44,7 @@ struct Image {
     uint32_t id = 0;
     bool placeholder = false;
     bool compressed = false;
-    bool storage = false;   // (M3b: made with STORAGE usage: the heap's storage regions hold views of it)
+    bool storage = false;   // (M3b: made with STORAGE usage: the pools' storage bindings hold views of it)
     bool block_views = false;   // (M4g: a compressed image the GPU writes: uncompressed views of its blocks are attachments)
     std::atomic<uint8_t> written{0};   // (W_* bits: what has written it)
     // an image of a prepared texture (vk_assets): made in the store's format, shared by every texture of the
@@ -68,7 +69,17 @@ struct Image {
     bool prune = false;                 // (image_sweep: over the cache's bound, destroyed when the GPU is done with it)
     uint64_t dead_present = 0, dead_value = 0;
     std::mutex views_mu;
-    std::unordered_map<uint64_t, VkImageView> views;
+    std::unordered_map<uint64_t, VkImageView> views;   // (attachment views)
+    /// (the pools' set) the sampled and storage views its texture ids' entries hold: made once each, destroyed with it
+    struct PoolView {
+        VkImageViewType type;
+        VkFormat format;
+        VkComponentMapping components;
+        VkImageSubresourceRange range;
+        VkImageUsageFlags usage;
+        VkImageView view;
+    };
+    std::vector<PoolView> pool_views;
 };
 enum : uint8_t { W_ATTACHMENT = 1, W_COPY = 2, W_TEXELS = 4, W_CLEAR = 8, W_STORE = 16, W_TERRAIN = 32, W_GLYPH = 64 };
 
@@ -96,6 +107,9 @@ void image_key_describe(const nvn_tex* t, char* out, size_t cap);
 /// A view of one level and layer (a 3D image's slice) as an attachment, in the view's format; null when none can be
 /// made (a compressed format, a level or layer outside the image)
 VkImageView image_attachment_view(Image* im, int nvn_format, uint32_t level, uint32_t layer, VkFormat* format_out);
+/// (the pools' set) A view of im as vi describes it (its image, type, format, swizzle and range), for `usage`: the image's
+/// own, made the first time; null when none can be made. It lives as long as the image
+VkImageView image_pool_view(Image* im, const VkImageViewCreateInfo& vi, VkImageUsageFlags usage);
 /// The format of a view of t (its view's, or its own)
 int image_view_format(const nvn_tex* t, const nvn_view* v);
 /// A sampled view's format for an ASTC NVN format: the image's own (the store's BC7, BC5 for a normal map, or an older

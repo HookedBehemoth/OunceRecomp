@@ -14,7 +14,7 @@
 #include "vk_check.h"
 #include "vk_assets.h"
 #include "vk_cmd.h"
-#include "vk_heap.h"
+#include "vk_pool.h"
 #include "vk_image.h"
 
 namespace hsd {
@@ -438,13 +438,15 @@ Image* get(const nvn_tex* t) {
 }
 
 void destroy(Image* im) {
-    heap_image_gone(im);   // (M2b: its heap entries nulled)
+    pool_image_gone(im);   // (its texture ids' entries nulled)
     if (im->asset) {
         st_asset_images.fetch_sub(1, std::memory_order_relaxed);
         st_asset_bytes.fetch_sub((int64_t)mem_size(im->mem), std::memory_order_relaxed);
     }
     for (auto& [key, v] : im->views)
         if (v) vkDestroyImageView(dev.device, v, nullptr);
+    for (const Image::PoolView& v : im->pool_views)
+        if (v.view) vkDestroyImageView(dev.device, v.view, nullptr);
     st_bytes.fetch_sub((int64_t)mem_size(im->mem), std::memory_order_relaxed);
     if (im->pooled) {   // (the pool keeps its memory)
         pool.images.erase(std::remove(pool.images.begin(), pool.images.end(), im), pool.images.end());
@@ -764,6 +766,23 @@ VkImageView image_attachment_view(Image* im, int nvn_format, uint32_t level, uin
     }
     im->views[key] = v;
     return v;
+}
+
+VkImageView image_pool_view(Image* im, const VkImageViewCreateInfo& vi, VkImageUsageFlags usage) {
+    Image::PoolView k{};
+    k.type = vi.viewType, k.format = vi.format, k.components = vi.components, k.range = vi.subresourceRange, k.usage = usage;
+    std::lock_guard lk(im->views_mu);
+    for (const Image::PoolView& v : im->pool_views)
+        if (!std::memcmp(&v, &k, offsetof(Image::PoolView, view))) return v.view;
+    const ObjectsFor objects_for("a view of a game's texture for the pools' set");   // 
+    VkImageViewUsageCreateInfo use{VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO};
+    use.usage = usage;
+    VkImageViewCreateInfo ci = vi;
+    ci.pNext = &use;
+    if (vkCreateImageView(dev.device, &ci, nullptr, &k.view) != VK_SUCCESS) k.view = VK_NULL_HANDLE;
+    else object_made(1, "a pool view");
+    im->pool_views.push_back(k);
+    return k.view;
 }
 
 bool image_sub(const nvn_tex* t, const nvn_view* v, const NVNcopyRegion& r, Sub& s) {

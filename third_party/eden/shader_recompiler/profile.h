@@ -127,10 +127,10 @@ struct Profile {
     bool SupportsSubgroupStage(Stage stage) const {
         return (supported_subgroup_stages & (1u << static_cast<u32>(stage))) != 0;
     }
-    /// (direct back end, M3b) textures, samplers and images indexed in the descriptor heap by the handle the shader reads
-    /// (HostTranslateInfo::heap_handles): each texture or image descriptor a runtime array of its image type, the samplers
-    /// two runtime arrays at kHeapSamplerBinding (plain) and kHeapCompareSamplerBinding (depth compare)
-    bool heap_handles{};
+    /// (direct back end) NVN's pools indexed by the handle the shader reads (HostTranslateInfo::pool_handles): each texture
+    /// or image descriptor a runtime array at its view type's pool binding, the samplers two runtime arrays
+    /// (emit_spirv.h kPool*); and the uniform buffers read through device addresses (UNIFORM_TABLE_PUSH_OFFSET)
+    bool pool_handles{};
 };
 
 } // namespace Shader

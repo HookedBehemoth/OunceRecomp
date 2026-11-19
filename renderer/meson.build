@@ -21,7 +21,7 @@ vk_sources = files(
   'vk_draw.cpp',
   'vk_dump.cpp',
   'vk_formats.cpp',
-  'vk_heap.cpp',
+  'vk_pool.cpp',
   'vk_image.cpp',
   'vk_lists.cpp',
   'vk_main.cpp',

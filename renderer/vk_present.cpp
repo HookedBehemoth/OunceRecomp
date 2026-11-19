@@ -19,7 +19,7 @@
 #include "vk_draw.h"
 #include "vk_task.h"
 #include "vk_dump.h"
-#include "vk_heap.h"
+#include "vk_pool.h"
 #include "vk_shader.h"
 #include "vk_image.h"
 #include "vk_internal.h"
@@ -339,7 +339,7 @@ void log_line() {
     image_pool_stats(b, sizeof b);
     logf("direct: %s", b);
     static const bool log_pass = dbg_log("logpass"), log_lists = dbg_log("loglists");
-    heap_stale_census(b, sizeof b);
+    pool_stale_census(b, sizeof b);
     char text[8192 + 32];
     std::snprintf(text, sizeof text, "direct: transient pool: %s", b);
     logf_changed("transient pool: descriptor ids", text);

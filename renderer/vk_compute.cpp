@@ -40,7 +40,7 @@
 #include "vk_cmd.h"
 #include "vk_compute.h"
 #include "vk_draw.h"
-#include "vk_heap.h"
+#include "vk_pool.h"
 #include "vk_shader.h"
 #include "vk_shader_parts.h"
 #include "vk_work.h"
@@ -554,89 +554,19 @@ bool translate_variant(Variant& v, const Code& c, const uint8_t* bank, uint32_t 
 
 // </stamp compute>
 
-// ---- the heap mapping and the shader object (vk_shader.cpp finish's, one compute stage) ----
-VkImageViewType view_type(Shader::TextureType t) {
-    switch (t) {
-    case Shader::TextureType::Color1D: return VK_IMAGE_VIEW_TYPE_1D;
-    case Shader::TextureType::ColorArray1D: return VK_IMAGE_VIEW_TYPE_1D_ARRAY;
-    case Shader::TextureType::ColorArray2D: return VK_IMAGE_VIEW_TYPE_2D_ARRAY;
-    case Shader::TextureType::Color3D: return VK_IMAGE_VIEW_TYPE_3D;
-    case Shader::TextureType::ColorCube: return VK_IMAGE_VIEW_TYPE_CUBE;
-    case Shader::TextureType::ColorArrayCube: return VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
-    default: return VK_IMAGE_VIEW_TYPE_2D;
-    }
-}
-bool handle_is_storage_pointer(const Shader::Info& info, const Shader::TextureDescriptor& d) {
-    if (d.handle_program != ~0U) return false;
-    for (const auto& sb : info.storage_buffers_descriptors) {
-        if (sb.cbuf_index != d.cbuf_index) continue;
-        for (uint32_t j = 0; j < sb.count; j++)
-            if (d.cbuf_offset >= sb.cbuf_offset + j * 16 && d.cbuf_offset < sb.cbuf_offset + j * 16 + 8) return true;
-    }
-    return false;
-}
-VkDescriptorSetAndBindingMappingEXT map_of(uint32_t b, VkSpirvResourceTypeFlagsEXT mask, VkDescriptorMappingSourceEXT src) {
-    VkDescriptorSetAndBindingMappingEXT m{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_AND_BINDING_MAPPING_EXT};
-    m.descriptorSet = 0, m.firstBinding = b, m.bindingCount = 1, m.resourceMask = mask, m.source = src;
-    return m;
-}
-VkDescriptorSetAndBindingMappingEXT null_map(uint32_t b, uint32_t stride) {
-    VkDescriptorSetAndBindingMappingEXT m = map_of(b, VK_SPIRV_RESOURCE_TYPE_ALL_EXT, VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT);
-    m.sourceData.constantOffset.heapOffset = heap_tail_offset();
-    m.sourceData.constantOffset.heapArrayStride = stride;
-    m.sourceData.constantOffset.samplerHeapOffset = 0;
-    m.sourceData.constantOffset.samplerHeapArrayStride = kSamplerDesc;
-    return m;
-}
-
+// ---- the shader object (vk_shader.cpp finish's, one compute stage) ----
+/// The variant's uniform buffers (by device address: the table's address pushed at kTablePush, entries in its descriptors'
+/// order), then its shader object (none for a variant no dispatch can run)
 bool finish(Variant& v, const Layout& lay) {
     const Shader::Info& info = v.info;
-    std::vector<VkDescriptorSetAndBindingMappingEXT> m;
-    uint32_t binding = 0;
     for (const auto& c : info.constant_buffer_descriptors) {
-        if (c.count != 1) {
-            v.skip = v.skip ? v.skip : "a uniform buffer array";
-            m.push_back(null_map(binding, 16));
-            binding += c.count;
-            continue;
-        }
-        VkDescriptorSetAndBindingMappingEXT x = map_of(binding, VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT, VK_DESCRIPTOR_MAPPING_SOURCE_INDIRECT_ADDRESS_EXT);
-        x.sourceData.indirectAddress.pushOffset = kTablePush;
-        x.sourceData.indirectAddress.addressOffset = 8 * (uint32_t)v.ubos.size();
-        m.push_back(x);
+        if (c.count != 1) v.skip = v.skip ? v.skip : "a uniform buffer array";
         const uint32_t used = c.index < info.constant_buffer_used_sizes.size() ? info.constant_buffer_used_sizes[c.index] : 0;
         v.ubos.push_back({(uint8_t)c.index, used});
-        binding += c.count;
     }
     if (!info.storage_buffers_descriptors.empty() && !info.ssbo_bda) v.skip = v.skip ? v.skip : "storage buffers not by address";
-    for (const auto& s : info.storage_buffers_descriptors) {
-        m.push_back(null_map(binding, 16));
-        binding += s.count > 1 ? 1 : s.count;
-    }
-    for (size_t k = 0; k < info.texture_buffer_descriptors.size(); k++) m.push_back(null_map(binding++, kImageDesc)), v.skip = v.skip ? v.skip : "a texel buffer";
-    for (size_t k = 0; k < info.image_buffer_descriptors.size(); k++) m.push_back(null_map(binding++, kImageDesc)), v.skip = v.skip ? v.skip : "an image buffer";
-    for (const auto& t : info.texture_descriptors) {
-        VkDescriptorSetAndBindingMappingEXT x = map_of(binding++, VK_SPIRV_RESOURCE_TYPE_ALL_EXT, VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT);
-        auto& co = x.sourceData.constantOffset;
-        if (handle_is_storage_pointer(info, t)) co.heapOffset = heap_tail_offset(), co.heapArrayStride = 0;
-        else co.heapOffset = heap_region_offset(std::min<uint32_t>((uint32_t)view_type(t.type), kHeapRegions - 1)), co.heapArrayStride = kImageDesc;
-        m.push_back(x);
-    }
-    if (!info.texture_descriptors.empty())
-        for (const bool cmp : {false, true}) {
-            VkDescriptorSetAndBindingMappingEXT x = map_of(cmp ? Shader::Backend::SPIRV::kHeapCompareSamplerBinding : Shader::Backend::SPIRV::kHeapSamplerBinding,
-                                                           VK_SPIRV_RESOURCE_TYPE_SAMPLER_BIT_EXT, VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT);
-            auto& co = x.sourceData.constantOffset;
-            co.heapOffset = heap_sampler_offset(cmp), co.heapArrayStride = kSamplerDesc;
-            co.samplerHeapOffset = 0, co.samplerHeapArrayStride = 0;
-            m.push_back(x);
-        }
-    for (const auto& im : info.image_descriptors) {
-        VkDescriptorSetAndBindingMappingEXT x = map_of(binding++, VK_SPIRV_RESOURCE_TYPE_ALL_EXT, VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT);
-        x.sourceData.constantOffset.heapOffset = heap_storage_offset(std::min<uint32_t>((uint32_t)view_type(im.type), kHeapRegions - 1));
-        x.sourceData.constantOffset.heapArrayStride = kImageDesc;
-        m.push_back(x);
-    }
+    if (!info.texture_buffer_descriptors.empty()) v.skip = v.skip ? v.skip : "a texel buffer";
+    if (!info.image_buffer_descriptors.empty()) v.skip = v.skip ? v.skip : "an image buffer";
     {   // (c0's copy: what the program reads of it, and the layout's tables at least)
         const uint32_t used = info.constant_buffer_used_sizes.empty() ? 0 : info.constant_buffer_used_sizes[0];
         v.bank_bytes = std::clamp<uint32_t>((std::max(used, lay.end()) + 15) & ~15u, 16, kBankMax);
@@ -644,22 +574,23 @@ bool finish(Variant& v, const Layout& lay) {
     v.lay_ssbo_at = lay.ssbo_at(), v.lay_ssbo = lay.ssbo;
     v.c1_addr = parts::put_c1(v.c1, info.constant_buffer_used_sizes.size() > 1 ? info.constant_buffer_used_sizes[1] : 0);
     if (kTablePush + 8 > caps.max_push) v.skip = v.skip ? v.skip : "push data over the device's limit";
-    VkShaderDescriptorSetAndBindingMappingInfoEXT mi{VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT};
-    mi.mappingCount = (uint32_t)m.size(), mi.pMappings = m.data();
+    if (v.skip) {
+        logf("direct: compute program %016llx cannot be dispatched: %s (skipped, counted)", (unsigned long long)v.key, v.skip);
+        return true;
+    }
     VkPipelineShaderStageRequiredSubgroupSizeCreateInfo sz{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO};
     sz.requiredSubgroupSize = 32;
     load_functions();
     VkShaderCreateInfoEXT ci{VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT};
-    ci.flags = VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT;
+    pool_shader_layout(ci);
     ci.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     ci.codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT;
     ci.codeSize = v.spirv.size() * 4;
     ci.pCode = v.spirv.data();
     ci.pName = "main";
-    if (caps.sg32_stages & VK_SHADER_STAGE_COMPUTE_BIT) sz.pNext = &mi, ci.pNext = &sz;
-    else ci.pNext = &mi;
+    if (caps.sg32_stages & VK_SHADER_STAGE_COMPUTE_BIT) ci.pNext = &sz;
     const auto t0 = clk::now();
-    const uint64_t id = parts::object_key(ci, mi, (caps.sg32_stages & VK_SHADER_STAGE_COMPUTE_BIT) != 0);
+    const uint64_t id = parts::object_key(ci, (caps.sg32_stages & VK_SHADER_STAGE_COMPUTE_BIT) != 0);
     VkResult r = VK_ERROR_UNKNOWN;
     bool from_binary = false;
     {   // (its binary, when this driver made it before from the same create info: no compile)
@@ -687,7 +618,6 @@ bool finish(Variant& v, const Layout& lay) {
     object_made(1, "a compute shader object");
     if (from_binary) st_from_binary.fetch_add(1, std::memory_order_relaxed);
     else parts::object_keep(id, v.cs);
-    if (v.skip) logf("direct: compute program %016llx cannot be dispatched: %s (skipped, counted)", (unsigned long long)v.key, v.skip);
     return true;
 }
 
@@ -907,7 +837,7 @@ void tell_first(Variant& v, const List* l, const uint8_t* bank, uint32_t n, cons
         if (k > 1700) break;
         const uint32_t h = im.cbuf_index == 0 ? word_of(bank, n, im.cbuf_offset) : 0;
         char e[240];
-        heap_describe(h & 0xFFFFF, e, sizeof e);
+        pool_describe(h & 0xFFFFF, e, sizeof e);
         k += std::snprintf(b + k, sizeof b - k, " [img c%u+%#x %s%s %s]", im.cbuf_index, im.cbuf_offset,
                            im.format == Shader::ImageFormat::Typeless ? "formatted" : "raw", im.is_written ? " written" : "", e);
     }
@@ -915,7 +845,7 @@ void tell_first(Variant& v, const List* l, const uint8_t* bank, uint32_t n, cons
 }
 
 /// (HOS_DBG=drawlog:<present>, the per-draw trace's dispatch lines) every dispatch of that frame: program, grid or
-/// arguments, the storage and uniform buffers, each texture and image as its handle names it (heap_describe)
+/// arguments, the storage and uniform buffers, each texture and image as its handle names it (pool_describe)
 void trace_dispatch(const Variant& v, const List* l, const uint8_t* bank, uint32_t n, const uint32_t grid[3], uint64_t args) {
     static std::atomic<int> told{0};
     if (told++ > 1500) return;
@@ -944,14 +874,14 @@ void trace_dispatch(const Variant& v, const List* l, const uint8_t* bank, uint32
         if (k > 5000) break;
         const uint32_t h = t.cbuf_index == 0 ? word_of(bank, n, t.cbuf_offset) : 0;
         char e[320];
-        heap_describe(h & 0xFFFFF, e, sizeof e);
+        pool_describe(h & 0xFFFFF, e, sizeof e);
         k += std::snprintf(b + k, sizeof b - k, " tex c%u+%#x=%#x(%s)", t.cbuf_index, t.cbuf_offset, h, e);
     }
     for (const auto& im : v.info.image_descriptors) {
         if (k > 5600) break;
         const uint32_t h = im.cbuf_index == 0 ? word_of(bank, n, im.cbuf_offset) : 0;
         char e[320];
-        heap_describe(h & 0xFFFFF, e, sizeof e);
+        pool_describe(h & 0xFFFFF, e, sizeof e);
         k += std::snprintf(b + k, sizeof b - k, " img c%u+%#x%s=%#x(%s)", im.cbuf_index, im.cbuf_offset, im.is_written ? " written" : "", h, e);
     }
     log_long(b, "direct: drawlog dispatch");
@@ -1050,7 +980,7 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
         grid[0] = (uint32_t)std::max(0, d.x), grid[1] = (uint32_t)std::max(0, d.y), grid[2] = (uint32_t)std::max(0, d.z);
         if (!grid[0] || !grid[1] || !grid[2]) return count(l, D_EMPTY);
     }
-    if (!heap_on() || !l->cctx || !l->cctx->has_prog) return count(l, D_NO_PROGRAM);
+    if (!pool_on() || !l->cctx || !l->cctx->has_prog) return count(l, D_NO_PROGRAM);
     ListComp& c = *l->cctx;
     Slot* slot = slot_find(c.prog.serial);
     if (!slot) slot = slot_make(c.prog);
@@ -1161,13 +1091,13 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
         std::memcpy(push + kTablePush, &table_addr, 8);
     }
     // (recorded)
-    if (c.cb != cb) c.cb = cb, c.bound = VK_NULL_HANDLE, heap_bind(cb);
+    if (c.cb != cb) c.cb = cb, c.bound = VK_NULL_HANDLE, pool_bind(cb, VK_PIPELINE_BIND_POINT_COMPUTE);
     if (c.bound != v->cs) {
         const VkShaderStageFlagBits st = VK_SHADER_STAGE_COMPUTE_BIT;
         vkCmdBindShadersEXT(cb, 1, &st, &v->cs);
         c.bound = v->cs;
     }
-    heap_push(cb, push, sizeof push);
+    pool_push(cb, push, sizeof push);
     const uint32_t mk = marks_on() ? mark_before(cb, indirect ? "dispatch indirect" : "dispatch", v->key, l->info.kind, l->info.lr, grid[0], grid[1]) : 0;   // 
     uint32_t ps = ~0u;
     if (pstats_on()) {   // (M6h: HOS_DBG=pstats)
@@ -1204,7 +1134,7 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
             const auto& im = v->info.image_descriptors[j];
             const uint32_t h = im.cbuf_index == 0 ? word_of(map, v->bank_bytes, im.cbuf_offset) : 0;
             char e[320];
-            heap_describe(h & 0xFFFFF, e, sizeof e);
+            pool_describe(h & 0xFFFFF, e, sizeof e);
             if (std::strstr(e, want)) {
                 logf("direct: writer: present %llu, image %zu is %#llx:", (unsigned long long)present_count(), j, (unsigned long long)watch);
                 trace_dispatch(*v, l, map, v->bank_bytes, grid, indirect ? args : 0);
@@ -1296,7 +1226,7 @@ void compute_list_submitted(const List* l) {
 }
 
 void compute_program_set(const nvn_prog* p) {
-    if (!p || !heap_on() || !p->nstage) return;
+    if (!p || !pool_on() || !p->nstage) return;
     nvn_prog copy;
     std::memcpy(&copy, p, sizeof copy);
     load_functions();

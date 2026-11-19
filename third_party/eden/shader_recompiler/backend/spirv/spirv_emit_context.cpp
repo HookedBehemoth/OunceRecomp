@@ -287,6 +287,19 @@ void DefineConstBuffers(EmitContext& ctx, const Info& info, Id UniformDefinition
     ctx.MemberName(struct_type, 0, "data");
     ctx.MemberDecorate(struct_type, 0, spv::Decoration::Offset, 0U);
 
+    if (ctx.profile.pool_handles) {   // (by device address: each constant buffer's address, EmitContext::CbufLoad)
+        ctx.MemberDecorate(struct_type, 0, spv::Decoration::NonWritable);
+        ctx.uniform_blocks.*member_type = ctx.TypePointer(spv::StorageClass::PhysicalStorageBuffer, struct_type);
+        ctx.uniform_types.*member_type = ctx.TypePointer(spv::StorageClass::PhysicalStorageBuffer, type);
+        size_t at{};
+        for (const ConstantBufferDescriptor& desc : info.constant_buffer_descriptors) {
+            for (size_t i = 0; i < desc.count; ++i) {
+                ctx.cbufs[desc.index + i].*member_type = ctx.uniform_addresses[at];
+            }
+            ++at;
+        }
+        return;
+    }
     const Id struct_pointer_type{ctx.TypePointer(spv::StorageClass::Uniform, struct_type)};
     const Id uniform_type{ctx.TypePointer(spv::StorageClass::Uniform, type)};
     ctx.uniform_types.*member_type = uniform_type;
@@ -622,10 +635,10 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
     DefineCommonTypes(program.info);
     DefineCommonConstants();
     DefineInterfaces(program);
-    // (direct back end, M3b, Profile::heap_handles: every stage by address. A storage buffer whose address words are in a
+    // (direct back end, M3b, Profile::pool_handles: every stage by address. A storage buffer whose address words are in a
     // constant buffer the stage does not declare gets that constant buffer declared; a stage that reaches global memory with
     // no storage buffer goes by address too: its accesses translated as the storage buffers' are)
-    const bool all_bda{profile.heap_handles && profile.ssbo_bda};
+    const bool all_bda{profile.pool_handles && profile.ssbo_bda};
     if (all_bda) {
         Info& info{program.info};
         for (const StorageBufferDescriptor& d : info.storage_buffers_descriptors) {
@@ -772,6 +785,29 @@ EmitContext::~EmitContext() = default;
 thread_local u32 bda_check_id{};
 static_assert(PUSH_CONSTANTS_END == WINDOW_TABLE_PUSH_OFFSET + 8 * Bda::kPushedWords, "the push range holds Bda::Pushed");
 
+void EmitContext::EmitEntryPrologue() {
+    entry_prologue = true;
+    if (!uniform_addresses.empty()) {   // (Profile::pool_handles: each uniform buffer's address, from the pushed table)
+        const Id table{OpConvertUToPtr(uniform_table_block,
+                                       OpLoad(U64, OpAccessChain(TypePointer(spv::StorageClass::PushConstant, U64),
+                                                                 rescaling_push_constants, Const(uniform_table_member_index))))};
+        for (size_t i = 0; i < uniform_addresses.size(); ++i) {
+            const Id entry{OpAccessChain(uniform_table_entry, table, u32_zero_value, Const(static_cast<u32>(i)))};
+            OpStore(uniform_addresses[i], OpLoad(U64, entry, spv::MemoryAccessMask::Aligned, 8U));
+        }
+    }
+    EmitBdaPrologue();
+}
+
+Id EmitContext::CbufLoad(Id type, u32 index, Id UniformDefinitions::*member, u32 size, Id element) {
+    if (!profile.pool_handles) {
+        return OpLoad(type, OpAccessChain(uniform_types.*member, cbufs[index].*member, u32_zero_value, element));
+    }
+    const Id block{OpConvertUToPtr(uniform_blocks.*member, OpLoad(U64, cbufs[index].*member))};
+    return OpLoad(type, OpAccessChain(uniform_types.*member, block, u32_zero_value, element), spv::MemoryAccessMask::Aligned,
+                  size);
+}
+
 void EmitContext::EmitBdaPrologue() {
     if (!ssbo_bda) {
         return;
@@ -781,7 +817,7 @@ void EmitContext::EmitBdaPrologue() {
     bda_table = bda_pushed.table;
     const u64 alignment{std::max<u64>(profile.min_ssbo_alignment, 1)};
     const auto word{[&](u32 cbuf, u32 offset) {
-        return OpLoad(U32[1], OpAccessChain(uniform_types.U32, cbufs[cbuf].U32, u32_zero_value, Const(offset / 4)));
+        return CbufLoad(U32[1], cbuf, &UniformDefinitions::U32, 4, Const(offset / 4));
     }};
     for (const StorageBufferDescriptor& d : bda_descs) {
         if (d.count != 1) {   // (RX_VK_DESC_HEAP_BDA=2: a table, which only the global memory functions read, and they translate)
@@ -1490,9 +1526,8 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
                     continue;
                 }
                 candidate[index] = true;
-                const Id words_pointer{OpAccessChain(uniform_types.U32x2, cbufs[ssbo.cbuf_index].U32x2, zero,
-                                                     Const(ssbo.cbuf_offset / 8))};
-                bases[index] = OpBitwiseAnd(U64, OpBitcast(U64, OpLoad(U32[2], words_pointer)), Constant(U64, align_mask));
+                const Id words{CbufLoad(U32[2], ssbo.cbuf_index, &UniformDefinitions::U32x2, 8, Const(ssbo.cbuf_offset / 8))};
+                bases[index] = OpBitwiseAnd(U64, OpBitcast(U64, words), Constant(U64, align_mask));
                 const Id elements{OpArrayLength(U32[1], ssbos[index].*ssbo_member, 0U)};
                 const Id bound_end{
                     OpIAdd(U64, bases[index], OpUConvert(U64, OpShiftLeftLogical(U32[1], elements, Const(shift))))};
@@ -1532,15 +1567,12 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
             const auto& ssbo{info.storage_buffers_descriptors[index]};
             const Id ssbo_addr_cbuf_offset{Const(ssbo.cbuf_offset / 8)};
             const Id ssbo_size_cbuf_offset{Const(ssbo.cbuf_offset / 4 + 2)};
-            const Id ssbo_addr_pointer{OpAccessChain(
-                uniform_types.U32x2, cbufs[ssbo.cbuf_index].U32x2, zero, ssbo_addr_cbuf_offset)};
-            const Id ssbo_size_pointer{OpAccessChain(uniform_types.U32, cbufs[ssbo.cbuf_index].U32,
-                                                     zero, ssbo_size_cbuf_offset)};
-
             const u64 ssbo_align_mask{~(profile.min_ssbo_alignment - 1U)};
-            const Id unaligned_addr{OpBitcast(U64, OpLoad(U32[2], ssbo_addr_pointer))};
+            const Id unaligned_addr{OpBitcast(U64, CbufLoad(U32[2], ssbo.cbuf_index, &UniformDefinitions::U32x2, 8,
+                                                            ssbo_addr_cbuf_offset))};
             const Id ssbo_addr{OpBitwiseAnd(U64, unaligned_addr, Constant(U64, ssbo_align_mask))};
-            const Id ssbo_size{OpUConvert(U64, OpLoad(U32[1], ssbo_size_pointer))};
+            const Id ssbo_size{OpUConvert(U64, CbufLoad(U32[1], ssbo.cbuf_index, &UniformDefinitions::U32, 4,
+                                                        ssbo_size_cbuf_offset))};
             Id ssbo_end{OpIAdd(U64, unaligned_addr, ssbo_size)};
             // (EvilOOT) no further than what is bound: a buffer the back end could not bind is a null descriptor (length 0), and an
             // address in its range read 0 through it instead of going on to the page table (OoT's ambient light probes: 0, the
@@ -1571,14 +1603,12 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
             }
             for (u32 k = 0; k < table.count; ++k) {
                 const u32 at{table.cbuf_offset + k * 16};
-                const Id entry_pointer{OpAccessChain(uniform_types.U32x2, cbufs[table.cbuf_index].U32x2, zero,
-                                                     Const(at / 8))};
-                const Id size_pointer{OpAccessChain(uniform_types.U32x2, cbufs[table.cbuf_index].U32x2, zero,
-                                                    Const(at / 8 + 1))};
                 const u64 ssbo_align_mask{~(profile.min_ssbo_alignment - 1U)};
-                const Id unaligned_addr{OpBitcast(U64, OpLoad(U32[2], entry_pointer))};
+                const Id unaligned_addr{OpBitcast(U64, CbufLoad(U32[2], table.cbuf_index, &UniformDefinitions::U32x2, 8,
+                                                                Const(at / 8)))};
                 const Id ssbo_addr{OpBitwiseAnd(U64, unaligned_addr, Constant(U64, ssbo_align_mask))};
-                const Id size_word{OpCompositeExtract(U32[1], OpLoad(U32[2], size_pointer), 0U)};
+                const Id size_word{OpCompositeExtract(
+                    U32[1], CbufLoad(U32[2], table.cbuf_index, &UniformDefinitions::U32x2, 8, Const(at / 8 + 1)), 0U)};
                 Id ssbo_end{OpIAdd(U64, unaligned_addr, OpUConvert(U64, size_word))};
                 // (EvilOOT) an entry without a size (OoT's culling setup keeps bare pointers, the size word 0: the back end
                 // binds those up to 1 MB of their pool, vk_draw.cpp): the binding's own length is the end
@@ -2001,6 +2031,14 @@ void EmitContext::DefineRescalingInputPushConstant() {
             member_index++;
         }
     }
+    if (profile.pool_handles) {   // (the uniform buffers' table, after them: UNIFORM_TABLE_PUSH_OFFSET)
+        if (!Sirit::ValidId(U64)) {
+            AddCapability(spv::Capability::Int64);
+            U64 = Name(TypeInt(64, false), "u64");
+        }
+        members.push_back(U64);
+        uniform_table_member_index = member_index++;
+    }
     const Id push_constant_struct{TypeStruct(std::span(members.data(), members.size()))};
     Decorate(push_constant_struct, spv::Decoration::Block);
     Name(push_constant_struct, "ResolutionInfo");
@@ -2060,6 +2098,11 @@ void EmitContext::DefineRescalingInputPushConstant() {
                            WINDOW_TABLE_PUSH_OFFSET + 8 * i);
             MemberName(push_constant_struct, window_table_member_index + i, names[i]);
         }
+    }
+    if (profile.pool_handles) {
+        MemberDecorate(push_constant_struct, uniform_table_member_index, spv::Decoration::Offset,
+                       UNIFORM_TABLE_PUSH_OFFSET + 8 * UniformTableSlot(stage));
+        MemberName(push_constant_struct, uniform_table_member_index, "uniform_table");
     }
     const Id pointer_type{TypePointer(spv::StorageClass::PushConstant, push_constant_struct)};
     rescaling_push_constants = AddGlobalVariable(pointer_type, spv::StorageClass::PushConstant);
@@ -2129,6 +2172,36 @@ void EmitContext::DefineConstantBuffers(const Info& info, u32& binding) {
     if (info.constant_buffer_descriptors.empty()) {
         return;
     }
+    if (profile.pool_handles) {
+        // (direct back end) the uniform buffers by device address: a Private u64 each, stored in the entry block from the
+        // table the push data points at (EmitEntryPrologue), and pointer types to the table and its entries
+        if (!Sirit::ValidId(U64)) {
+            AddCapability(spv::Capability::Int64);
+            U64 = Name(TypeInt(64, false), "u64");
+        }
+        AddCapability(spv::Capability::PhysicalStorageBufferAddresses);
+        AddExtension("SPV_KHR_physical_storage_buffer");
+        SetMemoryModel(spv::AddressingModel::PhysicalStorageBuffer64, spv::MemoryModel::GLSL450);
+        DefineRescalingInputPushConstant();
+        const Id entries{TypeRuntimeArray(U64)};
+        Decorate(entries, spv::Decoration::ArrayStride, 8U);
+        const Id table{TypeStruct(entries)};
+        Decorate(table, spv::Decoration::Block);
+        MemberDecorate(table, 0, spv::Decoration::Offset, 0U);
+        MemberDecorate(table, 0, spv::Decoration::NonWritable);
+        Name(table, "uniform_table");
+        uniform_table_block = TypePointer(spv::StorageClass::PhysicalStorageBuffer, table);
+        uniform_table_entry = TypePointer(spv::StorageClass::PhysicalStorageBuffer, U64);
+        const Id private_u64{TypePointer(spv::StorageClass::Private, U64)};
+        for (const ConstantBufferDescriptor& desc : info.constant_buffer_descriptors) {
+            const Id id{AddGlobalVariable(private_u64, spv::StorageClass::Private)};
+            Name(id, fmt::format("c{}_address", desc.index).c_str());
+            uniform_addresses.push_back(id);
+            if (profile.supported_spirv >= 0x00010400) {
+                interfaces.push_back(id);
+            }
+        }
+    }
     if (!profile.support_descriptor_aliasing) {
         DefineConstBuffers(*this, info, &UniformDefinitions::U32x4, binding, U32[4], 'u',
                            sizeof(u32[4]));
@@ -2187,7 +2260,10 @@ void EmitContext::DefineConstantBufferIndirectFunctions(const Info& info) {
         AddLabel();
 
         const Id merge_label{OpLabel()};
-        const Id uniform_type{uniform_types.*member_ptr};
+        const u32 element_size{member_ptr == &UniformDefinitions::U8 || member_ptr == &UniformDefinitions::S8 ? 1U
+                               : member_ptr == &UniformDefinitions::U16 || member_ptr == &UniformDefinitions::S16 ? 2U
+                               : member_ptr == &UniformDefinitions::U32x2 ? 8U
+                               : member_ptr == &UniformDefinitions::U32x4 ? 16U : 4U};
 
         std::array<Id, Info::MAX_INDIRECT_CBUFS> buf_labels;
         std::array<Sirit::Literal, Info::MAX_INDIRECT_CBUFS> buf_literals;
@@ -2199,10 +2275,8 @@ void EmitContext::DefineConstantBufferIndirectFunctions(const Info& info) {
         OpSwitch(binding, buf_labels[0], buf_literals, buf_labels);
         for (u32 i = 0; i < Info::MAX_INDIRECT_CBUFS; i++) {
             AddLabel(buf_labels[i]);
-            const Id cbuf{cbufs[i].*member_ptr};
-            const Id access_chain{OpAccessChain(uniform_type, cbuf, u32_zero_value, offset)};
-            const Id result{OpLoad(buffer_type, access_chain)};
-            OpReturnValue(result);
+            OpReturnValue(Sirit::ValidId(cbufs[i].*member_ptr) ? CbufLoad(buffer_type, i, member_ptr, element_size, offset)
+                                                               : ConstantNull(buffer_type));
         }
         AddLabel(merge_label);
         OpUnreachable();
@@ -2427,25 +2501,41 @@ void EmitContext::DefineImageBuffers(const Info& info, u32& binding) {
     }
 }
 
+Id EmitContext::PoolVariable(u32 binding, Id element_type) {
+    const auto [it, made]{pool_variables.try_emplace((u64{binding} << 32) | element_type.value)};
+    if (!made) {
+        return it->second;
+    }
+    AddCapability(spv::Capability::RuntimeDescriptorArray);
+    const Id id{AddGlobalVariable(TypePointer(spv::StorageClass::UniformConstant, TypeRuntimeArray(element_type)),
+                                  spv::StorageClass::UniformConstant)};
+    Decorate(id, spv::Decoration::Binding, binding);
+    Decorate(id, spv::Decoration::DescriptorSet, 0U);
+    Name(id, fmt::format("pool{}_{}", binding, pool_variables.size() - 1).c_str());
+    if (profile.supported_spirv >= 0x00010400) {
+        interfaces.push_back(id);
+    }
+    return it->second = id;
+}
+
+Id EmitContext::PoolImageIndex(Id handle) {
+    return OpUMin(U32[1], OpBitwiseAnd(U32[1], handle, Const(0xFFFFFU)), Const(kPoolNullSlot));
+}
+
 void EmitContext::DefineTextures(const Info& info, u32& binding, u32& scaling_index) {
     textures.reserve(info.texture_descriptors.size());
-    if (profile.heap_handles) {
-        // (direct back end, M3b) each descriptor a runtime array of its image type, which the back end maps to the heap's
-        // region of its view type; the samplers two runtime arrays. A sample indexes both with the handle it read
+    if (profile.pool_handles) {
+        // (direct back end) each descriptor the runtime array of its image type at its view type's pool binding (one variable
+        // per binding and type: descriptors alike share it, others alias it); the samplers two runtime arrays. A sample
+        // indexes both with the handle it read
         bool plain{}, compare{};
         for (const TextureDescriptor& desc : info.texture_descriptors) {
             const Id image_type{ImageType(*this, desc)};
-            const Id sampled_type{TypeSampledImage(image_type)};
-            const Id pointer_type{TypePointer(spv::StorageClass::UniformConstant, image_type)};
-            const Id array_pointer{TypePointer(spv::StorageClass::UniformConstant, TypeRuntimeArray(image_type))};
-            const Id id{AddGlobalVariable(array_pointer, spv::StorageClass::UniformConstant)};
-            Decorate(id, spv::Decoration::Binding, binding);
-            Decorate(id, spv::Decoration::DescriptorSet, 0U);
-            Name(id, NameOf(stage, desc, "tex"));
+            const Id id{PoolVariable(kPoolSampledBinding + PoolViewType(desc.type), image_type)};
             textures.push_back({
                 .id = id,
-                .sampled_type = sampled_type,
-                .pointer_type = pointer_type,
+                .sampled_type = TypeSampledImage(image_type),
+                .pointer_type = TypePointer(spv::StorageClass::UniformConstant, image_type),
                 .image_type = image_type,
                 .count = 1,
                 .is_multisample = desc.is_multisample,
@@ -2453,29 +2543,12 @@ void EmitContext::DefineTextures(const Info& info, u32& binding, u32& scaling_in
                 .is_depth = desc.is_depth,
             });
             (desc.is_depth ? compare : plain) = true;
-            if (profile.supported_spirv >= 0x00010400) {
-                interfaces.push_back(id);
-            }
-            ++binding;
-            ++scaling_index;
         }
         if (!info.texture_descriptors.empty()) {
-            AddCapability(spv::Capability::RuntimeDescriptorArray);
-            heap_sampler_type = TypeSampler();
-            heap_sampler_pointer = TypePointer(spv::StorageClass::UniformConstant, heap_sampler_type);
-            const Id array_pointer{TypePointer(spv::StorageClass::UniformConstant, TypeRuntimeArray(heap_sampler_type))};
-            const auto make{[&](u32 at, const char* name) {
-                const Id id{AddGlobalVariable(array_pointer, spv::StorageClass::UniformConstant)};
-                Decorate(id, spv::Decoration::Binding, at);
-                Decorate(id, spv::Decoration::DescriptorSet, 0U);
-                Name(id, name);
-                if (profile.supported_spirv >= 0x00010400) {
-                    interfaces.push_back(id);
-                }
-                return id;
-            }};
-            if (plain) heap_samplers = make(kHeapSamplerBinding, "heap_samplers");
-            if (compare) heap_compare_samplers = make(kHeapCompareSamplerBinding, "heap_compare_samplers");
+            pool_sampler_type = TypeSampler();
+            pool_sampler_pointer = TypePointer(spv::StorageClass::UniformConstant, pool_sampler_type);
+            if (plain) pool_samplers = PoolVariable(kPoolSamplerBinding, pool_sampler_type);
+            if (compare) pool_compare_samplers = PoolVariable(kPoolCompareSamplerBinding, pool_sampler_type);
         }
         if (info.uses_atomic_image_u32) {
             image_u32 = TypePointer(spv::StorageClass::Image, U32[1]);
@@ -2513,20 +2586,19 @@ void EmitContext::DefineTextures(const Info& info, u32& binding, u32& scaling_in
 
 void EmitContext::DefineImages(const Info& info, u32& binding, u32& scaling_index) {
     images.reserve(info.image_descriptors.size());
-    if (profile.heap_handles && !info.image_descriptors.empty()) {
-        AddCapability(spv::Capability::RuntimeDescriptorArray);
-    }
     for (const ImageDescriptor& desc : info.image_descriptors) {
         const Id sampled_type{desc.is_integer ? U32[1] : F32[1]};
         const Id image_type{ImageType(*this, desc, sampled_type)};
         const Id pointer_type{TypePointer(spv::StorageClass::UniformConstant, image_type)};
-        // (Profile::heap_handles: a runtime array the back end maps to the heap's storage region of its view type)
-        const Id id{AddGlobalVariable(profile.heap_handles ? TypePointer(spv::StorageClass::UniformConstant, TypeRuntimeArray(image_type))
-                                                           : pointer_type,
-                                      spv::StorageClass::UniformConstant)};
-        Decorate(id, spv::Decoration::Binding, binding);
-        Decorate(id, spv::Decoration::DescriptorSet, 0U);
-        Name(id, NameOf(stage, desc, "img"));
+        Id id;
+        if (profile.pool_handles) {   // (the runtime array at its view type's storage binding)
+            id = PoolVariable(kPoolStorageBinding + PoolViewType(desc.type), image_type);
+        } else {
+            id = AddGlobalVariable(pointer_type, spv::StorageClass::UniformConstant);
+            Decorate(id, spv::Decoration::Binding, binding);
+            Decorate(id, spv::Decoration::DescriptorSet, 0U);
+            Name(id, NameOf(stage, desc, "img"));
+        }
         images.push_back({
             .id = id,
             .image_type = image_type,

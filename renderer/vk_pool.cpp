@@ -1,8 +1,6 @@
-// The descriptor heap and M2b's device part (vk_heap.h). The heaps and their encodings from gpu/legacy/vk/vk_desc_heap.cpp
-// (make_heap, the device half, encode image / sampler), cut to what registration-time entries need: no ring, no lazy
-// resolves, no classic descriptor commands. The sampled view rules from gpu/legacy/vk/vk_texture.cpp texture_view and the sampler
-// from gpu/legacy/vk/vk_draw.cpp sampler_make, without their switches and without the shadow filter's PCF (a picture change, not
-// Vulkan's need: plan rule 8).
+// The pools' set and M2b's device part (vk_pool.h). The sampled view rules from gpu/legacy/vk/vk_texture.cpp texture_view
+// and the sampler from gpu/legacy/vk/vk_draw.cpp sampler_make, without their switches and without the shadow filter's PCF
+// (a picture change, not Vulkan's need: plan rule 8).
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -14,8 +12,9 @@
 #include "vk_pstats.h"
 #include "vk_check.h"
 #include "shader_recompiler/shader_info.h"
+#include "shader_recompiler/backend/spirv/emit_spirv.h"
 
-#include "vk_heap.h"
+#include "vk_pool.h"
 #include "vk_image.h"
 #include "vk_assets.h"
 
@@ -33,9 +32,13 @@ void draw_window_table_init();   // (vk_draw.cpp)
 
 namespace {
 
+using namespace Shader::Backend::SPIRV;   // (the set's layout: kPool*)
+constexpr uint32_t kSlots = kPoolSlots, kSamplers = kPoolSamplers, kViewTypes = kPoolViewTypes;
+constexpr uint32_t kPushBytes = UNIFORM_TABLE_PUSH_OFFSET + 8 * UNIFORM_TABLE_SLOTS;   // (the push data a draw writes, at most)
+
 // ---- the device ----
 VkPhysicalDeviceShaderObjectFeaturesEXT shobj{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT};
-VkPhysicalDeviceDescriptorHeapFeaturesEXT heap_feat{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT};
+VkPhysicalDeviceRobustness2FeaturesKHR robust2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_KHR};
 VkPhysicalDeviceExtendedDynamicState3FeaturesEXT eds3{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT};
 VkPhysicalDeviceProvokingVertexFeaturesEXT pv{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT};
 VkPhysicalDeviceShaderAtomicFloatFeaturesEXT af{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT};
@@ -45,21 +48,14 @@ VkPhysicalDeviceMeshShaderFeaturesEXT mesh_feat{VK_STRUCTURE_TYPE_PHYSICAL_DEVIC
 // (the translator's MaximallyReconvergesKHR, for the stages whose front asks for it)
 VkPhysicalDeviceShaderMaximalReconvergenceFeaturesKHR reconv{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MAXIMAL_RECONVERGENCE_FEATURES_KHR};
 bool has_ext[9]{};
-enum { E_SHOBJ, E_HEAP, E_EDS3, E_PV, E_STENCIL, E_ATOMIC_FLOAT, E_M5, E_MESH, E_RECONV };
+enum { E_SHOBJ, E_ROBUST2, E_EDS3, E_PV, E_STENCIL, E_ATOMIC_FLOAT, E_M5, E_MESH, E_RECONV };
 
-VkPhysicalDeviceDescriptorHeapPropertiesEXT hprops{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT};
-
-// ---- the heaps ----
-struct HeapBuf {
-    VkBuffer buffer = VK_NULL_HANDLE;
-    VkDeviceMemory memory = VK_NULL_HANDLE;
-    uint8_t* map = nullptr;
-    VkDeviceAddress address = 0;
-    VkDeviceSize size = 0, reserved_at = 0, reserved = 0;
-};
-HeapBuf res_heap, smp_heap;
+// ---- the set ----
+VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
+VkPipelineLayout pipe_layout = VK_NULL_HANDLE;
+VkDescriptorSet set = VK_NULL_HANDLE;
+VkPushConstantRange push_range{VK_SHADER_STAGE_ALL, 0, 0};
 bool ready = false;
-uint64_t tail_at = 0;
 
 /// (UINT32_MAX: none)
 uint32_t mapped_type(const VkMemoryRequirements& mr) {
@@ -106,19 +102,15 @@ bool make_mapped(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer, 
     return address != 0;
 }
 
-bool make_heap(HeapBuf& h, VkDeviceSize used, VkDeviceSize min_reserved) {
-    const VkDeviceSize align = 256;
-    h.reserved_at = (used + align - 1) & ~(align - 1);
-    h.reserved = (min_reserved + align - 1) & ~(align - 1);
-    h.size = h.reserved_at + h.reserved;
-    if (!make_mapped(h.size, VK_BUFFER_USAGE_DESCRIPTOR_HEAP_BIT_EXT, h.buffer, h.memory, h.map, h.address, MO_HEAP)) return false;
-    std::memset(h.map, 0, h.reserved_at);
-    return true;
-}
 
 // ---- entries ----
-std::mutex heap_mu;   // (registrations: the entries, slot_image)
-std::unique_ptr<const Image*[]> slot_image;   // (texture id -> the image its entries hold)
+std::mutex pool_mu;   // (registrations: the slots, the set's writes)
+/// What a texture id's entries hold: its image, and per view type the sampled and the storage view written there
+struct Slot {
+    const Image* im = nullptr;
+    VkImageView view[2][kPoolViewTypes]{};
+};
+std::unique_ptr<Slot[]> slots;
 struct SlotTex {
     uint64_t gpu;
     uint32_t w, h;
@@ -130,8 +122,8 @@ struct SlotTex {
 std::unique_ptr<SlotTex[]> slot_tex;   // (logs: what was registered there)
 std::unique_ptr<std::atomic<uint8_t>[]> answers;   // (texture id -> answer byte)
 
-std::atomic<int64_t> st_storage{0}, st_tex{0}, st_entries{0}, st_nulls{0}, st_big_id{0}, st_samp{0}, st_border{0}, st_gone{0}, st_no_image{0},
-    st_failed{0}, st_remapped{0};
+std::atomic<int64_t> st_storage{0}, st_tex{0}, st_same{0}, st_entries{0}, st_nulls{0}, st_big_id{0}, st_samp{0}, st_border{0},
+    st_gone{0}, st_no_image{0}, st_failed{0}, st_remapped{0}, st_samplers_over{0};
 
 VkComponentSwizzle component(unsigned s) {
     switch (s) {
@@ -232,23 +224,6 @@ bool sampled_view(const Image* im, const nvn_tex* t, const nvn_view* v, VkImageV
     return true;
 }
 
-bool encode_image(const VkImageViewCreateInfo* vi, uint8_t out[kImageDesc], bool storage = false) {
-    std::memset(out, 0, kImageDesc);
-    if (!vi) return true;   // (zeros: a null descriptor on RDNA)
-    VkImageViewUsageCreateInfo uci{VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO};
-    uci.usage = storage ? VK_IMAGE_USAGE_STORAGE_BIT : VK_IMAGE_USAGE_SAMPLED_BIT;
-    VkImageViewCreateInfo ci = *vi;
-    ci.pNext = &uci;
-    VkImageDescriptorInfoEXT ii{VK_STRUCTURE_TYPE_IMAGE_DESCRIPTOR_INFO_EXT};
-    ii.pView = &ci;
-    ii.layout = VK_IMAGE_LAYOUT_GENERAL;
-    VkResourceDescriptorInfoEXT ri{VK_STRUCTURE_TYPE_RESOURCE_DESCRIPTOR_INFO_EXT};
-    ri.type = storage ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    ri.data.pImage = &ii;
-    VkHostAddressRangeEXT dst{out, (size_t)kImageDesc};
-    return vkWriteResourceDescriptorsEXT(dev.device, 1, &ri, &dst) == VK_SUCCESS;
-}
-
 /// A storage view of t's image as view type `type` from its sampled view: one level, no swizzle, a format the device
 /// stores to (the view's, else the image's own); false: none
 bool storage_view(const Image* im, VkImageViewCreateInfo& vi) {
@@ -331,10 +306,22 @@ VkSamplerAddressMode wrap(uint8_t w) {
     }
 }
 
-/// A sampler's descriptor (sampler_make's create info; compare: the depth-compare region's, which a shader's depth-reference
-/// sample needs whatever the game set: Vulkan leaves such a sample through a sampler that does not compare undefined)
-bool encode_sampler(const nvn_samp_par& p, bool compare, uint8_t out[kSamplerDesc]) {
-    VkSamplerCreateInfo ci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+
+// ---- samplers: one object per distinct create info, never destroyed ----
+struct SamplerKey {
+    VkSamplerCreateInfo ci;   // (pNext null: the reduction mode beside it)
+    VkSamplerReductionMode reduction;
+};
+std::mutex sampler_mu;
+std::vector<std::pair<SamplerKey, VkSampler>> samplers;
+VkSampler default_sampler[2] = {};   // (linear, clamped: plain and compare; ids the game has not registered)
+
+/// A sampler's create info (sampler_make's; compare: the depth-compare binding's, which a shader's depth-reference sample
+/// needs whatever the game set: Vulkan leaves such a sample through a sampler that does not compare undefined)
+SamplerKey sampler_key(const nvn_samp_par& p, bool compare) {
+    SamplerKey k{};
+    VkSamplerCreateInfo& ci = k.ci;
+    ci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     ci.magFilter = p.magf == NVN_MAG_FILTER_NEAREST ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
     ci.minFilter = (p.minf == NVN_MIN_FILTER_NEAREST || p.minf == NVN_MIN_FILTER_NEAREST_MIPMAP_NEAREST ||
                     p.minf == NVN_MIN_FILTER_NEAREST_MIPMAP_LINEAR) ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
@@ -354,25 +341,112 @@ bool encode_sampler(const nvn_samp_par& p, bool compare, uint8_t out[kSamplerDes
     if (black && !p.border[3]) ci.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
     else if (black && p.border[3] == 1.0f) ci.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
     else if (white && p.border[3] == 1.0f) ci.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
-    else {   // (a custom colour needs an index registered with the heap: not yet; counted)
+    else {   // (a custom colour needs VK_EXT_custom_border_color: not yet; counted)
         ci.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
         if (wrap(p.ws) == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER || wrap(p.wt) == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER)
             st_border.fetch_add(1, std::memory_order_relaxed);
     }
-    VkSamplerReductionModeCreateInfo rm{VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO};
-    if (p.reduction && !compare) {
-        rm.reductionMode = p.reduction == 1 ? VK_SAMPLER_REDUCTION_MODE_MIN : VK_SAMPLER_REDUCTION_MODE_MAX;
-        ci.pNext = &rm;
-    }
-    std::memset(out, 0, kSamplerDesc);
-    VkHostAddressRangeEXT dst{out, (size_t)kSamplerDesc};
-    return vkWriteSamplerDescriptorsEXT(dev.device, 1, &ci, &dst) == VK_SUCCESS;
+    k.reduction = p.reduction && !compare ? (p.reduction == 1 ? VK_SAMPLER_REDUCTION_MODE_MIN : VK_SAMPLER_REDUCTION_MODE_MAX)
+                                          : VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE;
+    return k;
 }
+
+
+/// The sampler of key (made the first time; the default one past the device's count of samplers)
+VkSampler sampler_of(const SamplerKey& k, bool compare) {
+    std::lock_guard lk(sampler_mu);
+    for (const auto& [key, s] : samplers)
+        if (!std::memcmp(&key, &k, sizeof k)) return s;
+    if (samplers.size() + 8 >= dev.props.limits.maxSamplerAllocationCount) {
+        st_samplers_over.fetch_add(1, std::memory_order_relaxed);
+        return default_sampler[compare];
+    }
+    VkSamplerCreateInfo ci = k.ci;
+    VkSamplerReductionModeCreateInfo rm{VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO};
+    if (k.reduction != VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE) rm.reductionMode = k.reduction, ci.pNext = &rm;
+    VkSampler s = VK_NULL_HANDLE;
+    if (vkCreateSampler(dev.device, &ci, nullptr, &s) != VK_SUCCESS) {
+        st_failed.fetch_add(1, std::memory_order_relaxed);
+        return default_sampler[compare];
+    }
+    object_made(1, "a sampler");
+    samplers.push_back({k, s});
+    return s;
+}
+size_t sampler_count() {
+    std::lock_guard lk(sampler_mu);
+    return samplers.size();
+}
+
+/// One descriptor written: an image view (null: a null descriptor) at binding, array element id
+struct Writes {
+    VkDescriptorImageInfo info[2 * kPoolViewTypes + 2];
+    VkWriteDescriptorSet w[2 * kPoolViewTypes + 2];
+    uint32_t n = 0;
+    void add(uint32_t binding, uint32_t id, VkDescriptorType type, VkImageView view, VkSampler sampler = VK_NULL_HANDLE) {
+        info[n] = {sampler, view, VK_IMAGE_LAYOUT_GENERAL};
+        w[n] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, binding, id, 1, type, &info[n], nullptr, nullptr};
+        n++;
+    }
+    void flush() {
+        if (n) vkUpdateDescriptorSets(dev.device, n, w, 0, nullptr);
+        n = 0;
+    }
+};
 
 bool has(const std::vector<VkExtensionProperties>& exts, const char* n) {
     for (const auto& e : exts)
         if (!std::strcmp(e.extensionName, n)) return true;
     return false;
+}
+
+/// The set: its layout, the pipeline layout every shader object shares, the pool and the set, every entry null and every
+/// sampler the default
+const char* make_set() {
+    VkDescriptorSetLayoutBinding b[kPoolBindings];
+    VkDescriptorBindingFlags fl[kPoolBindings];
+    for (uint32_t i = 0; i < kPoolBindings; i++) {
+        const VkDescriptorType type = i < kPoolStorageBinding ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE
+                                    : i < kPoolSamplerBinding ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLER;
+        b[i] = {i, type, type == VK_DESCRIPTOR_TYPE_SAMPLER ? kSamplers : kSlots, VK_SHADER_STAGE_ALL, nullptr};
+        // (written while command buffers that bind the set are recorded and run: see pool_texture_registered)
+        fl[i] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT;
+    }
+    VkDescriptorSetLayoutBindingFlagsCreateInfo bfi{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO};
+    bfi.bindingCount = kPoolBindings, bfi.pBindingFlags = fl;
+    VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    li.pNext = &bfi, li.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+    li.bindingCount = kPoolBindings, li.pBindings = b;
+    if (vkCreateDescriptorSetLayout(dev.device, &li, nullptr, &set_layout) != VK_SUCCESS) return "the set's layout was not made";
+    push_range.size = caps.max_push;
+    VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pli.setLayoutCount = 1, pli.pSetLayouts = &set_layout, pli.pushConstantRangeCount = 1, pli.pPushConstantRanges = &push_range;
+    if (vkCreatePipelineLayout(dev.device, &pli, nullptr, &pipe_layout) != VK_SUCCESS) return "the pipeline layout was not made";
+    const VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kViewTypes * kSlots},
+                                        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, kViewTypes * kSlots},
+                                        {VK_DESCRIPTOR_TYPE_SAMPLER, 2 * kSamplers}};
+    VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pi.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT, pi.maxSets = 1, pi.poolSizeCount = 3, pi.pPoolSizes = ps;
+    VkDescriptorPool pool;
+    if (vkCreateDescriptorPool(dev.device, &pi, nullptr, &pool) != VK_SUCCESS) return "the descriptor pool was not made";
+    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, nullptr, pool, 1, &set_layout};
+    if (vkAllocateDescriptorSets(dev.device, &ai, &set) != VK_SUCCESS) return "the set was not allocated";
+    nvn_samp_par p{};   // (the default sampler: linear, clamped)
+    p.minf = NVN_MIN_FILTER_LINEAR, p.magf = NVN_MAG_FILTER_LINEAR, p.lod_max = 1000.0f;
+    for (const bool cmp : {false, true}) {
+        const SamplerKey k = sampler_key(p, cmp);
+        if (vkCreateSampler(dev.device, &k.ci, nullptr, &default_sampler[cmp]) != VK_SUCCESS) return "the default sampler was not made";
+    }
+    std::vector<VkDescriptorImageInfo> infos(kSlots, VkDescriptorImageInfo{VK_NULL_HANDLE, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL});
+    std::vector<VkDescriptorImageInfo> sinfos(2 * kSamplers);
+    for (uint32_t i = 0; i < 2 * kSamplers; i++) sinfos[i].sampler = default_sampler[i >= kSamplers];
+    std::vector<VkWriteDescriptorSet> w(kPoolBindings);
+    for (uint32_t i = 0; i < kPoolBindings; i++) {
+        w[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, i, 0, b[i].descriptorCount, b[i].descriptorType, infos.data(), nullptr, nullptr};
+        if (b[i].descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER) w[i].pImageInfo = sinfos.data() + (i - kPoolSamplerBinding) * kSamplers;
+    }
+    vkUpdateDescriptorSets(dev.device, kPoolBindings, w.data(), 0, nullptr);
+    return nullptr;
 }
 
 }  // namespace
@@ -391,15 +465,17 @@ void mapped_buffer_free(VkBuffer buffer, VkDeviceMemory memory, MemOwner owner) 
 // ---- the device ----
 void draw_device_extensions(const std::vector<VkExtensionProperties>& exts, std::vector<const char*>& want, void**& tail) {
     const struct { int k; const char* name; } list[] = {
-        {E_SHOBJ, VK_EXT_SHADER_OBJECT_EXTENSION_NAME}, {E_HEAP, VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME},
+        {E_SHOBJ, VK_EXT_SHADER_OBJECT_EXTENSION_NAME}, {E_ROBUST2, VK_KHR_ROBUSTNESS_2_EXTENSION_NAME},
         {E_EDS3, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME}, {E_PV, VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME},
         {E_STENCIL, VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME}, {E_ATOMIC_FLOAT, VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME},
         {E_M5, VK_KHR_MAINTENANCE_5_EXTENSION_NAME}, {E_MESH, VK_EXT_MESH_SHADER_EXTENSION_NAME},
         {E_RECONV, VK_KHR_SHADER_MAXIMAL_RECONVERGENCE_EXTENSION_NAME}};
     for (const auto& e : list)
         if ((has_ext[e.k] = has(exts, e.name))) want.push_back(e.name);
+    if (!has_ext[E_ROBUST2] && has(exts, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME))   // (the same structure, before KHR)
+        has_ext[E_ROBUST2] = true, want.push_back(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
     if (has_ext[E_SHOBJ]) *tail = &shobj, tail = &shobj.pNext;
-    if (has_ext[E_HEAP]) *tail = &heap_feat, tail = &heap_feat.pNext;
+    if (has_ext[E_ROBUST2]) *tail = &robust2, tail = &robust2.pNext;
     if (has_ext[E_EDS3]) *tail = &eds3, tail = &eds3.pNext;
     if (has_ext[E_PV]) *tail = &pv, tail = &pv.pNext;
     if (has_ext[E_ATOMIC_FLOAT]) *tail = &af, tail = &af.pNext;
@@ -407,8 +483,8 @@ void draw_device_extensions(const std::vector<VkExtensionProperties>& exts, std:
     if (has_ext[E_RECONV]) *tail = &reconv, tail = &reconv.pNext;
 }
 
-void draw_features_resolved(const VkPhysicalDeviceVulkan14Features* f14) {
-    heap_feat.descriptorHeapCaptureReplay = VK_FALSE;
+void draw_features_resolved(const VkPhysicalDeviceFeatures& f10, VkPhysicalDeviceVulkan12Features& f12,
+                            const VkPhysicalDeviceVulkan14Features* f14) {
     mesh_feat.taskShader = VK_FALSE;   // (never: see mesh_feat)
     // (M6h: HOS_DBG=pstats counts mesh invocations too, when the device can)
     const VkBool32 mesh_queries = mesh_feat.meshShaderQueries && pstats_wants_mesh_queries();
@@ -422,17 +498,39 @@ void draw_features_resolved(const VkPhysicalDeviceVulkan14Features* f14) {
     caps.vertex_divisor = f14 && f14->vertexAttributeInstanceRateDivisor;
     pv.transformFeedbackPreservesProvokingVertex = VK_FALSE;
     caps.provoking_vertex = has_ext[E_PV] && pv.provokingVertexLast;
+    robust2.robustBufferAccess2 = robust2.robustImageAccess2 = VK_FALSE;   // (null descriptors only: robust access costs)
     const bool eds3_ok = has_ext[E_EDS3] && eds3.extendedDynamicState3PolygonMode && eds3.extendedDynamicState3DepthClampEnable &&
                          eds3.extendedDynamicState3ColorBlendEnable && eds3.extendedDynamicState3ColorBlendEquation &&
                          eds3.extendedDynamicState3ColorWriteMask && eds3.extendedDynamicState3AlphaToCoverageEnable &&
                          eds3.extendedDynamicState3RasterizationSamples && eds3.extendedDynamicState3SampleMask &&
                          eds3.extendedDynamicState3AlphaToOneEnable && eds3.extendedDynamicState3LogicOpEnable &&
                          (!caps.provoking_vertex || eds3.extendedDynamicState3ProvokingVertexMode);
-    if (!has_ext[E_SHOBJ] || !shobj.shaderObject) caps.why = "no shader objects";
-    else if (!has_ext[E_HEAP] || !heap_feat.descriptorHeap) caps.why = "no VK_EXT_descriptor_heap";
+    // (the pools' set: descriptor indexing with update after bind, and its sizes)
+    const bool indexing = f12.runtimeDescriptorArray && f12.shaderSampledImageArrayNonUniformIndexing &&
+                          f12.shaderStorageImageArrayNonUniformIndexing && f12.descriptorBindingSampledImageUpdateAfterBind &&
+                          f12.descriptorBindingStorageImageUpdateAfterBind && f12.descriptorBindingUpdateUnusedWhilePending;
+    VkPhysicalDeviceVulkan12Properties p12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES};
+    VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+    p2.pNext = &p12;
+    vkGetPhysicalDeviceProperties2(dev.physical, &p2);
+    const uint32_t images = kViewTypes * kSlots;
+    const bool sizes = p12.maxDescriptorSetUpdateAfterBindSampledImages >= images && p12.maxDescriptorSetUpdateAfterBindStorageImages >= images &&
+                       p12.maxDescriptorSetUpdateAfterBindSamplers >= 2 * kSamplers &&
+                       p12.maxPerStageDescriptorUpdateAfterBindSampledImages >= images &&
+                       p12.maxPerStageDescriptorUpdateAfterBindStorageImages >= images &&
+                       p12.maxPerStageDescriptorUpdateAfterBindSamplers >= 2 * kSamplers &&
+                       p12.maxPerStageUpdateAfterBindResources >= 2 * images + 2 * kSamplers &&
+                       p12.maxUpdateAfterBindDescriptorsInAllPools >= 2 * images + 2 * kSamplers;
+    caps.max_push = std::min<uint32_t>(dev.props.limits.maxPushConstantsSize, 256);
+    if (!has_ext[E_SHOBJ] || !shobj.shaderObject) caps.why = "no VK_EXT_shader_object";
+    else if (!indexing) caps.why = "no descriptor indexing with update after bind (runtime arrays, non-uniform image indexing, sampled "
+                                   "and storage images updated after bind and while pending)";
+    else if (!sizes) caps.why = "update-after-bind limits below the pools' set (7 x 65536 sampled and storage images, 8192 samplers)";
+    else if (!has_ext[E_ROBUST2] || !robust2.nullDescriptor) caps.why = "no null descriptors (VK_KHR_robustness2 / VK_EXT_robustness2)";
+    else if (!f12.bufferDeviceAddress || !f10.shaderInt64) caps.why = "no buffer device addresses or 64-bit integers in shaders";
+    else if (caps.max_push < kPushBytes) caps.why = "push constants below 144 bytes";
     else if (!eds3_ok) caps.why = "not all of extended dynamic state 3";
     else caps.ok = true, caps.why = "";
-    if (!caps.ok) heap_feat.descriptorHeap = VK_FALSE;
 }
 
 void draw_device_created() {
@@ -440,7 +538,6 @@ void draw_device_created() {
         caps.ok = false, caps.why = why;
         logf("direct: no draws: %s", why);
     };
-    if (!caps.ok) return void(logf("direct: no draws on this device: %s", caps.why));
     caps.alpha_to_one = dev.features.alphaToOne, caps.logic_op = dev.features.logicOp;   // (enabled: their state must be set)
 #define GPU_VK_LOAD(f) f = (PFN_##f)vkGetDeviceProcAddr(dev.device, #f);
     GPU_VK_M2B(GPU_VK_LOAD)
@@ -457,151 +554,127 @@ void draw_device_created() {
         sc.pNext = &drv;
         VkPhysicalDeviceSubgroupProperties sg{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
         sg.pNext = &sc;
-        hprops.pNext = &sg;
         VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
-        p2.pNext = &hprops;
+        p2.pNext = &sg;
         vkGetPhysicalDeviceProperties2(dev.physical, &p2);
-        hprops.pNext = nullptr;
         caps.sg32_stages = sc.minSubgroupSize <= 32 && sc.maxSubgroupSize >= 32 ? sc.requiredSubgroupSizeStages : 0;
         caps.subgroup_size = sg.subgroupSize;
         caps.subgroup_max = std::max(sc.maxSubgroupSize, sg.subgroupSize);
         caps.driver_id = drv.driverID;
-        caps.max_push = (uint32_t)hprops.maxPushDataSize;
     }
-    if (std::max<uint64_t>(hprops.imageDescriptorSize, hprops.imageDescriptorAlignment) > kImageDesc ||
-        std::max<uint64_t>(hprops.samplerDescriptorSize, hprops.samplerDescriptorAlignment) > kSamplerDesc)
-        return fail("descriptor sizes past the heap's layout");
-    // (the resource heap: 7 regions, then the zero tail, so that an id up to 0xFFFFF from the last region's base stays inside)
-    tail_at = 2ull * kHeapRegions * kHeapSlots * kImageDesc;   // (M3b: sampled regions, then storage regions)
-    const uint64_t res_used = ((uint64_t)(2 * kHeapRegions - 1) * kHeapSlots + (1u << 20)) * kImageDesc;
-    if (!make_heap(res_heap, res_used, hprops.minResourceHeapReservedRange) ||
-        !make_heap(smp_heap, 2ull * kHeapSamplers * kSamplerDesc, hprops.minSamplerHeapReservedRange) ||
-        res_heap.size > hprops.maxResourceHeapSize || smp_heap.size > hprops.maxSamplerHeapSize)
-        return fail("the heaps were not made");
-    {   // (sampler entries before the game registers them: linear, clamped)
-        nvn_samp_par p{};
-        p.minf = NVN_MIN_FILTER_LINEAR, p.magf = NVN_MAG_FILTER_LINEAR, p.lod_max = 1000.0f;
-        uint8_t d[2][kSamplerDesc];
-        if (encode_sampler(p, false, d[0]) && encode_sampler(p, true, d[1]))
-            for (uint32_t i = 0; i < kHeapSamplers; i++)
-                std::memcpy(smp_heap.map + i * kSamplerDesc, d[0], kSamplerDesc),
-                    std::memcpy(smp_heap.map + (kHeapSamplers + i) * kSamplerDesc, d[1], kSamplerDesc);
-    }
-    slot_image.reset(new const Image*[kHeapSlots]());
-    slot_tex.reset(new SlotTex[kHeapSlots]());
-    answers.reset(new std::atomic<uint8_t>[kHeapSlots]);
-    for (uint32_t i = 0; i < kHeapSlots; i++) answers[i].store(0xFF, std::memory_order_relaxed);
+    if (const char* why = make_set()) return fail(why);
+    slots.reset(new Slot[kSlots]());
+    slot_tex.reset(new SlotTex[kSlots]());
+    answers.reset(new std::atomic<uint8_t>[kSlots]);
+    for (uint32_t i = 0; i < kSlots; i++) answers[i].store(0xFF, std::memory_order_relaxed);
     ready = true;
     draw_window_table_init();
-    logf("direct: draws on: shader objects, descriptor heap (%u ids x %u view types, %u samplers x 2; resource heap %llu MB, "
-         "sampler heap %llu KB, push data %u B), subgroups %u (up to %u, 32 on stages %#x)", kHeapSlots, kHeapRegions, kHeapSamplers,
-         (unsigned long long)(res_heap.size >> 20), (unsigned long long)(smp_heap.size >> 10), caps.max_push, caps.subgroup_size,
-         caps.subgroup_max, (unsigned)caps.sg32_stages);
+    logf("direct: draws on: shader objects, the pools' set (%u ids x %u view types, sampled and storage; %u samplers x 2; update "
+         "after bind), push constants %u B, subgroups %u (up to %u, 32 on stages %#x)", kSlots, kViewTypes, kSamplers, caps.max_push,
+         caps.subgroup_size, caps.subgroup_max, (unsigned)caps.sg32_stages);
 }
 
-// ---- the heap ----
-bool heap_on() { return ready; }
-uint32_t heap_region_offset(uint32_t region) { return region * kHeapSlots * kImageDesc; }
-uint32_t heap_storage_offset(uint32_t region) { return (kHeapRegions + region) * kHeapSlots * kImageDesc; }
-uint32_t heap_tail_offset() { return (uint32_t)tail_at; }
-uint32_t heap_sampler_offset(bool compare) { return compare ? kHeapSamplers * kSamplerDesc : 0; }
+// ---- the set ----
+bool pool_on() { return ready; }
 
-void heap_bind(VkCommandBuffer cb) {
-    VkBindHeapInfoEXT rb{VK_STRUCTURE_TYPE_BIND_HEAP_INFO_EXT};
-    rb.heapRange = {res_heap.address, res_heap.size}, rb.reservedRangeOffset = res_heap.reserved_at, rb.reservedRangeSize = res_heap.reserved;
-    VkBindHeapInfoEXT sb{VK_STRUCTURE_TYPE_BIND_HEAP_INFO_EXT};
-    sb.heapRange = {smp_heap.address, smp_heap.size}, sb.reservedRangeOffset = smp_heap.reserved_at, sb.reservedRangeSize = smp_heap.reserved;
-    vkCmdBindResourceHeapEXT(cb, &rb);
-    vkCmdBindSamplerHeapEXT(cb, &sb);
+void pool_bind(VkCommandBuffer cb, VkPipelineBindPoint point) {
+    vkCmdBindDescriptorSets(cb, point, pipe_layout, 0, 1, &set, 0, nullptr);
 }
-void heap_push(VkCommandBuffer cb, const void* data, uint32_t bytes) {
-    VkPushDataInfoEXT pi{VK_STRUCTURE_TYPE_PUSH_DATA_INFO_EXT};
-    pi.offset = 0;
-    pi.data = {data, bytes};
-    vkCmdPushDataEXT(cb, &pi);
+void pool_push(VkCommandBuffer cb, const void* data, uint32_t bytes) {
+    vkCmdPushConstants(cb, pipe_layout, VK_SHADER_STAGE_ALL, 0, bytes, data);
+}
+void pool_shader_layout(VkShaderCreateInfoEXT& ci) {
+    ci.setLayoutCount = 1, ci.pSetLayouts = &set_layout;
+    ci.pushConstantRangeCount = 1, ci.pPushConstantRanges = &push_range;
 }
 
-void heap_texture_registered(int id, const nvn_tex* t, const nvn_view* v) {
+void pool_texture_registered(int id, const nvn_tex* t, const nvn_view* v) {
     if (!ready || !t) return;
-    if (id < 0 || (uint32_t)id >= kHeapSlots) return void(st_big_id.fetch_add(1, std::memory_order_relaxed));
+    if (id < 0 || (uint32_t)id >= kPoolNullSlot) return void(st_big_id.fetch_add(1, std::memory_order_relaxed));
     st_tex.fetch_add(1, std::memory_order_relaxed);
     const int target = v && v->set_target ? v->target : t->d.target;
     const int nf = v && v->set_format ? v->format : t->d.format;
     answers[id].store((uint8_t)(texture_type(target) | (integer_format(vk_format(nf).format) ? 0x80 : 0)), std::memory_order_release);
-    const Image* im = t->d.target == NVN_TEXTURE_TARGET_BUFFER ? nullptr : image_find(t);
+    Image* im = t->d.target == NVN_TEXTURE_TARGET_BUFFER ? nullptr : image_find(t);
     if (!im && t->d.target != NVN_TEXTURE_TARGET_BUFFER) st_no_image.fetch_add(1, std::memory_order_relaxed);
     if (im && im->placeholder) {   // (named: a registration that samples the placeholder)
         static std::atomic<int> told{0};
         if (told++ < 40) {
             char why[256];
             image_key_describe(t, why, sizeof why);
-            logf("direct: heap: id %d registered with the placeholder: texture %#llx %ux%u NVN format %#x target %d; %s", id,
+            logf("direct: pools: id %d registered with the placeholder: texture %#llx %ux%u NVN format %#x target %d; %s", id,
                  (unsigned long long)t->gpu, t->d.width, t->d.height, t->d.format, t->d.target, why);
         }
     }
+    // (the views each view type's entries take, from the image's cache: made once per image and view)
     const uint32_t allowed = im ? regions_of(target) : 0;
-    std::lock_guard lk(heap_mu);
-    for (uint32_t r = 0; r < kHeapRegions; r++) {
+    Slot want{im, {}};
+    for (uint32_t r = 0; r < kViewTypes; r++) {
         VkImageViewCreateInfo vi;
-        const bool ok = (allowed >> r & 1) && sampled_view(im, t, v, (VkImageViewType)r, vi);
-        uint8_t d[kImageDesc];
-        if (!encode_image(ok ? &vi : nullptr, d)) {
+        if (!(allowed >> r & 1) || !sampled_view(im, t, v, (VkImageViewType)r, vi)) continue;
+        if (!(want.view[0][r] = image_pool_view(im, vi, VK_IMAGE_USAGE_SAMPLED_BIT))) st_failed.fetch_add(1, std::memory_order_relaxed);
+        if (storage_view(im, vi) && !(want.view[1][r] = image_pool_view(im, vi, VK_IMAGE_USAGE_STORAGE_BIT)))
             st_failed.fetch_add(1, std::memory_order_relaxed);
-            encode_image(nullptr, d);
-        }
-        std::memcpy(res_heap.map + heap_region_offset(r) + (uint64_t)id * kImageDesc, d, kImageDesc);
-        (ok ? st_entries : st_nulls).fetch_add(1, std::memory_order_relaxed);
-        // (M3b: the storage entry of the same view, where the image can be stored to; zeros otherwise)
-        const bool sok = ok && storage_view(im, vi);
-        if (!encode_image(sok ? &vi : nullptr, d, true)) {
-            st_failed.fetch_add(1, std::memory_order_relaxed);
-            encode_image(nullptr, d);
-        }
-        std::memcpy(res_heap.map + heap_storage_offset(r) + (uint64_t)id * kImageDesc, d, kImageDesc);
-        if (sok) st_storage.fetch_add(1, std::memory_order_relaxed);
     }
-    slot_image[id] = im;
+    std::lock_guard lk(pool_mu);
     slot_tex[id] = {t->gpu, t->d.width, t->d.height, t->d.format, t->d.target, t->d.depth, t->d.levels, v ? *v : nvn_view{}, v != nullptr};
+    Slot& s = slots[id];
+    if (!std::memcmp(&s, &want, sizeof s)) return void(st_same.fetch_add(1, std::memory_order_relaxed));   // (what it holds)
+    // (Update after bind: the set is bound in command buffers being recorded and running while these entries change. Vulkan
+    // allows it for an entry no pending work reads (UPDATE_UNUSED_WHILE_PENDING); one that pending work does read is
+    // undefined while it changes. NVN's pool has that contract too: the game registers another texture at an id once its
+    // work no longer reads the id, and a registration of what an id holds writes nothing)
+    Writes w;
+    for (uint32_t r = 0; r < kViewTypes; r++)
+        for (int k = 0; k < 2; k++) {
+            if (s.view[k][r] == want.view[k][r]) continue;
+            w.add((k ? kPoolStorageBinding : kPoolSampledBinding) + r, (uint32_t)id,
+                  k ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, want.view[k][r]);
+            (want.view[k][r] ? k ? st_storage : st_entries : st_nulls).fetch_add(1, std::memory_order_relaxed);
+        }
+    w.flush();
+    s = want;
 }
 
-nvn_samp_par slot_samp[kHeapSamplers];   // (logs: what each sampler id was registered with)
-void heap_sampler_registered(int id, const nvn_samp_par* p) {
+nvn_samp_par slot_samp[kPoolSamplers];   // (logs: what each sampler id was registered with)
+void pool_sampler_registered(int id, const nvn_samp_par* p) {
     if (!ready || !p) return;
-    if (id < 0 || (uint32_t)id >= kHeapSamplers) return void(st_big_id.fetch_add(1, std::memory_order_relaxed));
-    {
-        std::lock_guard lk(heap_mu);
-        slot_samp[id] = *p;
-    }
-    uint8_t d[2][kSamplerDesc];
-    if (!encode_sampler(*p, false, d[0]) || !encode_sampler(*p, true, d[1])) return void(st_failed.fetch_add(1, std::memory_order_relaxed));
-    std::lock_guard lk(heap_mu);
-    std::memcpy(smp_heap.map + heap_sampler_offset(false) + (uint64_t)id * kSamplerDesc, d[0], kSamplerDesc);
-    std::memcpy(smp_heap.map + heap_sampler_offset(true) + (uint64_t)id * kSamplerDesc, d[1], kSamplerDesc);
+    if (id < 0 || (uint32_t)id >= kSamplers) return void(st_big_id.fetch_add(1, std::memory_order_relaxed));
+    const VkSampler plain = sampler_of(sampler_key(*p, false), false), compare = sampler_of(sampler_key(*p, true), true);
+    std::lock_guard lk(pool_mu);   // (update after bind, as a texture's: pool_texture_registered)
+    slot_samp[id] = *p;
+    Writes w;
+    w.add(kPoolSamplerBinding, (uint32_t)id, VK_DESCRIPTOR_TYPE_SAMPLER, VK_NULL_HANDLE, plain);
+    w.add(kPoolCompareSamplerBinding, (uint32_t)id, VK_DESCRIPTOR_TYPE_SAMPLER, VK_NULL_HANDLE, compare);
+    w.flush();
     st_samp.fetch_add(1, std::memory_order_relaxed);
 }
 
-void heap_image_gone(const Image* im) {
+void pool_image_gone(const Image* im) {
     if (!ready || !im) return;
-    std::lock_guard lk(heap_mu);
-    for (uint32_t id = 0; id < kHeapSlots; id++) {
-        if (slot_image[id] != im) continue;
-        for (uint32_t r = 0; r < kHeapRegions; r++) {
-            std::memset(res_heap.map + heap_region_offset(r) + (uint64_t)id * kImageDesc, 0, kImageDesc);
-            std::memset(res_heap.map + heap_storage_offset(r) + (uint64_t)id * kImageDesc, 0, kImageDesc);
-        }
-        slot_image[id] = nullptr;
+    std::lock_guard lk(pool_mu);
+    for (uint32_t id = 0; id < kSlots; id++) {
+        Slot& s = slots[id];
+        if (s.im != im) continue;
+        Writes w;
+        for (uint32_t r = 0; r < kViewTypes; r++)
+            for (int k = 0; k < 2; k++)
+                if (s.view[k][r]) w.add((k ? kPoolStorageBinding : kPoolSampledBinding) + r, id,
+                                        k ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_NULL_HANDLE);
+        w.flush();
+        s = Slot{};
         st_gone.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
-uint8_t heap_answer(uint32_t id) {
-    return ready && id < kHeapSlots ? answers[id].load(std::memory_order_acquire) : 0xFF;
+uint8_t pool_answer(uint32_t id) {
+    return ready && id < kSlots ? answers[id].load(std::memory_order_acquire) : 0xFF;
 }
 
-void heap_describe(uint32_t id, char* out, size_t cap) {
-    if (!ready || id >= kHeapSlots) return void(std::snprintf(out, cap, "-"));
-    std::lock_guard lk(heap_mu);
-    const Image* im = slot_image[id];
+void pool_describe(uint32_t id, char* out, size_t cap) {
+    if (!ready || id >= kSlots) return void(std::snprintf(out, cap, "-"));
+    std::lock_guard lk(pool_mu);
+    const Image* im = slots[id].im;
     const SlotTex& st = slot_tex[id];
     int k = std::snprintf(out, cap, "id %u: texture %#llx %ux%ux%u L%u NVN format %#x target %d", id, (unsigned long long)st.gpu, st.w, st.h,
                           st.depth, st.levels, st.format, st.target);
@@ -621,19 +694,15 @@ void heap_describe(uint32_t id, char* out, size_t cap) {
         k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " '%.*s' map %u%u%u%u", (int)std::min<uint32_t>(n, 60), name,
                            im->chan_map[0], im->chan_map[1], im->chan_map[2], im->chan_map[3]);
     }
-    for (uint32_t r = 0; r < kHeapRegions; r++) {
-        const uint8_t* e = res_heap.map + heap_region_offset(r) + (uint64_t)id * kImageDesc;
-        bool any = false;
-        for (uint32_t i = 0; i < kImageDesc; i++) any |= e[i] != 0;
-        k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " %u:%s", r, any ? "set" : "0");
-    }
+    for (uint32_t r = 0; r < kViewTypes; r++)
+        k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " %u:%s%s", r, slots[id].view[0][r] ? "set" : "0", slots[id].view[1][r] ? "+st" : "");
 }
 
-void heap_sampler_describe(uint32_t id, char* out, size_t cap) {
-    if (!ready || id >= kHeapSamplers) return void(std::snprintf(out, cap, "-"));
+void pool_sampler_describe(uint32_t id, char* out, size_t cap) {
+    if (!ready || id >= kSamplers) return void(std::snprintf(out, cap, "-"));
     nvn_samp_par p;
     {
-        std::lock_guard lk(heap_mu);
+        std::lock_guard lk(pool_mu);
         p = slot_samp[id];
     }
     std::snprintf(out, cap, "sampler %u: min %u mag %u wrap %u/%u/%u cmp %u/%u red %u lod %.2f..%.2f bias %.2f aniso %.0f border %.2f,%.2f,%.2f,%.2f",
@@ -641,37 +710,40 @@ void heap_sampler_describe(uint32_t id, char* out, size_t cap) {
                   p.border[0], p.border[1], p.border[2], p.border[3]);
 }
 
-int heap_placeholder(uint32_t id) {
-    if (!ready || id >= kHeapSlots) return 0;
-    std::lock_guard lk(heap_mu);
-    const Image* im = slot_image[id];
+int pool_placeholder(uint32_t id) {
+    if (!ready || id >= kSlots) return 0;
+    std::lock_guard lk(pool_mu);
+    const Image* im = slots[id].im;
     if (im) return im->placeholder ? 1 : 0;
     return slot_tex[id].gpu && slot_tex[id].target != NVN_TEXTURE_TARGET_BUFFER ? 2 : 0;
 }
 
-int heap_stale(uint32_t id) {
-    if (!ready || id >= kHeapSlots) return 0;
-    std::lock_guard lk(heap_mu);
-    return image_stale(slot_image[id]) ? 1 : 0;
+int pool_stale(uint32_t id) {
+    if (!ready || id >= kSlots) return 0;
+    std::lock_guard lk(pool_mu);
+    return image_stale(slots[id].im) ? 1 : 0;
 }
 
-void heap_stale_census(char* out, size_t cap) {
+void pool_stale_census(char* out, size_t cap) {
     uint64_t ids = 0, shadow = 0;
     if (ready) {
-        std::lock_guard lk(heap_mu);
-        for (uint32_t id = 0; id < kHeapSlots; id++)
-            if (const Image* im = slot_image[id]; image_stale(im)) ids++, shadow += im->width == im->height && is_depth_format(im->format);
+        std::lock_guard lk(pool_mu);
+        for (uint32_t id = 0; id < kSlots; id++)
+            if (const Image* im = slots[id].im; image_stale(im)) ids++, shadow += im->width == im->height && is_depth_format(im->format);
     }
     std::snprintf(out, cap, "descriptor ids naming a transient target that is not its range's owner: %llu (%llu square depth maps); "
                   "they hold an image object each and no memory", (unsigned long long)ids, (unsigned long long)shadow);
 }
 
-void heap_stats(char* out, size_t cap) {
-    std::snprintf(out, cap, "heap (since the start): %lld texture registrations (%lld entries written, %lld null, %lld storage), %lld with no image, "
-                  "%lld ids past the heap, %lld sampler registrations, %lld custom border colours as black, %lld ids nulled with their "
-                  "image, %lld descriptor writes failed, %lld views read through a prepared image's channel map", (long long)st_tex.load(), (long long)st_entries.load(), (long long)st_nulls.load(), (long long)st_storage.load(),
-                  (long long)st_no_image.load(), (long long)st_big_id.load(), (long long)st_samp.load(), (long long)st_border.load(),
-                  (long long)st_gone.load(), (long long)st_failed.load(), (long long)st_remapped.load());
+void pool_stats(char* out, size_t cap) {
+    std::snprintf(out, cap, "pools (since the start): %lld texture registrations (%lld holding what the id held: nothing written; %lld entries "
+                  "written, %lld nulled, %lld storage), %lld with no image, %lld ids past the pool, %lld sampler registrations (%zu "
+                  "distinct samplers, %lld past the device's count as linear), %lld custom border colours as black, %lld ids nulled "
+                  "with their image, %lld views or samplers not made, %lld views read through a prepared image's channel map",
+                  (long long)st_tex.load(), (long long)st_same.load(), (long long)st_entries.load(), (long long)st_nulls.load(),
+                  (long long)st_storage.load(), (long long)st_no_image.load(), (long long)st_big_id.load(), (long long)st_samp.load(),
+                  sampler_count(), (long long)st_samplers_over.load(), (long long)st_border.load(), (long long)st_gone.load(),
+                  (long long)st_failed.load(), (long long)st_remapped.load());
 }
 
 }  // namespace hsd

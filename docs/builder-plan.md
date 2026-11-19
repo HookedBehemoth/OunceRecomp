@@ -255,7 +255,7 @@ without is a warning.
 | `swapchain`, `external_memory_fd`, `dma_buf` | missing: the device is not made | |
 | `core_features` | no dynamic rendering, synchronization2, timeline semaphores or buffer device addresses | |
 | `graphics_queue`, `sparse_queue` | no graphics and compute family, or no sparse-binding family without either | |
-| `shader_object`, `descriptor_heap`, `extended_dynamic_state3` and their `_feature(s)` | missing: nothing is drawn | |
+| `shader_object`, `robustness2`, `extended_dynamic_state3` and their `_feature(s)`, `descriptor_indexing` | missing: the device is not made | |
 | `maintenance7` | | missing: the game's command jobs are not executed |
 | `sparse_residency`, `udmabuf` | | missing: the game's memory is not mapped on the GPU (layer 0 off) |
 | `vram` | | under 10 GB; under 8 GB the textures may not fit |

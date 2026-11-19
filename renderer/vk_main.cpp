@@ -17,7 +17,7 @@
 #include "os.h"
 #include "vk_list_api.h"
 #include "vk_image.h"
-#include "vk_heap.h"
+#include "vk_pool.h"
 #include "vk_shader.h"
 #include "vk_query.h"
 #include "vk_check.h"
@@ -250,7 +250,7 @@ bool create_device() {
     f.pNext = &f11, f11.pNext = &f12, f12.pNext = &f13;
     if (dev.props.apiVersion >= VK_API_VERSION_1_4) f13.pNext = &f14;
     void** tail = dev.props.apiVersion >= VK_API_VERSION_1_4 ? &f14.pNext : &f13.pNext;
-    draw_device_extensions(exts, want, tail);   // (M2b: shader objects, the descriptor heap, dynamic state 3)
+    draw_device_extensions(exts, want, tail);   // (M2b: shader objects, null descriptors, dynamic state 3)
     query_device_extensions(exts, want, tail);   // (M5: conditional rendering, calibrated timestamps)
     marks_device_extensions(exts, want);   // (M6c: HOS_DBG=marks, breadcrumbs for a lost device)
     // (M3a: a job is a rendering secondary executed among its caller's inline commands in one rendering)
@@ -261,9 +261,13 @@ bool create_device() {
     if ((dev.memory_budget = has_extension(exts, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME))) want.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
     else logf("direct: no VK_EXT_memory_budget: free VRAM is estimated (80%% of the heap less the back end's own bytes)");
     vkGetPhysicalDeviceFeatures2(dev.physical, &f);
-    draw_features_resolved(dev.props.apiVersion >= VK_API_VERSION_1_4 ? &f14 : nullptr);
-    if (!f13.dynamicRendering || !f13.synchronization2 || !f12.timelineSemaphore || !f12.bufferDeviceAddress) {
-        logf("direct: the GPU lacks dynamic rendering, synchronization2, timeline semaphores or buffer device addresses");
+    draw_features_resolved(f.features, f12, dev.props.apiVersion >= VK_API_VERSION_1_4 ? &f14 : nullptr);
+    if (!f13.dynamicRendering || !f13.synchronization2 || !f12.timelineSemaphore) {
+        logf("direct: the GPU lacks dynamic rendering, synchronization2 or timeline semaphores");
+        return false;
+    }
+    if (!caps.ok) {   // (the draws' needs: shader objects, the pools' set, device addresses, dynamic state 3)
+        logf("direct: the GPU lacks what the draws need: %s", caps.why);
         return false;
     }
     dev.nested_rendering = has_m7 && m7.maintenance7;
@@ -314,11 +318,11 @@ void stats(int64_t* draws, int64_t* skipped, int64_t* pipelines) {
 void register_texture(int id, const nvn_tex* t, const nvn_view* v) {
     count(R_TEX);
     image_texture_registered(t);
-    heap_texture_registered(id, t, v);
+    pool_texture_registered(id, t, v);
 }
 void register_sampler(int id, const nvn_samp_par* p) {
     count(R_SAMP);
-    heap_sampler_registered(id, p);
+    pool_sampler_registered(id, p);
 }
 void set_texture_pool_size(int) { count(R_TEX_POOL); }
 void texture_released(const nvn_tex* t) {
@@ -405,9 +409,9 @@ extern "C" __attribute__((visibility("default"))) const MkwVkRenderer* mkwvk_ini
         logf("direct: no memory allocator");
         return nullptr;
     }
-    draw_device_created();   // (M2b: the heaps, the draws' functions)
+    draw_device_created();   // (M2b: the pools' set, the draws' functions)
     query_device_created();  // (M5: queries, conditions, the resolve step)
-    marks_init();            // (M6c: HOS_DBG=marks; after the heap's functions are loaded)
+    marks_init();            // (M6c: HOS_DBG=marks; after the draws' functions are loaded)
     pstats_init(caps.mesh_queries);   // (M6h: HOS_DBG=pstats:<present>)
     logf("direct: %s, Vulkan %u.%u, driver %#x: the direct back end (M2b: targets, passes, present, vertex and fragment draws)", dev.props.deviceName,
          VK_VERSION_MAJOR(dev.props.apiVersion), VK_VERSION_MINOR(dev.props.apiVersion), dev.props.driverVersion);

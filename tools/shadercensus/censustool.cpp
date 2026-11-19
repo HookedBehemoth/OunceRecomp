@@ -1,7 +1,7 @@
 // censustool: every stage of the game's shader seed (tools/shadercensus/seed.py) through the direct back end's
 // translator fork as the back end translates it (tools/shaders/offline.h), a static profile of each from the IR (inputs and
 // outputs, texture samples by kind and by where they sit, memory, control flow and loop bounds) and, with --compile, RADV's
-// compile of its SPIR-V with the back end's heap mappings (vk_shader.cpp finish) and the driver's statistics of it
+// compile of its SPIR-V on the back end's pipeline layout (vk_pool.cpp make_set) and the driver's statistics of it
 // (VK_KHR_pipeline_executable_properties: ACO's instruction count, code size, registers, LDS, scratch, its latency and throughput
 // estimates). The back end makes unlinked shader objects, which report no statistics; the tool makes a pipeline instead: a
 // graphics stage with the partner stage of the first program that uses it (vertex + fragment, mesh + fragment; a geometry stage
@@ -412,7 +412,9 @@ struct Dev {
     PFN_vkGetPipelineExecutablePropertiesKHR exec_props = nullptr;
     PFN_vkGetPipelineExecutableStatisticsKHR exec_stats = nullptr;
     VkShaderStageFlags sg32 = 0;
-    uint64_t heap_tail = 0;
+    VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkPushConstantRange push{VK_SHADER_STAGE_ALL, 0, 256};
 } gdev;
 bool dev_init() {
     VkApplicationInfo ai{VK_STRUCTURE_TYPE_APPLICATION_INFO};
@@ -435,20 +437,20 @@ bool dev_init() {
     VkPhysicalDeviceVulkan12Features f12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     VkPhysicalDeviceVulkan11Features f11{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
     VkPhysicalDeviceShaderObjectFeaturesEXT so{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT};
-    VkPhysicalDeviceDescriptorHeapFeaturesEXT hf{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT};
+    VkPhysicalDeviceRobustness2FeaturesKHR rb{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_KHR};
     VkPhysicalDeviceMeshShaderFeaturesEXT ms{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
     VkPhysicalDeviceShaderAtomicFloatFeaturesEXT af{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT};
     VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR pe{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR};
     VkPhysicalDeviceWorkgroupMemoryExplicitLayoutFeaturesKHR wl{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_FEATURES_KHR};
     pe.pNext = &wl;
     VkPhysicalDeviceFeatures2 f{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-    f.pNext = &f11, f11.pNext = &f12, f12.pNext = &f13, f13.pNext = &f14, f14.pNext = &so, so.pNext = &hf, hf.pNext = &ms, ms.pNext = &af;
+    f.pNext = &f11, f11.pNext = &f12, f12.pNext = &f13, f13.pNext = &f14, f14.pNext = &so, so.pNext = &rb, rb.pNext = &ms, ms.pNext = &af;
     af.pNext = &pe;
     vkGetPhysicalDeviceFeatures2(gdev.phys, &f);
     f.features.robustBufferAccess = VK_FALSE, f14.pipelineRobustness = VK_FALSE;
-    hf.descriptorHeapCaptureReplay = VK_FALSE;
+    rb.robustBufferAccess2 = rb.robustImageAccess2 = VK_FALSE;
     ms.taskShader = VK_FALSE, ms.multiviewMeshShader = ms.primitiveFragmentShadingRateMeshShader = ms.meshShaderQueries = VK_FALSE;
-    const char* exts[] = {VK_EXT_SHADER_OBJECT_EXTENSION_NAME, VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME, VK_EXT_MESH_SHADER_EXTENSION_NAME,
+    const char* exts[] = {VK_EXT_SHADER_OBJECT_EXTENSION_NAME, VK_KHR_ROBUSTNESS_2_EXTENSION_NAME, VK_EXT_MESH_SHADER_EXTENSION_NAME,
                           VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME, VK_KHR_MAINTENANCE_5_EXTENSION_NAME, VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME,
                           VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME, VK_KHR_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_EXTENSION_NAME};
     vkGetPhysicalDeviceQueueFamilyProperties(gdev.phys, &n, nullptr);
@@ -466,70 +468,26 @@ bool dev_init() {
     p2.pNext = &sc;
     vkGetPhysicalDeviceProperties2(gdev.phys, &p2);
     gdev.sg32 = sc.minSubgroupSize <= 32 && sc.maxSubgroupSize >= 32 ? sc.requiredSubgroupSizeStages : 0;
-    gdev.heap_tail = 2ull * 7 * 65536 * 64;   // (vk_heap.cpp: tail_at)
+    {   // (vk_pool.cpp make_set: the pools' set's layout, the pipeline layout every shader object shares)
+        using namespace Shader::Backend::SPIRV;
+        VkDescriptorSetLayoutBinding b[kPoolBindings];
+        VkDescriptorBindingFlags bf[kPoolBindings];
+        for (uint32_t i = 0; i < kPoolBindings; i++) {
+            const VkDescriptorType type = i < kPoolStorageBinding ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE
+                                        : i < kPoolSamplerBinding ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLER;
+            b[i] = {i, type, type == VK_DESCRIPTOR_TYPE_SAMPLER ? kPoolSamplers : kPoolSlots, VK_SHADER_STAGE_ALL, nullptr};
+            bf[i] = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT;
+        }
+        VkDescriptorSetLayoutBindingFlagsCreateInfo bfi{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO};
+        bfi.bindingCount = kPoolBindings, bfi.pBindingFlags = bf;
+        VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        li.pNext = &bfi, li.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT, li.bindingCount = kPoolBindings, li.pBindings = b;
+        if (vkCreateDescriptorSetLayout(gdev.dev, &li, nullptr, &gdev.set_layout) != VK_SUCCESS) return false;
+        VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        pli.setLayoutCount = 1, pli.pSetLayouts = &gdev.set_layout, pli.pushConstantRangeCount = 1, pli.pPushConstantRanges = &gdev.push;
+        if (vkCreatePipelineLayout(gdev.dev, &pli, nullptr, &gdev.layout) != VK_SUCCESS) return false;
+    }
     return true;
-}
-// (vk_shader.cpp finish: one stage's heap mappings, its bindings numbered from 0 as its own Bindings numbered them)
-std::vector<VkDescriptorSetAndBindingMappingEXT> mappings(const Shader::Info& info) {
-    constexpr uint32_t kSlots = 65536, kImageDesc = 64, kSamplerDesc = 16, kSamplers = 4096, kRegions = 7, kTablePush = 120;
-    std::vector<VkDescriptorSetAndBindingMappingEXT> m;
-    auto map_of = [](uint32_t b, VkSpirvResourceTypeFlagsEXT mask, VkDescriptorMappingSourceEXT src) {
-        VkDescriptorSetAndBindingMappingEXT x{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_AND_BINDING_MAPPING_EXT};
-        x.descriptorSet = 0, x.firstBinding = b, x.bindingCount = 1, x.resourceMask = mask, x.source = src;
-        return x;
-    };
-    auto null_map = [&](uint32_t b, uint32_t stride) {
-        auto x = map_of(b, VK_SPIRV_RESOURCE_TYPE_ALL_EXT, VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT);
-        x.sourceData.constantOffset.heapOffset = (uint32_t)gdev.heap_tail, x.sourceData.constantOffset.heapArrayStride = stride;
-        x.sourceData.constantOffset.samplerHeapArrayStride = kSamplerDesc;
-        return x;
-    };
-    auto view = [](Shader::TextureType t) -> uint32_t {
-        switch (t) {
-        case Shader::TextureType::Color1D: return 0;
-        case Shader::TextureType::ColorArray1D: return 4;
-        case Shader::TextureType::ColorArray2D: return 5;
-        case Shader::TextureType::Color3D: return 2;
-        case Shader::TextureType::ColorCube: return 3;
-        case Shader::TextureType::ColorArrayCube: return 6;
-        default: return 1;
-        }
-    };
-    uint32_t binding = 0, ubos = 0;
-    for (const auto& c : info.constant_buffer_descriptors) {
-        if (c.count != 1) {
-            m.push_back(null_map(binding, 16));
-            binding += c.count;
-            continue;
-        }
-        auto x = map_of(binding, VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT, VK_DESCRIPTOR_MAPPING_SOURCE_INDIRECT_ADDRESS_EXT);
-        x.sourceData.indirectAddress.pushOffset = kTablePush, x.sourceData.indirectAddress.addressOffset = 8 * ubos++;
-        m.push_back(x);
-        binding += c.count;
-    }
-    for (const auto& s : info.storage_buffers_descriptors) m.push_back(null_map(binding, 16)), binding += s.count > 1 ? 1 : s.count;
-    for (size_t k = 0; k < info.texture_buffer_descriptors.size(); k++) m.push_back(null_map(binding++, kImageDesc));
-    for (size_t k = 0; k < info.image_buffer_descriptors.size(); k++) m.push_back(null_map(binding++, kImageDesc));
-    for (const auto& t : info.texture_descriptors) {
-        auto x = map_of(binding++, VK_SPIRV_RESOURCE_TYPE_ALL_EXT, VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT);
-        x.sourceData.constantOffset.heapOffset = std::min(view(t.type), kRegions - 1) * kSlots * kImageDesc;
-        x.sourceData.constantOffset.heapArrayStride = kImageDesc;
-        m.push_back(x);
-    }
-    if (!info.texture_descriptors.empty())
-        for (const bool cmp : {false, true}) {
-            auto x = map_of(cmp ? Shader::Backend::SPIRV::kHeapCompareSamplerBinding : Shader::Backend::SPIRV::kHeapSamplerBinding,
-                            VK_SPIRV_RESOURCE_TYPE_SAMPLER_BIT_EXT, VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT);
-            x.sourceData.constantOffset.heapOffset = cmp ? kSamplers * kSamplerDesc : 0, x.sourceData.constantOffset.heapArrayStride = kSamplerDesc;
-            m.push_back(x);
-        }
-    for (const auto& im : info.image_descriptors) {
-        auto x = map_of(binding++, VK_SPIRV_RESOURCE_TYPE_ALL_EXT, VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT);
-        x.sourceData.constantOffset.heapOffset = (kRegions + std::min(view(im.type), kRegions - 1)) * kSlots * kImageDesc;
-        x.sourceData.constantOffset.heapArrayStride = kImageDesc;
-        m.push_back(x);
-    }
-    return m;
 }
 struct Made {   // (a stage translated: what a pipeline needs of it)
     VkShaderStageFlagBits vk = VK_SHADER_STAGE_VERTEX_BIT;
@@ -542,8 +500,6 @@ std::string json_str(const std::string& s);
 /// The pipeline of a stage (and its partner) and the driver's statistics of every executable, as JSON
 std::string compile(const Made& a, const Made* b, int& result, const Made* c = nullptr) {
     struct StageIn {
-        std::vector<VkDescriptorSetAndBindingMappingEXT> maps;
-        VkShaderDescriptorSetAndBindingMappingInfoEXT mi{VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT};
         VkPipelineShaderStageRequiredSubgroupSizeCreateInfo sz{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO};
         VkShaderModuleCreateInfo mc{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     };
@@ -554,22 +510,19 @@ std::string compile(const Made& a, const Made* b, int& result, const Made* c = n
     std::vector<VkPipelineShaderStageCreateInfo> st(made.size());
     for (size_t k = 0; k < made.size(); k++) {
         StageIn& x = in[k];
-        x.maps = mappings(made[k]->t->program.info);
-        x.mi.mappingCount = (uint32_t)x.maps.size(), x.mi.pMappings = x.maps.data();
         x.mc.codeSize = made[k]->spv.size() * 4, x.mc.pCode = made[k]->spv.data();
         x.sz.requiredSubgroupSize = 32;
-        x.mi.pNext = &x.mc;
-        if (gdev.sg32 & made[k]->vk) x.sz.pNext = &x.mi;
+        if (gdev.sg32 & made[k]->vk) x.sz.pNext = &x.mc;
         st[k] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
-        st[k].pNext = (gdev.sg32 & made[k]->vk) ? (const void*)&x.sz : (const void*)&x.mi;
+        st[k].pNext = (gdev.sg32 & made[k]->vk) ? (const void*)&x.sz : (const void*)&x.mc;
         st[k].stage = made[k]->vk, st[k].pName = "main";
     }
     VkPipelineCreateFlags2CreateInfo fl{VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO};
-    fl.flags = VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT | VK_PIPELINE_CREATE_2_CAPTURE_STATISTICS_BIT_KHR;
+    fl.flags = VK_PIPELINE_CREATE_2_CAPTURE_STATISTICS_BIT_KHR;
     VkPipeline pl = VK_NULL_HANDLE;
     if (a.vk == VK_SHADER_STAGE_COMPUTE_BIT) {
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-        ci.pNext = &fl, ci.stage = st[0];
+        ci.pNext = &fl, ci.stage = st[0], ci.layout = gdev.layout;
         result = (int)vkCreateComputePipelines(gdev.dev, VK_NULL_HANDLE, 1, &ci, nullptr, &pl);
     } else {
         const Made* fs = nullptr;
@@ -620,7 +573,7 @@ std::string compile(const Made& a, const Made* b, int& result, const Made* c = n
         ci.stageCount = (uint32_t)st.size(), ci.pStages = st.data();
         ci.pVertexInputState = vertex ? &vi : nullptr, ci.pInputAssemblyState = vertex ? &ia : nullptr;
         ci.pViewportState = &vp, ci.pRasterizationState = &rs, ci.pMultisampleState = &ms, ci.pDepthStencilState = &ds;
-        ci.pColorBlendState = &cb, ci.pDynamicState = &dy;
+        ci.pColorBlendState = &cb, ci.pDynamicState = &dy, ci.layout = gdev.layout;
         result = (int)vkCreateGraphicsPipelines(gdev.dev, VK_NULL_HANDLE, 1, &ci, nullptr, &pl);
     }
     if (result != VK_SUCCESS || !pl) return "[]";
@@ -815,21 +768,17 @@ std::string late(Made& m, bool task) {
 }
 /// The stage as the shader object the game makes of it (vk_shader.cpp finish)
 int make_object(const Made& m) {
-    const auto maps = mappings(m.t->program.info);
-    VkShaderDescriptorSetAndBindingMappingInfoEXT mi{VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT};
-    mi.mappingCount = (uint32_t)maps.size(), mi.pMappings = maps.data();
     VkPipelineShaderStageRequiredSubgroupSizeCreateInfo sz{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO};
     sz.requiredSubgroupSize = 32;
     VkShaderCreateInfoEXT ci{VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT};
-    ci.flags = VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT;
+    ci.setLayoutCount = 1, ci.pSetLayouts = &gdev.set_layout, ci.pushConstantRangeCount = 1, ci.pPushConstantRanges = &gdev.push;
     if (m.vk == VK_SHADER_STAGE_MESH_BIT_EXT) ci.flags |= VK_SHADER_CREATE_NO_TASK_SHADER_BIT_EXT;
     ci.stage = m.vk;
     ci.nextStage = m.vk == VK_SHADER_STAGE_MESH_BIT_EXT || m.vk == VK_SHADER_STAGE_VERTEX_BIT || m.vk == VK_SHADER_STAGE_GEOMETRY_BIT
                        ? VK_SHADER_STAGE_FRAGMENT_BIT : 0;
     ci.codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT;
     ci.codeSize = m.spv.size() * 4, ci.pCode = m.spv.data(), ci.pName = "main";
-    if (gdev.sg32 & m.vk) sz.pNext = &mi, ci.pNext = &sz;
-    else ci.pNext = &mi;
+    if (gdev.sg32 & m.vk) ci.pNext = &sz;
     VkShaderEXT o = VK_NULL_HANDLE;
     static const auto create = (PFN_vkCreateShadersEXT)vkGetDeviceProcAddr(gdev.dev, "vkCreateShadersEXT");
     static const auto destroy = (PFN_vkDestroyShaderEXT)vkGetDeviceProcAddr(gdev.dev, "vkDestroyShaderEXT");

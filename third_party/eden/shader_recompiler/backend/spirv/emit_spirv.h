@@ -16,9 +16,6 @@
 
 namespace Shader::Backend::SPIRV {
 
-/// (direct back end, M3b, Profile::heap_handles) the sampler arrays' bindings
-constexpr u32 kHeapSamplerBinding = 1000;
-constexpr u32 kHeapCompareSamplerBinding = 1001;
 constexpr u32 NUM_TEXTURE_SCALING_WORDS = 4;
 constexpr u32 NUM_IMAGE_SCALING_WORDS = 2;
 constexpr u32 NUM_TEXTURE_AND_IMAGE_SCALING_WORDS =
@@ -74,6 +71,41 @@ constexpr u32 MESH_FALLBACK_PUSH_END = MESH_FALLBACK_PUSH_OFFSET + 24;
 // end of the push constants
 constexpr u32 WINDOW_TABLE_PUSH_OFFSET = MESH_FALLBACK_PUSH_END;
 constexpr u32 PUSH_CONSTANTS_END = WINDOW_TABLE_PUSH_OFFSET + 8 * 4;
+// (direct back end, Profile::pool_handles) a stage's uniform buffers by device address: constant buffer descriptor i (in
+// Info::constant_buffer_descriptors order) is at the address in entry i of a table of u64 addresses, whose own address is
+// pushed at UNIFORM_TABLE_PUSH_OFFSET + 8 * UniformTableSlot(stage). Stages drawn together have a slot each (a task stage's
+// compute step is pushed the same data as its mesh draw; a program has a geometry or a task stage, not both)
+constexpr u32 UNIFORM_TABLE_PUSH_OFFSET = PUSH_CONSTANTS_END;
+constexpr u32 UNIFORM_TABLE_SLOTS = 3;
+constexpr u32 UniformTableSlot(Stage stage) {
+    return stage == Stage::Fragment ? 1U : stage == Stage::Geometry || stage == Stage::Task ? 2U : 0U;
+}
+
+// (direct back end, Profile::pool_handles) the one descriptor set: NVN's texture pool as kPoolSlots sampled images per
+// Vulkan view type (binding kPoolSampledBinding + the view type), the same as storage images (kPoolStorageBinding + the
+// view type), and the sampler pool twice, plain and depth compare. A handle's low 20 bits index the images, clamped to
+// kPoolNullSlot (which stays null), its high 12 bits the samplers
+constexpr u32 kPoolSlots = 65536;
+constexpr u32 kPoolNullSlot = kPoolSlots - 1;
+constexpr u32 kPoolViewTypes = 7;   // (VkImageViewType 1D .. CUBE_ARRAY)
+constexpr u32 kPoolSamplers = 4096;
+constexpr u32 kPoolSampledBinding = 0;
+constexpr u32 kPoolStorageBinding = kPoolSampledBinding + kPoolViewTypes;
+constexpr u32 kPoolSamplerBinding = kPoolStorageBinding + kPoolViewTypes;
+constexpr u32 kPoolCompareSamplerBinding = kPoolSamplerBinding + 1;
+constexpr u32 kPoolBindings = kPoolCompareSamplerBinding + 1;
+/// The Vulkan view type (VkImageViewType's value) whose bindings a texture or image of this type reads
+constexpr u32 PoolViewType(TextureType type) {
+    switch (type) {
+    case TextureType::Color1D: return 0;
+    case TextureType::Color3D: return 2;
+    case TextureType::ColorCube: return 3;
+    case TextureType::ColorArray1D: return 4;
+    case TextureType::ColorArray2D: return 5;
+    case TextureType::ColorArrayCube: return 6;
+    default: return 1;   // (2D, rectangle, buffer)
+    }
+}
 // (fork) the fallback's mesh workgroups a draw can run: each a slot, a word of the payload buffer saying whether its task
 // started it; then each task workgroup's payload. It was 1024, a record block each, and Ocarina's floor grass (433 tasks of
 // 32 slots) lost 13 of 14 meshlets. At 16384, Hyrule Field's far trees (3cb76827/4f0c0b40: 721 tasks of 32) lost the tasks

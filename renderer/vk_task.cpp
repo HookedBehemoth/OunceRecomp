@@ -9,7 +9,7 @@
 #include "vk_check.h"
 #include "vk_cmd.h"
 #include "vk_draw.h"
-#include "vk_heap.h"
+#include "vk_pool.h"
 #include "vk_marks.h"
 #include "vk_pstats.h"
 #include "vk_pass.h"
@@ -65,7 +65,7 @@ void init() {
         vkGetPhysicalDeviceProperties2(dev.physical, &p2);
         max_groups = std::min(mp.maxMeshWorkGroupCount[0], mp.maxMeshWorkGroupTotalCount);
         VkShaderCreateInfoEXT ci{VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT};
-        ci.flags = VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT;
+        pool_shader_layout(ci);
         ci.stage = VK_SHADER_STAGE_COMPUTE_BIT;
         ci.codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT;
         ci.codeSize = sizeof task_prep_spv;
@@ -187,12 +187,12 @@ bool task_step(List* l, const DrawProg& p, bool indirect, uint64_t rec, uint32_t
     if (job) {
         if (!l->task_open) {
             l->task_pre = cmd_secondary_plain(l->slot), l->task_cb = cmd_secondary_plain(l->slot), l->task_open = true;
-            heap_bind(l->task_pre), heap_bind(l->task_cb);
+            pool_bind(l->task_pre, VK_PIPELINE_BIND_POINT_COMPUTE), pool_bind(l->task_cb, VK_PIPELINE_BIND_POINT_COMPUTE);
         }
         pre = l->task_pre, task = l->task_cb;
     } else {
         pre = task = pass_outside(l);
-        heap_bind(pre);
+        pool_bind(pre, VK_PIPELINE_BIND_POINT_COMPUTE);
     }
     static const uint32_t reset[4] = {0, 1, 1, 0};
     pUpdateBuffer(pre, hb, ho, sizeof reset, reset);   // (a list run again: its groups counted again from 0)
@@ -204,14 +204,14 @@ bool task_step(List* l, const DrawProg& p, bool indirect, uint64_t rec, uint32_t
         } pp{ha, rec_addr, pool->address, (uint32_t)std::min<uint64_t>((pool->bytes - kHeader) / 4, 0xFFFFFFFFull), max_tasks, max_groups,
              threads, pw};
         vkCmdBindShadersEXT(pre, 1, &cs, &prep);
-        heap_push(pre, &pp, sizeof pp);
+        pool_push(pre, &pp, sizeof pp);
         const uint32_t mk = marks_on() ? mark_before(pre, "task prep step", p.key, l->info.kind, l->info.lr, 0, 0) : 0;   // 
         pDispatch(pre, 1, 1, 1);
         if (marks_on()) mark_after(pre, mk);
     }
     if (!job) task_barrier(pre, false);
     vkCmdBindShadersEXT(task, 1, &cs, &p.ts);
-    heap_push(task, push, p.push_bytes);
+    pool_push(task, push, p.push_bytes);
     const uint32_t mk = marks_on() ? mark_before(task, indirect ? "task step indirect" : "task step", p.key, l->info.kind, l->info.lr, tasks, threads) : 0;
     uint32_t ps = ~0u;
     if (pstats_on()) {   // (M6h: HOS_DBG=pstats)

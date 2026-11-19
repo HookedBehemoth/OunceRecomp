@@ -1,11 +1,11 @@
 // Programs to shader objects (vk_shader.h). Lifted from gpu/legacy/vk/vk_shader.cpp (the code's reading and lowering, Env, the
 // profile, the graphics translation, the key, the cache's record format) with its switches as the constants
-// the frozen back end runs with (RX_VK_DESC_HEAP_BDA=2: storage buffers by address, wide), and from vk_desc_heap.cpp
-// make_program (the heap mapping) and vk_shader_object.cpp so_make (the shader objects). What differs (docs/direct/shader-contract.md,
-// "What a draw provides"): uniform buffers are read through addresses (an address table in the frame arena, its
-// address pushed), not ring descriptors; a texture whose handle is a game buffer's word reads it there through the buffer's
-// pushed address, as a driver bank's; textures and samplers are the registration-time entries; a stage is translated from
-// its code alone (no draw state reaches Env), so it can be translated before its first draw.
+// the frozen back end runs with (RX_VK_DESC_HEAP_BDA=2: storage buffers by address, wide), and from vk_shader_object.cpp
+// so_make (the shader objects). What differs (docs/direct/shader-contract.md, "What a draw provides"): uniform buffers are
+// read through device addresses (an address table in the frame arena, each stage's part's address pushed), not ring
+// descriptors; textures, images and samplers are the pools' set's entries (vk_pool.h), written at registration and indexed
+// by the handle the shader reads; a stage is translated from its code alone (no draw state reaches Env), so it can be
+// translated before its first draw.
 // The caches beside the executable (docs/direct/shader-contract.md, "The caches"):
 // - ounce_renderer_programs.bin: translated variants by code pair. Stamped by the translation's code only
 //   (OUNCE_RENDERER_SHADER_STAMP, renderer/meson/shader_stamp.py: the translator, the compiler and flags that build it,
@@ -51,7 +51,7 @@
 #include "shader_recompiler/program_header.h"
 #include "shader_recompiler/runtime_info.h"
 
-#include "vk_heap.h"
+#include "vk_pool.h"
 #include "vk_image.h"
 #include "vk_compute.h"
 #include "vk_shader.h"
@@ -176,7 +176,7 @@ const Shader::ProgramHeader& header_of(const uint8_t* sph) { return *reinterpret
 // <stamp shared>
 // ---- the bound textures' answers (vk_shader.cpp texture_answer, canonical_answer) ----
 uint8_t live_answer(uint32_t handle) {
-    const uint8_t a = heap_answer(handle & 0xFFFFF);
+    const uint8_t a = pool_answer(handle & 0xFFFFF);
     return a == 0xFF ? (uint8_t)Shader::TextureType::Color2D : a;   // (not registered: what the frozen back end answers)
 }
 uint8_t canonical(uint8_t type, bool dim_fixed, uint8_t desc_type, bool depth_float) {
@@ -312,7 +312,7 @@ Shader::Profile make_profile() {
     p.ssbo_bda = true;
     p.ssbo_bda_check = false;
     p.ssbo_bda_wide = true;
-    p.heap_handles = true;   // (step B: the shader reads every handle and indexes the heap with it)
+    p.pool_handles = true;   // (step B: the shader reads every handle and indexes the pools with it)
     return p;
 }
 const Shader::Profile& profile() {
@@ -338,7 +338,7 @@ Shader::HostTranslateInfo host_info() {
     h.min_ssbo_alignment = dev.props.limits.minStorageBufferOffsetAlignment;
     h.support_geometry_shader_passthrough = false;
     h.support_conditional_barrier = true;
-    h.heap_handles = true;
+    h.pool_handles = true;
     return h;
 }
 
@@ -483,7 +483,7 @@ constexpr uint32_t kSlots = 1u << 17;
 std::unique_ptr<std::atomic<Slot*>[]> table;
 std::mutex table_mu;
 std::atomic<double> last_miss_s{0};
-std::atomic<int64_t> st_object_ns{0}, st_disk_ns{0}, st_ubos_max{0}, st_ubos_sum{0}, st_ubos_variants{0}, st_ubos_over{0}, st_game_words{0}, st_multi_inputs{0}, st_contradicted{0}, st_slots{0}, st_full{0}, st_translated{0}, st_failed{0}, st_from_disk{0}, st_objects_made{0}, st_late_stages{0}, st_late_changed{0}, st_late_moved{0}, st_late_ns{0},
+std::atomic<int64_t> st_object_ns{0}, st_disk_ns{0}, st_ubos_max{0}, st_ubos_sum{0}, st_ubos_variants{0}, st_game_words{0}, st_multi_inputs{0}, st_contradicted{0}, st_slots{0}, st_full{0}, st_translated{0}, st_failed{0}, st_from_disk{0}, st_objects_made{0}, st_late_stages{0}, st_late_changed{0}, st_late_moved{0}, st_late_ns{0},
     st_object_failed{0}, st_translate_ns{0}, st_queued{0}, st_misses{0}, st_scan_failed{0}, st_bumped{0}, st_read_here{0};
 
 uint32_t slot_hash(uint64_t serial) { return (uint32_t)((serial * 0x9E3779B97F4A7C15ull) >> 47) & (kSlots - 1); }
@@ -796,47 +796,10 @@ VkDeviceAddress c1_put(const std::vector<uint8_t>& bytes, uint32_t used) {
     return a;
 }
 
-// ---- the heap mapping and the shader objects (vk_desc_heap.cpp make_program, vk_shader_object.cpp so_make) ----
-VkImageViewType view_type(Shader::TextureType t) {
-    switch (t) {
-    case Shader::TextureType::Color1D: return VK_IMAGE_VIEW_TYPE_1D;
-    case Shader::TextureType::ColorArray1D: return VK_IMAGE_VIEW_TYPE_1D_ARRAY;
-    case Shader::TextureType::ColorArray2D: return VK_IMAGE_VIEW_TYPE_2D_ARRAY;
-    case Shader::TextureType::Color3D: return VK_IMAGE_VIEW_TYPE_3D;
-    case Shader::TextureType::ColorCube: return VK_IMAGE_VIEW_TYPE_CUBE;
-    case Shader::TextureType::ColorArrayCube: return VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
-    default: return VK_IMAGE_VIEW_TYPE_2D;
-    }
-}
-bool handle_is_storage_pointer(const Shader::Info& info, const Shader::TextureDescriptor& d) {
-    if (d.handle_program != ~0U) return false;
-    for (const auto& sb : info.storage_buffers_descriptors) {
-        if (sb.cbuf_index != d.cbuf_index) continue;
-        for (uint32_t j = 0; j < sb.count; j++)
-            if (d.cbuf_offset >= sb.cbuf_offset + j * 16 && d.cbuf_offset < sb.cbuf_offset + j * 16 + 8) return true;
-    }
-    return false;
-}
-
-VkDescriptorSetAndBindingMappingEXT map_of(uint32_t b, VkSpirvResourceTypeFlagsEXT mask, VkDescriptorMappingSourceEXT src) {
-    VkDescriptorSetAndBindingMappingEXT m{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_AND_BINDING_MAPPING_EXT};
-    m.descriptorSet = 0, m.firstBinding = b, m.bindingCount = 1, m.resourceMask = mask, m.source = src;
-    return m;
-}
-/// A binding the draw cannot give: the zero tail (null descriptors), the variant marked
-VkDescriptorSetAndBindingMappingEXT null_map(uint32_t b, uint32_t stride) {
-    VkDescriptorSetAndBindingMappingEXT m = map_of(b, VK_SPIRV_RESOURCE_TYPE_ALL_EXT, VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT);
-    m.sourceData.constantOffset.heapOffset = heap_tail_offset();
-    m.sourceData.constantOffset.heapArrayStride = stride;
-    m.sourceData.constantOffset.samplerHeapOffset = 0;
-    m.sourceData.constantOffset.samplerHeapArrayStride = kSamplerDesc;
-    return m;
-}
-
 // ---- the shader objects' binaries, graphics and compute: ounce_renderer_shader_objects.bin ----
 // A vkCreateShadersEXT from SPIR-V is paid once per driver: each object made from SPIR-V has its binary
 // (vkGetShaderBinaryDataEXT) appended, keyed by a hash of everything its create info carries (stage, next stage, flags, the
-// subgroup size, the SPIR-V, the heap mappings); a later make with the same key creates it from the binary. No build stamp
+// subgroup size, the SPIR-V, the push range); a later make with the same key creates it from the binary. No build stamp
 // is in it: a translation that changed comes out as other SPIR-V, another key. VK_EXT_shader_object ties a binary to shaderBinaryUUID and
 // shaderBinaryVersion: the file's header holds them, and a file of another driver is made again. A binary the driver still
 // refuses (VK_INCOMPATIBLE_SHADER_BINARY_EXT) is a cache miss: the SPIR-V is compiled, counted. The file is locked as the
@@ -910,14 +873,12 @@ void init() {
         logf("direct: shader object binaries %s: %zu kept (driver binary version %u)", path.c_str(), at.size(), h.binary_version);
     });
 }
-uint64_t key_of(const VkShaderCreateInfoEXT& ci, const VkShaderDescriptorSetAndBindingMappingInfoEXT& mi, bool size32) {
-    const uint32_t head[4] = {(uint32_t)ci.stage, (uint32_t)ci.nextStage, (uint32_t)ci.flags, size32 ? 32u : 0u};
+uint64_t key_of(const VkShaderCreateInfoEXT& ci, bool size32) {
+    // (the layout is the pools' set's, the same for every shader object: its push range's size stands for it)
+    const uint32_t head[5] = {(uint32_t)ci.stage, (uint32_t)ci.nextStage, (uint32_t)ci.flags, size32 ? 32u : 0u,
+                              ci.pPushConstantRanges ? ci.pPushConstantRanges->size : 0u};
     uint64_t k = hash_bytes(head, sizeof head);
-    k = hash_bytes(ci.pCode, ci.codeSize, k);
-    constexpr size_t from = offsetof(VkDescriptorSetAndBindingMappingEXT, descriptorSet);
-    for (uint32_t i = 0; i < mi.mappingCount; i++)   // (no embedded samplers: their pointers are null, the union zeroed)
-        k = hash_bytes((const uint8_t*)&mi.pMappings[i] + from, sizeof(VkDescriptorSetAndBindingMappingEXT) - from, k);
-    return k;
+    return hash_bytes(ci.pCode, ci.codeSize, k);
 }
 /// The binary kept for key, or empty
 std::vector<uint8_t> find(uint64_t key) {
@@ -949,93 +910,43 @@ void save(uint64_t key, VkShaderEXT obj) {
 }
 }  // namespace sobin
 
-/// The variant's mappings, push layout and draw-side tables (v.d), then its shader objects
+/// The variant's push layout and draw-side tables (v.d), then its shader objects (none for a variant no draw can draw)
 bool finish(Variant& v) {
     DrawProg& d = v.d;
-    std::vector<std::vector<VkDescriptorSetAndBindingMappingEXT>> maps(v.stages.size());
+    uint32_t slots = 0;
     for (size_t si = 0; si < v.stages.size(); si++) {
-        uint32_t binding = 0;   // (each stage's from 0, as emit_stage numbers them)
         const VStage& st = v.stages[si];
         const Shader::Info& info = st.info;
-        auto& m = maps[si];
         const uint8_t stage = (uint8_t)st.nvn_stage;
         if (info.uses_render_area) d.uses_render_area = true;
-        // (uniform buffers: each its address in the table, read through the address the push data holds: INDIRECT_ADDRESS)
-        uint32_t cb = binding;
+        // (uniform buffers: by device address, each stage's in its part of the draw's table, in its descriptors' order;
+        // the push data holds the address of each stage's part, UNIFORM_TABLE_PUSH_OFFSET)
+        // (a graphics program's compute stage is its task stage)
+        const uint32_t slot = Shader::Backend::SPIRV::UniformTableSlot(st.vk_stage == VK_SHADER_STAGE_FRAGMENT_BIT ? Shader::Stage::Fragment
+                                                                       : st.vk_stage == VK_SHADER_STAGE_GEOMETRY_BIT ? Shader::Stage::Geometry
+                                                                       : st.vk_stage == VK_SHADER_STAGE_COMPUTE_BIT  ? Shader::Stage::Task
+                                                                                                                     : Shader::Stage::VertexB);
+        if (!info.constant_buffer_descriptors.empty()) {
+            if (slots >> slot & 1) d.skip = d.skip ? d.skip : "two stages in one uniform table slot";
+            slots |= 1u << slot;
+            d.table_first[slot] = (uint8_t)d.ubos.size();
+        }
         for (const auto& c : info.constant_buffer_descriptors) {
-            if (c.count != 1) {
-                d.skip = d.skip ? d.skip : "a uniform buffer array";
-                m.push_back(null_map(cb, 16));
-                cb += c.count;
-                continue;
-            }
-            static const bool ubopush = dbg("ubopush");   // (HOS_DBG=ubopush, a diagnosis: the first 8 addresses pushed)
-            VkDescriptorSetAndBindingMappingEXT x;
-            if (ubopush && d.ubos.size() < 8) {
-                x = map_of(cb, VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT, VK_DESCRIPTOR_MAPPING_SOURCE_PUSH_ADDRESS_EXT);
-                x.sourceData.pushAddressOffset = 192 + 8 * (uint32_t)d.ubos.size();
-                d.vk_ubos = (uint8_t)(d.ubos.size() + 1);
-            } else {
-                x = map_of(cb, VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT, VK_DESCRIPTOR_MAPPING_SOURCE_INDIRECT_ADDRESS_EXT);
-                x.sourceData.indirectAddress.pushOffset = kTablePush;
-                x.sourceData.indirectAddress.addressOffset = 8 * (uint32_t)d.ubos.size();
-            }
-            m.push_back(x);
+            if (c.count != 1) d.skip = d.skip ? d.skip : "a uniform buffer array";
             const uint32_t used = c.index < info.constant_buffer_used_sizes.size() ? info.constant_buffer_used_sizes[c.index] : 0;
             d.ubos.push_back({stage, (uint8_t)c.index, c.index == 0 || c.index == 2 || c.index == kRootBank ? std::clamp<uint32_t>((used + 15) & ~15u, 16, 0xA00) : used});
-            cb += c.count;
         }
-        binding += (uint32_t)info.constant_buffer_descriptors.size();
-        // (storage buffers: by address in the shader (ssbo_bda); their bindings kept, mapped to nothing)
+        // (storage buffers: by address in the shader (ssbo_bda); textures and images: the pools' set, by the handle)
         if (!info.storage_buffers_descriptors.empty() && !info.ssbo_bda) d.skip = d.skip ? d.skip : "storage buffers not by address";
-        for (const auto& s : info.storage_buffers_descriptors) {
-            m.push_back(null_map(binding, 16));
-            binding += s.count > 1 ? 1 : s.count;
-        }
-        for (size_t k = 0; k < info.texture_buffer_descriptors.size(); k++) m.push_back(null_map(binding++, kImageDesc)), d.skip = d.skip ? d.skip : "a texel buffer";
-        for (size_t k = 0; k < info.image_buffer_descriptors.size(); k++) m.push_back(null_map(binding++, kImageDesc)), d.skip = d.skip ? d.skip : "an image buffer";
-        // (textures: each descriptor a runtime array the shader indexes with the handle's image id, mapped to the heap's region
-        // of its view type; the samplers two arrays, plain and depth compare, indexed by the handle's sampler id (step B))
-        for (const auto& t : info.texture_descriptors) {
-            const uint32_t b = binding++;
-            const uint32_t region = std::min<uint32_t>((uint32_t)view_type(t.type), kHeapRegions - 1);
-            VkDescriptorSetAndBindingMappingEXT x = map_of(b, VK_SPIRV_RESOURCE_TYPE_ALL_EXT, VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT);
-            auto& co = x.sourceData.constantOffset;
-            if (handle_is_storage_pointer(info, t)) {   // (a storage buffer's address, not a handle: every index the zero tail)
-                co.heapOffset = heap_tail_offset(), co.heapArrayStride = 0;
-            } else {
-                co.heapOffset = heap_region_offset(region), co.heapArrayStride = kImageDesc;
-            }
-            m.push_back(x);
-            {   // (the handle words its textures read, for the logs; M4h: every descriptor, two-word and computed ones too)
-                DrawProg::TexWord w{stage, (uint8_t)t.cbuf_index, (uint16_t)t.cbuf_offset};
-                w.secondary = t.has_secondary, w.sbank = (uint8_t)t.secondary_cbuf_index, w.soffset = (uint16_t)t.secondary_cbuf_offset;
-                w.shift = (uint8_t)t.shift_left, w.sshift = (uint8_t)t.secondary_shift_left, w.type = (uint8_t)t.type;
-                w.count = (uint8_t)std::min<uint32_t>(t.count, 255), w.computed = t.handle_program != ~0u;
-                d.tex_words.push_back(w);
-            }
-        }
-        if (!info.texture_descriptors.empty()) {   // (both arrays mapped: the shader declares the ones it samples with)
-            for (const bool cmp : {false, true}) {
-                VkDescriptorSetAndBindingMappingEXT x = map_of(cmp ? Shader::Backend::SPIRV::kHeapCompareSamplerBinding
-                                                                   : Shader::Backend::SPIRV::kHeapSamplerBinding,
-                                                               VK_SPIRV_RESOURCE_TYPE_SAMPLER_BIT_EXT,
-                                                               VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT);
-                // (a plain sampler binding takes heapOffset / heapArrayStride, into the sampler heap: the sampler fields are a
-                // combined image sampler's)
-                auto& co = x.sourceData.constantOffset;
-                co.heapOffset = heap_sampler_offset(cmp), co.heapArrayStride = kSamplerDesc;
-                co.samplerHeapOffset = 0, co.samplerHeapArrayStride = 0;
-                m.push_back(x);
-            }
-        }
-        // (storage images: the heap's storage region of the view type, indexed by the handle's image id)
-        for (const auto& im : info.image_descriptors) {
-            const uint32_t region = std::min<uint32_t>((uint32_t)view_type(im.type), kHeapRegions - 1);
-            VkDescriptorSetAndBindingMappingEXT x = map_of(binding++, VK_SPIRV_RESOURCE_TYPE_ALL_EXT, VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT);
-            x.sourceData.constantOffset.heapOffset = heap_storage_offset(region);
-            x.sourceData.constantOffset.heapArrayStride = kImageDesc;
-            m.push_back(x);
+        if (!info.texture_buffer_descriptors.empty()) d.skip = d.skip ? d.skip : "a texel buffer";
+        if (!info.image_buffer_descriptors.empty()) d.skip = d.skip ? d.skip : "an image buffer";
+        for (const auto& t : info.texture_descriptors) {   // (the handle words its textures read, for the logs; M4h: every
+                                                           // descriptor, two-word and computed ones too)
+            DrawProg::TexWord w{stage, (uint8_t)t.cbuf_index, (uint16_t)t.cbuf_offset};
+            w.secondary = t.has_secondary, w.sbank = (uint8_t)t.secondary_cbuf_index, w.soffset = (uint16_t)t.secondary_cbuf_offset;
+            w.shift = (uint8_t)t.shift_left, w.sshift = (uint8_t)t.secondary_shift_left, w.type = (uint8_t)t.type;
+            w.count = (uint8_t)std::min<uint32_t>(t.count, 255), w.computed = t.handle_program != ~0u;
+            d.tex_words.push_back(w);
         }
         if (st.vk_stage == VK_SHADER_STAGE_VERTEX_BIT)
             for (uint32_t i = 0; i < 16; i++)
@@ -1077,15 +988,14 @@ bool finish(Variant& v) {
                         d.ssbo_slots[st.nvn_stage] |= (uint16_t)(1u << ((sb.cbuf_offset - base) / 16 + j));
         }
     }
-    d.push_bytes = kTablePush + 8 + 8 * (uint32_t)d.pushed.size();
-    {   // (M3b: what the address table holds: uniform buffers a variant reads, against the push data a pushed address each would need)
+    d.table_slots = (uint8_t)slots;
+    d.push_bytes = kTablePush + 8 * std::max<uint32_t>(1, 32 - __builtin_clz(slots | 1));
+    {   // (M3b: what the address table holds: uniform buffers a variant reads)
         const int64_t n = (int64_t)d.ubos.size();
         int64_t m = st_ubos_max.load(std::memory_order_relaxed);
         while (n > m && !st_ubos_max.compare_exchange_weak(m, n)) {}
         st_ubos_sum.fetch_add(n, std::memory_order_relaxed), st_ubos_variants.fetch_add(1, std::memory_order_relaxed);
-        if (kTablePush + 8 * (uint32_t)n > caps.max_push) st_ubos_over.fetch_add(1, std::memory_order_relaxed);
     }
-    if (d.vk_ubos) d.push_bytes = std::max<uint32_t>(d.push_bytes, 192 + 8 * d.vk_ubos);
     if (d.push_bytes > caps.max_push) d.skip = d.skip ? d.skip : "push data over the device's limit";
     // (what a draw checks of its textures whose handle is a driver bank word: that the bound one is what the translation
     // from the code alone took it for, Env's Color2D and not integer as its descriptor canonicalises it; one in a game
@@ -1105,13 +1015,11 @@ bool finish(Variant& v) {
         r.requiredSubgroupSize = 32;
         return r;
     }();
-    for (size_t si = 0; si < v.stages.size(); si++) {
+    for (size_t si = 0; si < v.stages.size() && !d.skip; si++) {
         const VStage& st = v.stages[si];
-        VkShaderDescriptorSetAndBindingMappingInfoEXT mi{VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT};
-        mi.mappingCount = (uint32_t)maps[si].size(), mi.pMappings = maps[si].data();
         VkPipelineShaderStageRequiredSubgroupSizeCreateInfo sz = size32;
         VkShaderCreateInfoEXT ci{VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT};
-        ci.flags = VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT;
+        pool_shader_layout(ci);
         // (M4b: a mesh stage never has a task stage before it: the device has none enabled)
         if (st.vk_stage == VK_SHADER_STAGE_MESH_BIT_EXT) ci.flags |= VK_SHADER_CREATE_NO_TASK_SHADER_BIT_EXT;
         ci.stage = st.vk_stage;
@@ -1124,12 +1032,11 @@ bool finish(Variant& v) {
         ci.codeSize = st.spirv.size() * 4;
         ci.pCode = st.spirv.data();
         ci.pName = "main";
-        if (caps.sg32_stages & st.vk_stage) sz.pNext = &mi, ci.pNext = &sz;
-        else ci.pNext = &mi;
+        if (caps.sg32_stages & st.vk_stage) ci.pNext = &sz;
         VkShaderEXT obj = VK_NULL_HANDLE;
         const auto t0 = clk::now();
         sobin::init();
-        const uint64_t bkey = sobin::key_of(ci, mi, (caps.sg32_stages & st.vk_stage) != 0);
+        const uint64_t bkey = sobin::key_of(ci, (caps.sg32_stages & st.vk_stage) != 0);
         VkResult r = VK_ERROR_UNKNOWN;
         bool from_binary = false;
         if (std::vector<uint8_t> bin = sobin::find(bkey); !bin.empty()) {   // (M4e: made before by this driver: no compile)
@@ -1536,7 +1443,7 @@ void check_textures(const DState& s, const DrawProg& p) {
             if (!told.insert(p.key ^ ((uint64_t)a.stage << 56 | (uint64_t)a.bank << 48 | (uint64_t)a.offset << 32 | bound)).second) continue;
         }
         char tex[256];
-        heap_describe(h & 0xFFFFF, tex, sizeof tex);
+        pool_describe(h & 0xFFFFF, tex, sizeof tex);
         char where[160];
         std::snprintf(where, sizeof where, "program %016llx stage %d bank %d +%#x handle %#x: bound type %#x%s, translated for %#x",
                       (unsigned long long)p.key, a.stage, a.bank, a.offset, h, bound & 0x7f, bound & 0x80 ? " integer" : "", a.want);
@@ -1548,7 +1455,7 @@ void check_textures(const DState& s, const DrawProg& p) {
 }  // namespace
 
 void shader_program_set(const nvn_prog* p) {
-    if (!p || !heap_on() || !p->nstage) return;
+    if (!p || !pool_on() || !p->nstage) return;
     nvn_prog copy;
     std::memcpy(&copy, p, sizeof copy);
     slot_make(copy);
@@ -1599,7 +1506,7 @@ void shader_task_mesh_log(double frames) {
 const DrawProg* shader_pick(const DState& s, const uint8_t color_types[8], ShaderMiss& why) {
     if (!s.has_prog) return why = SM_NO_PROGRAM, nullptr;
     Slot* slot = slot_find(s.prog.serial);
-    if (!slot) slot = heap_on() ? slot_make(s.prog) : nullptr;
+    if (!slot) slot = pool_on() ? slot_make(s.prog) : nullptr;
     if (!slot) return why = SM_NOT_PARSED, nullptr;
     int state = slot->state.load(std::memory_order_acquire);
     if (state == 0) {   // (still queued with the load's programs: this draw needs it now. Read here, or waited for: a draw
@@ -1692,15 +1599,14 @@ void shader_stats(char* out, size_t cap, double frames) {
     std::snprintf(out, cap, "programs (since the start): %lld set (%lld distinct codes), %lld variants translated (%.1f s on the workers), %lld failed, %lld "
                   "from the cache (%.1f s read), %lld shader objects made (%.1f s, %lld failed; %lld from binaries, %lld binaries saved, %lld refused), %lld stages unreadable, table full %lld; misses %.1f a frame, "
                   "%zu jobs waiting; variants past a program's first (other colour target types): %lld; bound textures that contradict the translation: %lld; game buffer words "
-                  "asked at translation %lld; uniform buffers a variant reads: %.1f on average, %lld at most, %lld variants with more "
-                  "than the push data's room for their addresses; the last miss %.2f s after the device; stages through the register-pressure pass at translation %lld, changed %lld (%lld instructions moved, %.1f ms in all); shader workers: %s; programs a draw moved ahead of the load's %lld, read at their first draw %lld", (long long)st_slots.load(), (long long)st_families.load(), (long long)st_translated.load(), st_translate_ns.load() / 1e9,
+                  "asked at translation %lld; uniform buffers a variant reads: %.1f on average, %lld at most; the last miss %.2f s after the device; stages through the register-pressure pass at translation %lld, changed %lld (%lld instructions moved, %.1f ms in all); shader workers: %s; programs a draw moved ahead of the load's %lld, read at their first draw %lld", (long long)st_slots.load(), (long long)st_families.load(), (long long)st_translated.load(), st_translate_ns.load() / 1e9,
                   (long long)st_failed.load(), (long long)st_from_disk.load(), st_disk_ns.load() / 1e9, (long long)st_objects_made.load(),
                   st_object_ns.load() / 1e9,
                   (long long)st_object_failed.load(), (long long)sobin::st_hits.load(), (long long)sobin::st_saved.load(),
                   (long long)sobin::st_refused.load(), (long long)st_scan_failed.load(), (long long)st_full.load(),
                   st_misses.exchange(0) / frames, queued, (long long)st_multi_inputs.load(), (long long)st_contradicted.load(),
                   (long long)st_game_words.load(), st_ubos_variants.load() ? (double)st_ubos_sum.load() / st_ubos_variants.load() : 0.0,
-                  (long long)st_ubos_max.load(), (long long)st_ubos_over.load(), last_miss_s.load(), (long long)st_late_stages.load(), (long long)st_late_changed.load(),
+                  (long long)st_ubos_max.load(), last_miss_s.load(), (long long)st_late_stages.load(), (long long)st_late_changed.load(),
                   (long long)st_late_moved.load(), st_late_ns.load() / 1e6, pool, (long long)st_bumped.load(), (long long)st_read_here.load());
 }
 
@@ -1720,9 +1626,9 @@ bool info_get(const uint8_t*& p, const uint8_t* end, Shader::Info& i) {
     return !r.bad;
 }
 uint64_t device_stamp() { return hsd::device_stamp(); }
-uint64_t object_key(const VkShaderCreateInfoEXT& ci, const VkShaderDescriptorSetAndBindingMappingInfoEXT& mi, bool size32) {
+uint64_t object_key(const VkShaderCreateInfoEXT& ci, bool size32) {
     sobin::init();
-    return sobin::key_of(ci, mi, size32);
+    return sobin::key_of(ci, size32);
 }
 std::vector<uint8_t> object_binary(uint64_t key) { return sobin::find(key); }
 void object_keep(uint64_t key, VkShaderEXT obj) { sobin::save(key, obj); }

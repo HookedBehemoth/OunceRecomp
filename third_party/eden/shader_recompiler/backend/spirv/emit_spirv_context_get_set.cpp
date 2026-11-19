@@ -117,7 +117,6 @@ std::optional<OutAttr> OutputAttrPointer(EmitContext& ctx, IR::Attribute attr) {
 Id GetCbuf(EmitContext& ctx, Id result_type, Id UniformDefinitions::*member_ptr, u32 element_size,
            const IR::Value& binding, const IR::Value& offset, const Id indirect_func) {
     Id buffer_offset;
-    const Id uniform_type{ctx.uniform_types.*member_ptr};
     if (offset.IsImmediate()) {
         // Hardware been proved to read the aligned offset (e.g. LDC.U32 at 6 will read offset 4)
         const Id imm_offset{ctx.Const(offset.U32() / element_size)};
@@ -133,9 +132,7 @@ Id GetCbuf(EmitContext& ctx, Id result_type, Id UniformDefinitions::*member_ptr,
         return ctx.OpFunctionCall(result_type, indirect_func, ctx.Def(binding), buffer_offset);
     }
 
-    const Id cbuf{ctx.cbufs[binding.U32()].*member_ptr};
-    const Id access_chain{ctx.OpAccessChain(uniform_type, cbuf, ctx.u32_zero_value, buffer_offset)};
-    const Id val = ctx.OpLoad(result_type, access_chain);
+    const Id val{ctx.CbufLoad(result_type, binding.U32(), member_ptr, element_size, buffer_offset)};
 
     if (offset.IsImmediate() || !ctx.profile.has_broken_robust) {
         return val;

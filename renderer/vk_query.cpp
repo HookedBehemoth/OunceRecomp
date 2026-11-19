@@ -12,7 +12,7 @@
 #include "vk_compute.h"
 #include "vk_counters.h"
 #include "vk_draw.h"
-#include "vk_heap.h"
+#include "vk_pool.h"
 #include "vk_query.h"
 #include <shaders/report_resolve_spv.h>
 
@@ -297,13 +297,13 @@ void query_device_created() {
     pEndCond = (PFN_vkCmdEndConditionalRenderingEXT)vkGetDeviceProcAddr(dev.device, "vkCmdEndConditionalRenderingEXT");
     if (has_calibrated) pCalibrated = (PFN_vkGetCalibratedTimestampsKHR)vkGetDeviceProcAddr(dev.device, "vkGetCalibratedTimestampsKHR");
     VkShaderCreateInfoEXT ci{VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT};
-    ci.flags = VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT;
+    pool_shader_layout(ci);
     ci.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     ci.codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT;
     ci.codeSize = sizeof report_resolve_spv;
     ci.pCode = report_resolve_spv;
     ci.pName = "main";
-    const VkResult r = heap_on() ? vkCreateShadersEXT(dev.device, 1, &ci, nullptr, &resolve) : VK_ERROR_FEATURE_NOT_PRESENT;
+    const VkResult r = pool_on() ? vkCreateShadersEXT(dev.device, 1, &ci, nullptr, &resolve) : VK_ERROR_FEATURE_NOT_PRESENT;
     if (r == VK_SUCCESS) object_made(1, "the report resolve shader");
     calibrate();
     ready = r == VK_SUCCESS && has_cond && cond_feat.conditionalRendering && pCopyResults && pCalibrated && dev.features.occlusionQueryPrecise &&
@@ -449,7 +449,7 @@ void query_flush(List* l, CmdOf cmd) {
     VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
     di.memoryBarrierCount = 1, di.pMemoryBarriers = &mb;
     vkCmdPipelineBarrier2(cb, &di);
-    heap_bind(cb);
+    pool_bind(cb, VK_PIPELINE_BIND_POINT_COMPUTE);
     const VkShaderStageFlagBits stage = VK_SHADER_STAGE_COMPUTE_BIT;
     vkCmdBindShadersEXT(cb, 1, &stage, &resolve);
     struct Push {
@@ -478,7 +478,7 @@ void query_flush(List* l, CmdOf cmd) {
         }
         for (uint32_t k = 0; k < n; k++) std::memcpy(map + 4 * k, &x.pend[i + k].rec, 4);
         push.recs = q->addr, push.idx = a, push.occ = q->addr + QSlot::kOccAt, push.ts = q->addr + QSlot::kTsAt, push.n = n;
-        heap_push(cb, &push, sizeof push);
+        pool_push(cb, &push, sizeof push);
         pDispatch(cb, (n + 63) / 64, 1, 1);
         count(Q_DISPATCHES), count(Q_WRITTEN, n);
         i = j;
