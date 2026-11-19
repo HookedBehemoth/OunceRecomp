@@ -73,7 +73,7 @@ fn recipe() -> String {
     t
 }
 
-fn key() -> String {
+pub fn key() -> String {
     let h = Sha256::digest(recipe().as_bytes());
     format!("{}-{:02x}{:02x}{:02x}{:02x}", FFMPEG.name, h[0], h[1], h[2], h[3])
 }

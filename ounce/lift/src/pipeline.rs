@@ -40,10 +40,24 @@ pub trait Out: Sync {
     }
 }
 
+/// What a lift did: counts, and seconds of wall time by stage (`ounce tool lift-stats` reports them)
+#[derive(Clone, Copy, Default)]
 pub struct Stats {
     pub partitions: usize,
     pub lifted: usize,
     pub skipped: usize,
+    /// functions found by the discovery
+    pub functions: usize,
+    /// the image (the scan, the exefs loaded and built), the discovery, the plan, the summaries and the lift of the
+    /// partitions
+    pub image_s: f64,
+    pub discovery_s: f64,
+    pub plan_s: f64,
+    pub summaries_s: f64,
+    pub lift_s: f64,
+    /// the whole pipeline: wall and process CPU seconds
+    pub wall_s: f64,
+    pub cpu_s: f64,
 }
 
 /// the answers module's name (the build's lift_answers.o)
@@ -224,10 +238,11 @@ pub fn lift(r: &Run, out: &dyn Out) -> Result<Stats, String> {
     }
     let b_sum = busy_s() - b_plan;
     let (c_sum, m_sum) = usage();
+    let summaries_s = ts.elapsed().as_secs_f64();
     println!(
         "summaries: {} functions, {} components (largest {}) in {} levels, {} noreturn by callers; graph {:.2} s, fixed point {:.2} s, results {:.2} s; {:.2} s wall, {:.2} s CPU ({:.2} s busy); peak {:.0} MB",
         st.functions, st.sccs, st.largest, st.levels, st.noreturn_by_callers, st.graph_s, st.fixed_s, st.results_s,
-        ts.elapsed().as_secs_f64(), c_sum - c_plan, b_sum, m_sum
+        summaries_s, c_sum - c_plan, b_sum, m_sum
     );
     let by_name: HashMap<&str, (usize, &Part)> = parts.iter().enumerate().map(|(k, p)| (p.name.as_str(), (k, p))).collect();
     let (c_lift0, _) = usage();
@@ -270,18 +285,19 @@ pub fn lift(r: &Run, out: &dyn Out) -> Result<Stats, String> {
     let g = total.into_inner().unwrap();
     let nskip: usize = g.1.values().sum();
     let (c_lift, _) = usage();
+    let (lift_s, wall_s) = (tl.elapsed().as_secs_f64(), t0.elapsed().as_secs_f64());
     println!(
         "lift: {} partitions, {} functions lifted, {} skipped; {:.2} s wall, {:.2} s CPU (lift+emit {:.2} s in the workers)",
         names.len(),
         g.0,
         nskip,
-        tl.elapsed().as_secs_f64(),
+        lift_s,
         c_lift - c_lift0,
         g.3
     );
     println!(
         "whole pipeline: {:.2} s wall, {:.2} s CPU ({:.2} s of it busy in tasks: discovery, plan, summaries, lift)",
-        t0.elapsed().as_secs_f64(),
+        wall_s,
         c_lift,
         c_disc + busy_s() + g.3
     );
@@ -301,5 +317,17 @@ pub fn lift(r: &Run, out: &dyn Out) -> Result<Stats, String> {
     for (why, n) in by.iter().take(40) {
         println!("  skipped: {why}: {n}");
     }
-    Ok(Stats { partitions: names.len(), lifted: g.0, skipped: nskip })
+    Ok(Stats {
+        partitions: names.len(),
+        lifted: g.0,
+        skipped: nskip,
+        functions: f.0,
+        image_s: tm.image,
+        discovery_s: tm.discovery,
+        plan_s: t_plan,
+        summaries_s,
+        lift_s,
+        wall_s,
+        cpu_s: c_lift,
+    })
 }

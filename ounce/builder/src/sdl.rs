@@ -43,7 +43,7 @@ fn recipe() -> String {
     )
 }
 
-fn key() -> String {
+pub fn key() -> String {
     let h = Sha256::digest(recipe().as_bytes());
     format!("SDL3-3.4.20-{:02x}{:02x}{:02x}{:02x}", h[0], h[1], h[2], h[3])
 }
@@ -85,12 +85,33 @@ pub fn ensure(dir: &Path, jobs: usize, sysroot: &Path) -> PathBuf {
     std::fs::copy(&built, stage.join(LIB)).unwrap_or_else(|e| fail(e));
     std::fs::copy(src.join("LICENSE.txt"), stage.join("LICENSE.txt")).unwrap_or_else(|e| fail(e));
     crate::elf::check(&stage.join(LIB)).unwrap_or_else(|e| fail(e));
+    backends(&stage.join(LIB)).unwrap_or_else(|e| fail(e));
     std::fs::write(stage.join("sdl.txt"), recipe()).unwrap_or_else(|e| fail(e));
     let _ = std::fs::remove_dir_all(&out);
     std::fs::rename(&stage, &out).unwrap_or_else(|e| fail(format!("{}: {e}", out.display())));
     let _ = std::fs::remove_dir_all(&work);
     println!("sdl: {} ({:.1} MB) in {:.0} s", out.display(), std::fs::metadata(out.join(LIB)).map_or(0, |m| m.len()) as f64 / 1e6, t.elapsed().as_secs_f64());
     out
+}
+
+/// The libraries SDL loads at run time, each a back end its configure found headers for: a PC without some of the
+/// headers builds an SDL without those back ends, and the build stops instead
+const BACKENDS: &[&str] = &[
+    "libX11.so.6", "libX11-xcb.so.1", "libXcursor.so.1", "libXext.so.6", "libXfixes.so.3", "libXi.so.6", "libXrandr.so.2",
+    "libXss.so.1", "libXtst.so.6", "libxkbcommon.so.0", "libwayland-client.so.0", "libwayland-cursor.so.0",
+    "libwayland-egl.so.1", "libdecor-0.so.0", "libpipewire-0.3.so.0", "libpulse.so.0", "libasound.so.2", "libjack.so.0",
+    "libsndio.so.7", "libudev.so.1", "libdbus-1.so.3", "libusb-1.0.so.0", "libdrm.so.2", "libgbm.so.1", "liburing-ffi.so.2",
+    "libfribidi.so.0", "libthai.so.0",
+];
+
+fn backends(lib: &Path) -> Result<(), String> {
+    let data = std::fs::read(lib).map_err(|e| format!("{}: {e}", lib.display()))?;
+    let has = |name: &str| data.windows(name.len() + 1).any(|w| w[..name.len()] == *name.as_bytes() && w[name.len()] == 0);
+    let missing: Vec<&str> = BACKENDS.iter().copied().filter(|b| !has(b)).collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(format!("{}: SDL was built without the back ends that load {} (their headers were not found)", lib.display(), missing.join(", ")))
 }
 
 /// A release's SDL under `root`, None in a checkout (the developer's PC has its own)

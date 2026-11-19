@@ -110,7 +110,8 @@ pub fn command(args: &[String]) {
     while let Some(a) = it.next() {
         let mut val = || it.next().cloned().unwrap_or_else(|| fail(format!("{a} wants a value")));
         match a.as_str() {
-            "--llvm" => llvm = val().into(),
+            // (absolute: Meson runs in its own build folder)
+            "--llvm" => llvm = std::path::absolute(val()).unwrap_or_else(|e| fail(e)),
             "--appimage" => image = Some(val().into()),
             "-j" => jobs = val().parse().unwrap_or_else(|_| fail("-j N")),
             _ if out.is_none() && !a.starts_with('-') => out = Some(a.into()),

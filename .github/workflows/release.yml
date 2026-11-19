@@ -1,0 +1,71 @@
+# The release: `ounce tool appdir` builds the AppImage (docs/builder-plan.md, "The release") for a tag v*, and it is
+# attached to the tag's GitHub release, a draft made here when there is none yet. The AppImage holds the checkout's
+# sources a build reads, the programs and the prebuilt libraries: no game data.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+env:
+  OUNCE_RUST: 1.99.1
+
+jobs:
+  toolchain:
+    uses: ./.github/workflows/toolchain.yml
+
+  appimage:
+    needs: toolchain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          cache: dev
+          packages: meson ninja-build squashfs-tools glslang-tools
+      - name: Static LLVM (cache)
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: work/llvm-static
+          key: ${{ needs.toolchain.outputs.static_llvm }}
+          fail-on-cache-miss: true
+      - name: ounce
+        run: cargo build --locked -p ounce --manifest-path ounce/Cargo.toml
+      - name: Cache keys
+        id: keys
+        run: ounce/target/debug/ounce tool cache-keys | tee -a "$GITHUB_OUTPUT"
+      - name: Sysroot, FFmpeg and SDL (cache)
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/ounce/sysroot/${{ steps.keys.outputs.sysroot }}
+            ~/.cache/ounce/ffmpeg/${{ steps.keys.outputs.ffmpeg }}
+            ~/.cache/ounce/sdl/${{ steps.keys.outputs.sdl }}
+          key: ${{ needs.toolchain.outputs.prebuilt }}
+          fail-on-cache-miss: true
+      - name: AppImage
+        env:
+          OUNCE_VERSION: ${{ github.ref_name }}
+        run: ounce/target/debug/ounce tool appdir work/release/OunceRecomp.AppDir --llvm work/llvm-static --appimage work/release/OunceRecomp-x86_64.AppImage
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cd work/release
+          sha256sum OunceRecomp-x86_64.AppImage > OunceRecomp-x86_64.AppImage.sha256
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" OunceRecomp-x86_64.AppImage OunceRecomp-x86_64.AppImage.sha256 --clobber
+          else
+            gh release create "$TAG" OunceRecomp-x86_64.AppImage OunceRecomp-x86_64.AppImage.sha256 --draft --verify-tag --title "$TAG"
+          fi
+      - name: sccache
+        run: sccache --show-stats

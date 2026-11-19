@@ -101,6 +101,11 @@ pub struct Done {
     pub differ: Vec<String>,
     /// seconds from the start until the lift returned (its state freed)
     pub lift_s: f64,
+    /// what the lift reported
+    pub lift: pipeline::Stats,
+    /// the objects' bytes, the hot partitions' and the rest's
+    pub hot_bytes: u64,
+    pub cold_bytes: u64,
 }
 
 /// Lifts with `run` and compiles every module into `out`/<name>.o with `jobs` compile threads; `cache`: objects by
@@ -131,8 +136,9 @@ pub fn lift_compile(run: &pipeline::Run, out: &Path, jobs: usize, cache: Option<
         done.lock().unwrap().lift_s = t0.elapsed().as_secs_f64();
         r
     });
-    lifted?;
-    Ok(done.into_inner().unwrap())
+    let mut d = done.into_inner().unwrap();
+    d.lift = lifted?;
+    Ok(d)
 }
 
 /// a module's object key: its IR, its recipe and the options in force for partitions
@@ -182,6 +188,7 @@ fn compile_thread(rx: &Mutex<Receiver<Job>>, out: &Path, cache: Option<&Cache>, 
         d.objects.push((name.clone(), n));
         d.cached += hit as usize;
         d.compile_s += dt;
+        *if level == Level::Hot { &mut d.hot_bytes } else { &mut d.cold_bytes } += o.len() as u64;
         if verdict == Some("DIFFERS") {
             d.differ.push(name.clone());
         }

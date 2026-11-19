@@ -551,7 +551,7 @@ impl SpvLate {
 /// in order, values made before use, a phi first in its block, fewer loads held (8 before, 4 or fewer after); the same
 /// input gives the same output; a load by address stays between the two stores by address around it; across blocks
 /// the loads only a branch uses go into it, a value a loop uses from outside stays out, a subgroup operation stays in
-/// its block, and nothing leaves its block unless the function is past sink_peak. With glslangValidator and spirv-opt
+/// its block, and nothing leaves its block unless the function is past sink_peak. Through glslangValidator and spirv-opt,
 /// the synthetic spilling stage (tools/shaders/probes/spill.mesh) comes out holding about the budget.
 #[test]
 fn spv_late() {
@@ -604,14 +604,7 @@ fn spv_late() {
     assert!(now[&ids.for_loop] == was[&ids.for_loop], "a value the loop's body uses from outside went into the loop");
     assert!(now[&ids.elected] == was[&ids.elected], "a subgroup operation left its block");
 
-    let Some(glslang) = which("glslangValidator") else {
-        println!("glslangValidator not found: the synthetic spilling stage not tried");
-        return;
-    };
-    let Some(opt) = which("spirv-opt") else {
-        println!("spirv-opt not found: the synthetic spilling stage not tried");
-        return;
-    };
+    let (glslang, opt) = (tool("glslangValidator"), tool("spirv-opt"));
     // (the stage's locals as values, as the translator's stages have them: glslang keeps them in variables)
     let (spv, ssa) = (p.tmp.join("spill.in.spv"), p.tmp.join("spill.ssa.spv"));
     run(Command::new(glslang).args(["-V", "--target-env", "vulkan1.3", "-o"]).arg(&spv).arg(path("tools/shaders/probes/spill.mesh")));

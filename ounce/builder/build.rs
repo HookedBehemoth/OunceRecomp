@@ -44,9 +44,21 @@ fn main() {
     for l in llvm_config(&["--link-shared", "--libs"]).split_whitespace() {
         println!("cargo:rustc-link-lib=dylib={}", l.trim_start_matches("-l"));
     }
-    // lld's ELF driver: its libraries beside libLLVM's
+    // lld's ELF driver: its libraries beside libLLVM's, shared, or (Debian's and Ubuntu's packages) only as archives,
+    // which then need LLVM's system libraries (zlib, zstd) themselves
+    let libdir = std::path::PathBuf::from(llvm_config(&["--libdir"]));
+    let shared = libdir.join("liblldELF.so").exists();
     for l in ["lldELF", "lldCommon"] {
-        println!("cargo:rustc-link-lib=dylib={l}");
+        println!("cargo:rustc-link-lib={}={l}", if shared { "dylib" } else { "static" });
+    }
+    if !shared {
+        // (`-lz`, or a library's path: Ubuntu's names /usr/lib/x86_64-linux-gnu/libz3.so)
+        for l in llvm_config(&["--link-static", "--system-libs"]).split_whitespace() {
+            match l.strip_prefix("-l") {
+                Some(name) => println!("cargo:rustc-link-lib=dylib={name}"),
+                None => println!("cargo:rustc-link-arg={l}"),
+            }
+        }
     }
     println!("cargo:rustc-link-lib=dylib=stdc++");
 }

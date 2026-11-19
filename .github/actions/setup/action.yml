@@ -1,0 +1,96 @@
+# The tools every job builds ounce with (docs/development.md, "Install"), each pinned: LLVM 23 from apt.llvm.org (its
+# key checked by fingerprint), Rust, ISPC and sccache (release archives checked by SHA-256). Rust and C compiles go
+# through sccache, whose folder is cached per job kind: a fresh checkout gives every file a new time, so cargo's and
+# Ninja's own up-to-date checks rebuild everything, while sccache's keys are the inputs' contents.
+name: setup
+description: LLVM 23, Rust, ISPC, sccache and the cargo registry, with their caches
+inputs:
+  packages:
+    description: more Ubuntu packages, separated by spaces
+    default: ''
+  cache:
+    description: the job kind, which names its sccache cache
+    required: true
+  save:
+    description: "'true' to save the caches at the job's end (pushes to master only: other refs' caches are their own)"
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - name: Packages (LLVM 23 from apt.llvm.org)
+      shell: bash
+      env:
+        # (apt.llvm.org's signing key)
+        LLVM_KEY: 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+      run: |
+        curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm.asc"
+        gpg --show-keys --with-colons "$RUNNER_TEMP/llvm.asc" | grep -qx "fpr:::::::::$LLVM_KEY:"
+        sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/apt-llvm.gpg "$RUNNER_TEMP/llvm.asc"
+        echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/apt-llvm.list
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq --no-install-recommends clang-23 lld-23 llvm-23-dev libclang-23-dev libclang-cpp23-dev liblld-23-dev ${{ inputs.packages }}
+        echo /usr/lib/llvm-23/bin >> "$GITHUB_PATH"
+    - name: Rust
+      shell: bash
+      run: |
+        rustup toolchain install "$OUNCE_RUST" --profile minimal --no-self-update
+        rustup default "$OUNCE_RUST"
+    - name: ISPC and sccache (cache)
+      id: tools
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/ci/tools
+        key: tools-ispc-1.32.0-sccache-0.19.0
+    - name: ISPC and sccache
+      if: steps.tools.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        mkdir -p ~/.cache/ci/tools/bin && cd ~/.cache/ci/tools
+        curl -fsSLO https://github.com/ispc/ispc/releases/download/v1.32.0/ispc-v1.32.0-linux.tar.gz
+        curl -fsSLO https://github.com/mozilla/sccache/releases/download/v0.19.0/sccache-v0.19.0-x86_64-unknown-linux-musl.tar.gz
+        sha256sum -c --quiet <<'EOF'
+        faf266bda2b702d68976ffd26bbd36c1ddba43424cc3c44f25b092cd1aa1f64a  ispc-v1.32.0-linux.tar.gz
+        aa73c7270c997894038c0d8f0d297865f57569e1687883322bc431713d4bb9dd  sccache-v0.19.0-x86_64-unknown-linux-musl.tar.gz
+        EOF
+        tar -xzf ispc-v1.32.0-linux.tar.gz ispc-v1.32.0-linux/bin/ispc
+        tar -xzf sccache-v0.19.0-x86_64-unknown-linux-musl.tar.gz --strip-components=1 -C bin sccache-v0.19.0-x86_64-unknown-linux-musl/sccache
+        rm ./*.tar.gz
+    - name: Environment
+      shell: bash
+      run: |
+        echo ~/.cache/ci/tools/bin >> "$GITHUB_PATH"
+        echo ~/.cache/ci/tools/ispc-v1.32.0-linux/bin >> "$GITHUB_PATH"
+        {
+          echo "RUSTC_WRAPPER=sccache"
+          echo "SCCACHE_DIR=$HOME/.cache/sccache"
+          echo "SCCACHE_CACHE_SIZE=1500M"
+          echo "CARGO_INCREMENTAL=0"
+          echo "CARGO_PROFILE_DEV_DEBUG=line-tables-only"
+          echo "CC=clang"
+          echo "CXX=clang++"
+        } >> "$GITHUB_ENV"
+    # (one entry per run, the newest restored: sccache's folder only grows within its size)
+    - name: sccache and cargo registry (cache, saved)
+      if: inputs.save == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/.cache/sccache
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+        key: build-${{ inputs.cache }}-${{ env.OUNCE_RUST }}-${{ hashFiles('ounce/Cargo.lock') }}-${{ github.run_id }}
+        restore-keys: |
+          build-${{ inputs.cache }}-${{ env.OUNCE_RUST }}-${{ hashFiles('ounce/Cargo.lock') }}-
+          build-${{ inputs.cache }}-${{ env.OUNCE_RUST }}-
+    - name: sccache and cargo registry (cache)
+      if: inputs.save != 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/.cache/sccache
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+        key: build-${{ inputs.cache }}-${{ env.OUNCE_RUST }}-${{ hashFiles('ounce/Cargo.lock') }}-${{ github.run_id }}
+        restore-keys: |
+          build-${{ inputs.cache }}-${{ env.OUNCE_RUST }}-${{ hashFiles('ounce/Cargo.lock') }}-
+          build-${{ inputs.cache }}-${{ env.OUNCE_RUST }}-

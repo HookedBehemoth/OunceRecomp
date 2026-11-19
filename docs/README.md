@@ -13,6 +13,8 @@ new to the code.
 
 - [Test OunceRecomp](testing.md): the game-free checks, headless runs (`ounce run --headless`), the smoke test
   (`ounce test`), benchmarks, recordings and profiles.
+- [Continuous integration](ci.md): the GitHub workflows, their caches, the lift profile (`ounce tool lift-stats`)
+  and how to set it up.
 - [Settings](switches.md): how settings are given and kept, the common ones, debug aids, and the log format.
 - [Reverse engineering](reverse-engineering.md): reading the game's code and files, and labeling functions.
 

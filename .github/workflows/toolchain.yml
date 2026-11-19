@@ -1,0 +1,95 @@
+# The pinned builds the other jobs restore: the static LLVM (`ounce tool static-llvm`, about an hour on a 4-core
+# runner), and the sysroot, FFmpeg and SDL a release links (`ounce tool sysroot`, `ffmpeg`, `sdl`), each cached under
+# the name of its recipe (`ounce tool cache-keys`). A run with every cache present only builds ounce to read the keys.
+# Caches saved on master are seen by every branch, pull request and tag; run on master once a recipe changes.
+name: toolchain
+
+on:
+  workflow_call:
+    outputs:
+      static_llvm:
+        description: the static LLVM's cache key
+        value: ${{ jobs.toolchain.outputs.static_llvm }}
+      prebuilt:
+        description: the sysroot's, FFmpeg's and SDL's cache key
+        value: ${{ jobs.toolchain.outputs.prebuilt }}
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  OUNCE_RUST: 1.99.1
+
+jobs:
+  toolchain:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    outputs:
+      static_llvm: static-llvm-${{ steps.keys.outputs.static_llvm }}
+      prebuilt: prebuilt-${{ steps.keys.outputs.sysroot }}-${{ steps.keys.outputs.ffmpeg }}-${{ steps.keys.outputs.sdl }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          cache: dev
+          save: ${{ github.ref == 'refs/heads/master' }}
+      - name: ounce
+        run: cargo build --locked -p ounce --manifest-path ounce/Cargo.toml
+      - name: Cache keys
+        id: keys
+        run: ounce/target/debug/ounce tool cache-keys | tee -a "$GITHUB_OUTPUT"
+      - name: Static LLVM (cache)
+        id: llvm
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: work/llvm-static
+          key: static-llvm-${{ steps.keys.outputs.static_llvm }}
+          lookup-only: true
+      - name: Sysroot, FFmpeg and SDL (cache)
+        id: prebuilt
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/ounce/sysroot/${{ steps.keys.outputs.sysroot }}
+            ~/.cache/ounce/ffmpeg/${{ steps.keys.outputs.ffmpeg }}
+            ~/.cache/ounce/sdl/${{ steps.keys.outputs.sdl }}
+          key: prebuilt-${{ steps.keys.outputs.sysroot }}-${{ steps.keys.outputs.ffmpeg }}-${{ steps.keys.outputs.sdl }}
+      - name: Packages for FFmpeg, SDL and LLVM
+        if: steps.prebuilt.outputs.cache-hit != 'true' || steps.llvm.outputs.cache-hit != 'true'
+        run: sudo apt-get install -y -qq --no-install-recommends ${{ env.RELEASE_PACKAGES }}
+        env:
+          RELEASE_PACKAGES: >-
+            cmake ninja-build meson nasm make pkg-config libx11-dev libx11-xcb-dev libxext-dev libxcursor-dev libxi-dev
+            libxfixes-dev libxrandr-dev libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev wayland-protocols
+            libdecor-0-dev libpipewire-0.3-dev libpulse-dev libasound2-dev libjack-jackd2-dev libsndio-dev libudev-dev
+            libdbus-1-dev libusb-1.0-0-dev libdrm-dev libgbm-dev liburing-dev libfribidi-dev libthai-dev libegl-dev
+            libgles-dev libgl-dev
+      - name: Sysroot, FFmpeg and SDL
+        if: steps.prebuilt.outputs.cache-hit != 'true'
+        run: |
+          ounce/target/debug/ounce tool sysroot
+          ounce/target/debug/ounce tool ffmpeg -j 4
+          ounce/target/debug/ounce tool sdl -j 4
+      - name: Sysroot, FFmpeg and SDL (save)
+        if: steps.prebuilt.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/ounce/sysroot/${{ steps.keys.outputs.sysroot }}
+            ~/.cache/ounce/ffmpeg/${{ steps.keys.outputs.ffmpeg }}
+            ~/.cache/ounce/sdl/${{ steps.keys.outputs.sdl }}
+          key: prebuilt-${{ steps.keys.outputs.sysroot }}-${{ steps.keys.outputs.ffmpeg }}-${{ steps.keys.outputs.sdl }}
+      - name: Static LLVM
+        if: steps.llvm.outputs.cache-hit != 'true'
+        run: ounce/target/debug/ounce tool static-llvm work/llvm-static -j 4 --prune
+      - name: Static LLVM (save)
+        if: steps.llvm.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: work/llvm-static
+          key: static-llvm-${{ steps.keys.outputs.static_llvm }}
+      - name: sccache
+        run: sccache --show-stats

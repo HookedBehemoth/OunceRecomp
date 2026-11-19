@@ -21,6 +21,7 @@ mod gate;
 mod host;
 mod labels;
 mod lift;
+mod liftstats;
 mod link;
 mod llvm;
 mod objeq;
@@ -79,7 +80,16 @@ const TOOL_HELP: &str = "ounce tool <command> ...
   compile-ll <in.ll> <out.o> [--hot]   one partition's IR -> its object
   compile-all <lift dir> <out dir> [-j N] [--check <obj dir>]
   lift-compile <out dir> --game <dir> [-j N] [--check <obj dir>] [--cache <dir>] [--root <dir>] [--exefs <dir>]
-                                       the lift and the compile of every partition and generated module, in memory
+               [--stats <file>]        the lift and the compile of every partition and generated module, in memory;
+                                       --stats writes its numbers (seconds, counts, sizes) as JSON
+  lift-stats <game> --exefs <dir> --out <stats.json> [--bench <file>] [-j N] [--work <dir>]
+                                       lift-compile measured with no object cache, its output in a log that is never
+                                       printed and removed with the objects: only numbers are printed and written;
+                                       --bench: the numbers as github-action-benchmark's customSmallerIsBetter
+  lift-stats --compare <baseline.json> <stats.json> [--warn <pct>] [--fail <pct>]
+                                       two measurements: a time or the memory grown by more than --fail (25) percent
+                                       fails, by more than --warn (10) warns; sizes warn; times are judged only on the
+                                       same CPU and jobs
   build <out dir> --direct <ounce_renderer.so> --ffmpeg <dir> --game <dir> --obj <dir> [-j N] [--cache <dir>] [--version <text>]
         [--check <obj dir>] [--gen <lift dir> [--gen-parts]] [--map <file>] [--progress] [--root <dir>] [--exefs <dir>]
         [--dump <file.nup|folder> [--title <t>] [--dump-dir <dir>]] [--no-textures] [--quality fast|high] [--shaders]
@@ -107,8 +117,11 @@ const TOOL_HELP: &str = "ounce tool <command> ...
   compile-c <out.o> -- <clang args>... a C file compiled in this process by clang's libraries (feature clang)
   version [<root>]                     the version text a build stamps (feature clang)
   llvm-version                         the libLLVM this process uses
-  static-llvm [<dir>] [-j N]           the static LLVM, clang and lld a release links (default work/llvm-static; needs
-                                       git, cmake, ninja, clang and lld)
+  static-llvm [<dir>] [-j N] [--prune] the static LLVM, clang and lld a release links (default work/llvm-static; needs
+                                       git, cmake, ninja, clang and lld); a folder stamped with this recipe is left as
+                                       it is; --prune keeps only what the link and appdir read (0.4 GB)
+  cache-keys                           the recipes' names, `name=value` a line (sysroot, ffmpeg, sdl, static_llvm):
+                                       CI's cache keys
   sysroot [<dir>]                      the sysroot every compile and link is made against: glibc 2.35, Linux 5.15's
                                        headers, GCC 12's start files, libgcc and libstdc++ from Ubuntu 22.04's pinned
                                        packages, in <dir>/<recipe> (default the cache folder's sysroot/; a release
@@ -239,6 +252,7 @@ fn tool(argv: &[String]) {
         Some("compile-all") => compile_all(&argv[1..]),
         Some("link") => link_cmd(&argv[1..]),
         Some("lift-compile") => lift_compile(&argv[1..]),
+        Some("lift-stats") => liftstats::command(&argv[1..]),
         Some("dump") => dump::command(&argv[1..]),
         Some("textures") => textures::command(&argv[1..]),
         Some("shaders") => shaders::command(&argv[1..]),
@@ -270,6 +284,9 @@ fn tool(argv: &[String]) {
         #[cfg(feature = "clang")]
         Some("appdir") => appdir::command(&argv[1..]),
         Some("llvm-version") => println!("{}", llvm::version()),
+        Some("cache-keys") => {
+            println!("sysroot={}\nffmpeg={}\nsdl={}\nstatic_llvm={}", sysroot::key(), ffmpeg::key(), sdl::key(), static_llvm::key())
+        }
         _ => println!("{TOOL_HELP}"),
     }
 }
@@ -401,12 +418,14 @@ fn lift_compile(args: &[String]) {
     let jobs = std::thread::available_parallelism().map_or(1, |n| n.get());
     let mut run = ounce_lift::pipeline::Run { jobs, hot_first: true, ..Default::default() };
     let (mut cjobs, mut out, mut check, mut cache_dir) = (jobs, None::<PathBuf>, None::<PathBuf>, None::<PathBuf>);
+    let mut stats = None::<PathBuf>;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut val = || PathBuf::from(it.next().unwrap_or_else(|| fail(format!("{a} wants a value"))));
         match a.as_str() {
             "-j" => cjobs = val().to_string_lossy().parse().unwrap_or_else(|_| fail("-j N")),
             "--check" => check = Some(val()),
+            "--stats" => stats = Some(val()),
             "--cache" => cache_dir = Some(val()),
             "--game" => run.opts.game = val(),
             "--root" => run.opts.root = val(),
@@ -422,6 +441,10 @@ fn lift_compile(args: &[String]) {
     let aux = lift::Aux { gen: None, gen_parts: false, gate: &gate, progress: None };
     let d = lift::lift_compile(&run, &out, cjobs, cache.as_ref(), check.as_deref(), &aux).unwrap_or_else(|e| fail(e));
     let (cpu, hwm) = ounce_lift::pipeline::usage();
+    if let Some(p) = stats {
+        let m = liftstats::metrics(&d, t.elapsed().as_secs_f64(), cpu, hwm);
+        std::fs::write(&p, m.to_string()).unwrap_or_else(|e| fail(format!("{}: {e}", p.display())));
+    }
     println!(
         "lift-compile: {} objects, {:.0} s wall, {:.0} s in compiles, {:.0} s CPU, peak {:.0} MB{}",
         d.objects.len(),

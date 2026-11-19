@@ -1,0 +1,181 @@
+# The game-free checks (docs/testing.md), and the lift profile: the lift and compile of each game's exefs measured
+# against the newest master run's numbers (`ounce tool lift-stats`).
+#
+# This repository is public, and so are its logs, artifacts and caches (any run of a workflow here, a fork's pull
+# request too, can restore a cache saved on master). The lift profile reads the exefs from a private repository with a
+# deploy key, prints and keeps numbers only (`lift-stats` writes the lift's own output to a log it never prints), and
+# removes the exefs and everything made from it on the runner. It runs for pushes and for pull requests from this
+# repository, never for a fork's (they get no secrets), and only once the variable OUNCE_CI_DATA_REPO names the data
+# repository.
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  OUNCE_RUST: 1.99.1
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          cache: test
+          save: ${{ github.event_name == 'push' }}
+          packages: glslang-tools spirv-tools python3-venv libvulkan-dev
+      - name: Python tools (cache)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ hashFiles('requirements.txt', 'tools/prompts/prompt_requirements.txt') }}
+      - name: Python tools
+        run: |
+          python3 -m venv ~/venv
+          ~/venv/bin/pip install -q -r requirements.txt
+          echo ~/venv/bin >> "$GITHUB_PATH"
+      # (the translator's and Sirit's objects the renderer checks compile, kept under a hash of their sources)
+      - name: The checks' C++ objects (cache)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ounce/target/tmp
+          key: test-objects-${{ hashFiles('third_party/sirit/**', 'third_party/eden/**', 'runtime/os/**', 'third_party/SPIRV-Headers/**') }}
+      - name: cargo test
+        run: cargo test --locked --manifest-path ounce/Cargo.toml
+      - name: sccache
+        run: sccache --show-stats
+
+  toolchain:
+    uses: ./.github/workflows/toolchain.yml
+
+  lift-profile:
+    needs: toolchain
+    if: vars.OUNCE_CI_DATA_REPO != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        game: [oot, dkb]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          cache: profile
+          save: ${{ github.event_name == 'push' && matrix.game == 'oot' }}
+      - name: Static LLVM (cache)
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: work/llvm-static
+          key: ${{ needs.toolchain.outputs.static_llvm }}
+          fail-on-cache-miss: true
+      # (the shipped build's ounce: the static LLVM of the pinned release, LTO, as `tool appdir` makes it)
+      - name: ounce (static LLVM)
+        env:
+          LLVM_STATIC_DIR: ${{ github.workspace }}/work/llvm-static/build
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C link-arg=-fuse-ld=lld
+          CARGO_PROFILE_RELEASE_DEBUG: '0'
+        run: cargo build --locked --release -p ounce --features static-llvm,clang --manifest-path ounce/Cargo.toml
+      - name: The exefs (private repository)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ vars.OUNCE_CI_DATA_REPO }}
+          ssh-key: ${{ secrets.OUNCE_CI_DATA_KEY }}
+          path: work/ci-data
+          persist-credentials: false
+          sparse-checkout: ${{ matrix.game }}
+          filter: blob:none
+      - name: The exefs
+        run: |
+          mkdir -p "$RUNNER_TEMP/exefs"
+          tar --zstd -xf "work/ci-data/${{ matrix.game }}/exefs.tar.zst" -C "$RUNNER_TEMP/exefs"
+          rm -rf work/ci-data
+      - name: Lift and compile
+        run: ounce/target/release/ounce tool lift-stats ${{ matrix.game }} --exefs "$RUNNER_TEMP/exefs" --out "work/ci/lift-${{ matrix.game }}.json" --bench "work/ci/bench-${{ matrix.game }}.json" --work "$RUNNER_TEMP/lift"
+      - name: Remove the exefs and the lift's output
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/exefs" "$RUNNER_TEMP/lift" work/ci-data
+      - name: Baseline (cache)
+        id: baseline
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: work/ci/baseline/lift-${{ matrix.game }}.json
+          key: lift-baseline-${{ matrix.game }}-${{ github.run_id }}
+          restore-keys: lift-baseline-${{ matrix.game }}-
+      - name: Against the baseline
+        if: steps.baseline.outputs.cache-matched-key != ''
+        run: ounce/target/release/ounce tool lift-stats --compare "work/ci/baseline/lift-${{ matrix.game }}.json" "work/ci/lift-${{ matrix.game }}.json"
+      - name: Numbers (artifact)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lift-${{ matrix.game }}
+          path: |
+            work/ci/lift-${{ matrix.game }}.json
+            work/ci/bench-${{ matrix.game }}.json
+          if-no-files-found: ignore
+      # (saved after a regression too: a push to master fails once, then the next is measured against it)
+      - name: The new baseline
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/master' && hashFiles(format('work/ci/lift-{0}.json', matrix.game)) != ''
+        run: |
+          mkdir -p work/ci/baseline
+          cp "work/ci/lift-${{ matrix.game }}.json" "work/ci/baseline/lift-${{ matrix.game }}.json"
+      - name: The new baseline (save)
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/master' && hashFiles(format('work/ci/lift-{0}.json', matrix.game)) != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: work/ci/baseline/lift-${{ matrix.game }}.json
+          key: lift-baseline-${{ matrix.game }}-${{ github.run_id }}
+
+  # (the numbers of every master push, kept on gh-pages with github-action-benchmark's chart page: the
+  # repository's Pages, from the gh-pages branch, show them at <pages URL>/lift/)
+  lift-history:
+    needs: lift-profile
+    # (a regression fails lift-profile, and its numbers are kept all the same)
+    if: always() && needs.lift-profile.result != 'skipped' && github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        game: [oot, dkb]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: lift-${{ matrix.game }}
+          path: work/ci
+      - uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
+        with:
+          name: lift ${{ matrix.game }}
+          tool: customSmallerIsBetter
+          output-file-path: work/ci/bench-${{ matrix.game }}.json
+          gh-pages-branch: gh-pages
+          benchmark-data-dir-path: lift
+          github-token: ${{ github.token }}
+          auto-push: true
+          comment-on-alert: false
+          fail-on-alert: false
