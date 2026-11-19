@@ -321,9 +321,16 @@ Id EmitGetAttribute(EmitContext& ctx, IR::Attribute attr, Id vertex) {
             // Attribute is disabled or varying component is not written
             return ctx.Const(element == 3 ? 1.0f : 0.0f);
         }
+        if (generic.load_op == InputGenericLoadOp::Convert) {   // (fork, RuntimeInfo::vertex_formats_pushed)
+            return ctx.ConvertedGeneric(index, ctx.Const(element));
+        }
         const Id pointer{
             AttrPointer(ctx, generic.pointer_type, vertex, generic.id, ctx.Const(element))};
         const Id value{ctx.OpLoad(generic.component_type, pointer)};
+        if (ctx.wants_fragment_inputs) {   // (fork, RuntimeInfo::fragment_inputs_pushed)
+            const Id f32{generic.load_op == InputGenericLoadOp::Bitcast ? ctx.OpBitcast(ctx.F32[1], value) : value};
+            return ctx.FragmentInput(index, f32, ctx.Const(element));
+        }
         return [&ctx, generic, value]() {
             switch (generic.load_op) {
             case InputGenericLoadOp::Bitcast:
@@ -497,11 +504,6 @@ void EmitSetPatch(EmitContext& ctx, IR::Patch patch, Id value) {
 
 void EmitSetFragColor(EmitContext& ctx, u32 index, u32 component, Id value) {
     const Id component_id{ctx.Const(component)};
-    if (ctx.frag_color_private.at(index)) {   // (renderer, M6b: no attachment there: the private variable)
-        const Id pointer{ctx.OpAccessChain(ctx.TypePointer(spv::StorageClass::Private, ctx.F32[1]), ctx.frag_color.at(index), component_id)};
-        ctx.OpStore(pointer, value);
-        return;
-    }
     const AttributeType type{ctx.runtime_info.color_output_types[index]};
     if (type == AttributeType::Float) {
         const Id pointer{ctx.OpAccessChain(ctx.output_f32, ctx.frag_color.at(index), component_id)};

@@ -709,7 +709,7 @@ void make_vs(Made& m, int id, bool before_gs = false) {
     m.t = offline::translate(env);
     Shader::RuntimeInfo rt{};
     if (!before_gs && !m.t->program.info.stores[Attribute::PointSize]) rt.fixed_state_point_size = 1.0f;
-    for (int i = 0; i < 16; i++) rt.generic_input_types[i] = Shader::AttributeType::Float;   // (offline: no attribute bound)
+    rt.vertex_formats_pushed = true;   // (the attributes' formats: the draw's push data)
     rt.previous_stage_stores.mask.set();
     rt.convert_depth_mode = !before_gs;   // (in the last stage before the rasterizer)
     Shader::Backend::Bindings b{};
@@ -748,16 +748,17 @@ void make_gs(Made& m, int id, const Made& vs) {
     m.spv = Shader::Backend::SPIRV::EmitSPIRV(offline::profile(), rt, m.t->program, b);
     m.vk = VK_SHADER_STAGE_GEOMETRY_BIT;
 }
-uint32_t fs_binding_base = 0;   // (--fs-binding-base N: the fragment stage's bindings after N, as the game's program numbers them)
 bool no_ir_guard = false;       // (--no-ir-guard: the translator-fix prototype: GuardFragmentOutputs left out, frag_nan_guard kept)
 void make_fs(Made& m, int id, const Made* prev) {
     m.code = code_of(id);
     offline::Env env(m.code, Shader::Stage::Fragment);
     m.t = offline::translate(env);
     Shader::RuntimeInfo rt{};
-    if (prev) rt.previous_stage_stores = prev->t->program.info.stores;
+    const bool after_mesh = prev && prev->vk == VK_SHADER_STAGE_MESH_BIT_EXT;
+    rt.fragment_inputs_pushed = !after_mesh;   // (after a vertex or geometry stage: what it writes is the draw's push data)
+    if (after_mesh) rt.previous_stage_stores = prev->t->program.info.stores;
     else rt.previous_stage_stores.mask.set();
-    if (prev && prev->vk == VK_SHADER_STAGE_MESH_BIT_EXT) {
+    if (after_mesh) {
         for (const u32 line : prev->t->program.mesh.primitive_lines)
             if (IsGeneric(static_cast<Attribute>(line))) rt.per_primitive_generics.set(GenericAttributeIndex(static_cast<Attribute>(line)));
         if (prev->t->program.mesh.topology == 0)
@@ -767,7 +768,6 @@ void make_fs(Made& m, int id, const Made* prev) {
     for (int i = 0; i < 8; i++) rt.color_output_types[i] = Shader::AttributeType::Float;   // (every logged pass's targets: float)
     if (!no_ir_guard) Shader::Optimization::GuardFragmentOutputs(m.t->program, 0xff);
     Shader::Backend::Bindings b{};
-    b.unified = fs_binding_base;
     m.spv = Shader::Backend::SPIRV::EmitSPIRV(offline::profile(), rt, m.t->program, b);
     m.vk = VK_SHADER_STAGE_FRAGMENT_BIT;
 }
@@ -1026,7 +1026,6 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--spv") && i + 1 < argc) spv_dir = argv[++i];
         else if (!std::strcmp(argv[i], "--front") && i + 1 < argc) offline::new_front = !std::strcmp(argv[++i], "new");
         else if (!std::strcmp(argv[i], "--repl") && i + 1 < argc) repl_spv = argv[++i];
-        else if (!std::strcmp(argv[i], "--fs-binding-base") && i + 1 < argc) fs_binding_base = (uint32_t)std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--no-ir-guard")) no_ir_guard = true;
         else if (!std::strcmp(argv[i], "--mma-software")) Shader::Backend::SPIRV::mma_software = true;
         else if (!std::strcmp(argv[i], "--explicit-shared")) offline::explicit_shared = true;

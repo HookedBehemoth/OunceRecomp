@@ -38,6 +38,27 @@ constexpr u32 RENDERAREA_LAYOUT_OFFSET = offsetof(RenderAreaLayout, render_area)
 // (fork) guest memory's page table, a u64 device address pushed to every compute program that reads global memory, after the blocks
 // above. It was a constant in the SPIR-V, and the address changes from run to run: the drivers' pipeline caches never hit
 constexpr u32 GUEST_PAGES_PUSH_OFFSET = sizeof(RescalingLayout) + sizeof(RenderAreaLayout);
+// (fork, direct back end, RuntimeInfo::vertex_formats_pushed) a vertex stage's attribute codes, a byte per generic input
+// (16 bytes, in the render area block's room, which the back end does not push): bits 3:0 the conversion (VERTEX_CONVERT_*),
+// 5:4 the component width (0: 8, 1: 16, 2: 32, 3: 10:10:10:2), 7:6 the components less one (the rest read (0, 0, 0, 1))
+constexpr u32 VERTEX_FORMATS_PUSH_OFFSET = sizeof(RescalingLayout);
+static_assert(VERTEX_FORMATS_PUSH_OFFSET + 16 <= GUEST_PAGES_PUSH_OFFSET, "the codes lie before the page table's address");
+enum : u32 {
+    VERTEX_CONVERT_RAW = 0,       // (32-bit float or integer: the bits as fetched)
+    VERTEX_CONVERT_UNORM = 1,
+    VERTEX_CONVERT_SNORM = 2,
+    VERTEX_CONVERT_UINT = 3,      // (zero-extended by the fetch: as fetched)
+    VERTEX_CONVERT_SINT = 4,      // (sign-extended from the width)
+    VERTEX_CONVERT_USCALED = 5,
+    VERTEX_CONVERT_SSCALED = 6,
+    VERTEX_CONVERT_HALF = 7,
+    VERTEX_CONVERT_R11G11B10F = 8,  // (one 32-bit word, fetched as R32_UINT: components 0-2 decoded from it)
+    VERTEX_CONVERT_UNORM_BGRA = 9,  // (four 8-bit components in B, G, R, A order)
+};
+// (fork, direct back end, RuntimeInfo::fragment_inputs_pushed) a fragment stage's word of the generics the stage before it
+// writes (bit i: generic i), after the down factor
+constexpr u32 FRAGMENT_INPUTS_PUSH_OFFSET = offsetof(RescalingLayout, down_factor) + 4;
+static_assert(FRAGMENT_INPUTS_PUSH_OFFSET + 4 <= VERTEX_FORMATS_PUSH_OFFSET, "the word lies in the down factor's padding");
 // (fork) a task program's first workgroup: NVN draws tasks [first, first + count), Vulkan from 0. The address of the draw's first
 // (a u32, 16 bytes per draw of an indirect draw, read at + DrawIndex * 16) is pushed here
 constexpr u32 MESH_FIRST_PUSH_OFFSET = GUEST_PAGES_PUSH_OFFSET + 8;

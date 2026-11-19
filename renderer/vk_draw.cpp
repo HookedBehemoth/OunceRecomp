@@ -1,5 +1,5 @@
 // A draw (vk_draw.h). The state's conversion is gpu/legacy/vk/vk_draw.cpp's (dynamic_state, so_state, so_bind, push_bytes,
-// topology, vertex_format, target_write_mask) and the calls gpu/legacy/vk/eng_job.cpp's (on_draw), without the replay's diff caches
+// topology, target_write_mask; vertex_fetch is ours: every attribute fetched as UINT, the vertex stage converts it) and the calls gpu/legacy/vk/eng_job.cpp's (on_draw), without the replay's diff caches
 // (each command buffer sets everything once: RADV inherits no dynamic state) and without its special cases (the shadow and
 // cascade depth biases, the EQ bias, footprints: plan rule 8).
 #include <string>
@@ -25,6 +25,7 @@
 #include "vk_shader.h"
 #include "vk_state.h"
 #include "vk_task.h"
+#include "shader_recompiler/backend/spirv/emit_spirv.h"
 
 namespace hsd {
 struct List;
@@ -296,9 +297,10 @@ struct ListDraw {
     } dyn_key{};
     uint32_t vi_key_gen = 0, vi_key_loads = 0, vi_key_nattr = 0;
     bool vi_used[16]{};
+    uint8_t vi_codes[16]{};   // (the attributes' conversion codes the vertex stage reads at VERTEX_FORMATS_PUSH_OFFSET)
     // (the last pick, and what it was made from)
     const DrawProg* pick = nullptr;
-    uint32_t pick_prog_gen = 0, pick_vtx_gen = 0, pick_bank_gen[kBankStages]{};
+    uint32_t pick_prog_gen = 0, pick_bank_gen[kBankStages]{};
     uint64_t pick_ct = 0;
 };
 
@@ -360,48 +362,50 @@ bool topology(int prim, VkPrimitiveTopology& t) {
     default: return false;
     }
 }
-VkFormat vertex_format(int f) {
-    static const VkFormat r8[] = {VK_FORMAT_R8_UNORM, VK_FORMAT_R8_SNORM, VK_FORMAT_R8_UINT, VK_FORMAT_R8_SINT};
-    static const VkFormat r16[] = {VK_FORMAT_R16_SFLOAT, VK_FORMAT_R16_UNORM, VK_FORMAT_R16_SNORM, VK_FORMAT_R16_UINT, VK_FORMAT_R16_SINT};
-    static const VkFormat r32[] = {VK_FORMAT_R32_SFLOAT, VK_FORMAT_R32_UINT, VK_FORMAT_R32_SINT};
-    static const VkFormat rg8[] = {VK_FORMAT_R8G8_UNORM, VK_FORMAT_R8G8_SNORM, VK_FORMAT_R8G8_UINT, VK_FORMAT_R8G8_SINT};
-    static const VkFormat rg16[] = {VK_FORMAT_R16G16_SFLOAT, VK_FORMAT_R16G16_UNORM, VK_FORMAT_R16G16_SNORM, VK_FORMAT_R16G16_UINT, VK_FORMAT_R16G16_SINT};
-    static const VkFormat rg32[] = {VK_FORMAT_R32G32_SFLOAT, VK_FORMAT_R32G32_UINT, VK_FORMAT_R32G32_SINT};
-    static const VkFormat rgb8[] = {VK_FORMAT_R8G8B8_UNORM, VK_FORMAT_R8G8B8_SNORM, VK_FORMAT_R8G8B8_UINT, VK_FORMAT_R8G8B8_SINT};
-    static const VkFormat rgb16[] = {VK_FORMAT_R16G16B16_SFLOAT, VK_FORMAT_R16G16B16_UNORM, VK_FORMAT_R16G16B16_SNORM, VK_FORMAT_R16G16B16_UINT, VK_FORMAT_R16G16B16_SINT};
-    static const VkFormat rgb32[] = {VK_FORMAT_R32G32B32_SFLOAT, VK_FORMAT_R32G32B32_UINT, VK_FORMAT_R32G32B32_SINT};
-    static const VkFormat rgba8[] = {VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SNORM, VK_FORMAT_R8G8B8A8_UINT, VK_FORMAT_R8G8B8A8_SINT};
-    static const VkFormat rgba16[] = {VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R16G16B16A16_UNORM, VK_FORMAT_R16G16B16A16_SNORM, VK_FORMAT_R16G16B16A16_UINT, VK_FORMAT_R16G16B16A16_SINT};
-    static const VkFormat rgba32[] = {VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_R32G32B32A32_UINT, VK_FORMAT_R32G32B32A32_SINT};
-    static const struct { int lo; const VkFormat* f; } ranges[] = {
-        {0x01, r8}, {0x05, r16}, {0x0A, r32}, {0x0D, rg8}, {0x11, rg16}, {0x16, rg32},
-        {0x19, rgb8}, {0x1D, rgb16}, {0x22, rgb32}, {0x25, rgba8}, {0x29, rgba16}, {0x2E, rgba32}};
-    static const int counts[] = {4, 5, 3, 4, 5, 3, 4, 5, 3, 4, 5, 3};
-    for (int i = 0; i < 12; i++)
-        if (f >= ranges[i].lo && f < ranges[i].lo + counts[i]) return ranges[i].f[f - ranges[i].lo];
-    if (f >= 0x51 && f <= 0x68) {   // (*_UI2F / *_I2F: integers the shader converts)
-        static const VkFormat us[12] = {VK_FORMAT_R8_UINT, VK_FORMAT_R16_UINT, VK_FORMAT_R32_UINT, VK_FORMAT_R8G8_UINT,
-                                        VK_FORMAT_R16G16_UINT, VK_FORMAT_R32G32_UINT, VK_FORMAT_R8G8B8_UINT,
-                                        VK_FORMAT_R16G16B16_UINT, VK_FORMAT_R32G32B32_UINT, VK_FORMAT_R8G8B8A8_UINT,
-                                        VK_FORMAT_R16G16B16A16_UINT, VK_FORMAT_R32G32B32A32_UINT};
-        static const VkFormat ss[12] = {VK_FORMAT_R8_SINT, VK_FORMAT_R16_SINT, VK_FORMAT_R32_SINT, VK_FORMAT_R8G8_SINT,
-                                        VK_FORMAT_R16G16_SINT, VK_FORMAT_R32G32_SINT, VK_FORMAT_R8G8B8_SINT,
-                                        VK_FORMAT_R16G16B16_SINT, VK_FORMAT_R32G32B32_SINT, VK_FORMAT_R8G8B8A8_SINT,
-                                        VK_FORMAT_R16G16B16A16_SINT, VK_FORMAT_R32G32B32A32_SINT};
-        return ((f - 0x51) & 1 ? ss : us)[(f - 0x51) / 2];
+/// An NVN vertex format as the vertex stage reads it (RuntimeInfo::vertex_formats_pushed): fetched as the UINT format of
+/// the same layout, which keeps every bit, and converted in the shader by code (Eden's VERTEX_CONVERT_*, width, components);
+/// undefined: not a vertex format
+VkFormat vertex_fetch(int f, uint8_t& code) {
+    namespace sp = Shader::Backend::SPIRV;
+    static const VkFormat uints[3][4] = {
+        {VK_FORMAT_R8_UINT, VK_FORMAT_R8G8_UINT, VK_FORMAT_R8G8B8_UINT, VK_FORMAT_R8G8B8A8_UINT},
+        {VK_FORMAT_R16_UINT, VK_FORMAT_R16G16_UINT, VK_FORMAT_R16G16B16_UINT, VK_FORMAT_R16G16B16A16_UINT},
+        {VK_FORMAT_R32_UINT, VK_FORMAT_R32G32_UINT, VK_FORMAT_R32G32B32_UINT, VK_FORMAT_R32G32B32A32_UINT}};
+    const auto make = [&code](uint32_t kind, uint32_t width, uint32_t n, VkFormat fetch) {
+        code = (uint8_t)(kind | width << 4 | (n - 1) << 6);
+        return fetch;
+    };
+    // (the plain formats: per size R, RG, RGB, RGBA a run of 8-bit {unorm, snorm, uint, sint}, 16-bit {float, unorm,
+    // snorm, uint, sint} or 32-bit {float, uint, sint})
+    static const struct { int lo, n, width; } runs[] = {
+        {0x01, 1, 0}, {0x05, 1, 1}, {0x0A, 1, 2}, {0x0D, 2, 0}, {0x11, 2, 1}, {0x16, 2, 2},
+        {0x19, 3, 0}, {0x1D, 3, 1}, {0x22, 3, 2}, {0x25, 4, 0}, {0x29, 4, 1}, {0x2E, 4, 2}};
+    static const uint32_t kinds[3][5] = {
+        {sp::VERTEX_CONVERT_UNORM, sp::VERTEX_CONVERT_SNORM, sp::VERTEX_CONVERT_UINT, sp::VERTEX_CONVERT_SINT},
+        {sp::VERTEX_CONVERT_HALF, sp::VERTEX_CONVERT_UNORM, sp::VERTEX_CONVERT_SNORM, sp::VERTEX_CONVERT_UINT, sp::VERTEX_CONVERT_SINT},
+        {sp::VERTEX_CONVERT_RAW, sp::VERTEX_CONVERT_RAW, sp::VERTEX_CONVERT_RAW}};
+    static const int run_len[3] = {4, 5, 3};
+    for (const auto& r : runs)
+        if (f >= r.lo && f < r.lo + run_len[r.width]) return make(kinds[r.width][f - r.lo], (uint32_t)r.width, (uint32_t)r.n, uints[r.width][r.n - 1]);
+    if (f >= 0x51 && f <= 0x68) {   // (*_UI2F / *_I2F: integers converted to float, the sizes in the plain runs' order)
+        const auto& r = runs[(f - 0x51) / 2];
+        return make((f - 0x51) & 1 ? sp::VERTEX_CONVERT_SSCALED : sp::VERTEX_CONVERT_USCALED, (uint32_t)r.width, (uint32_t)r.n, uints[r.width][r.n - 1]);
     }
     switch (f) {
-    case NVN_FORMAT_RGB10A2: return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
-    case NVN_FORMAT_RGB10A2UI: case NVN_FORMAT_RGB10A2_UI2F: return VK_FORMAT_A2B10G10R10_UINT_PACK32;
-    case NVN_FORMAT_RGB10A2SN: return VK_FORMAT_A2B10G10R10_SNORM_PACK32;
-    case NVN_FORMAT_RGB10A2I: case NVN_FORMAT_RGB10A2_I2F: return VK_FORMAT_A2B10G10R10_SINT_PACK32;
-    case NVN_FORMAT_R11G11B10F: return VK_FORMAT_B10G11R11_UFLOAT_PACK32;
-    case NVN_FORMAT_BGRA8: case NVN_FORMAT_BGRX8: return VK_FORMAT_B8G8R8A8_UNORM;
-    case NVN_FORMAT_RGBX8: return VK_FORMAT_R8G8B8A8_UNORM;
+    case NVN_FORMAT_RGB10A2: return make(sp::VERTEX_CONVERT_UNORM, 3, 4, VK_FORMAT_A2B10G10R10_UINT_PACK32);
+    case NVN_FORMAT_RGB10A2SN: return make(sp::VERTEX_CONVERT_SNORM, 3, 4, VK_FORMAT_A2B10G10R10_UINT_PACK32);
+    case NVN_FORMAT_RGB10A2UI: return make(sp::VERTEX_CONVERT_UINT, 3, 4, VK_FORMAT_A2B10G10R10_UINT_PACK32);
+    case NVN_FORMAT_RGB10A2I: return make(sp::VERTEX_CONVERT_SINT, 3, 4, VK_FORMAT_A2B10G10R10_UINT_PACK32);
+    case NVN_FORMAT_RGB10A2_UI2F: return make(sp::VERTEX_CONVERT_USCALED, 3, 4, VK_FORMAT_A2B10G10R10_UINT_PACK32);
+    case NVN_FORMAT_RGB10A2_I2F: return make(sp::VERTEX_CONVERT_SSCALED, 3, 4, VK_FORMAT_A2B10G10R10_UINT_PACK32);
+    case NVN_FORMAT_R11G11B10F: return make(sp::VERTEX_CONVERT_R11G11B10F, 2, 3, VK_FORMAT_R32_UINT);
+    case NVN_FORMAT_BGRA8: case NVN_FORMAT_BGRX8: return make(sp::VERTEX_CONVERT_UNORM_BGRA, 0, 4, VK_FORMAT_R8G8B8A8_UINT);
+    case NVN_FORMAT_RGBX8: return make(sp::VERTEX_CONVERT_UNORM, 0, 4, VK_FORMAT_R8G8B8A8_UINT);
     default: return VK_FORMAT_UNDEFINED;
     }
 }
-/// 3-component 8/16-bit vertex formats this GPU does not fetch: read 4 (the 4th past the attribute)
+/// 3-component 8/16-bit vertex formats this GPU does not fetch: read 4 (the 4th past the attribute; the shader takes 3 by
+/// its code)
 VkFormat supported_vertex_format(VkFormat f) {
     static std::once_flag once;
     static VkFormat known[256];
@@ -412,15 +416,8 @@ VkFormat supported_vertex_format(VkFormat f) {
             vkGetPhysicalDeviceFormatProperties(dev.physical, g, &p);
             VkFormat out = g;
             if (!(p.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT)) switch (g) {
-                case VK_FORMAT_R8G8B8_UNORM: out = VK_FORMAT_R8G8B8A8_UNORM; break;
-                case VK_FORMAT_R8G8B8_SNORM: out = VK_FORMAT_R8G8B8A8_SNORM; break;
                 case VK_FORMAT_R8G8B8_UINT: out = VK_FORMAT_R8G8B8A8_UINT; break;
-                case VK_FORMAT_R8G8B8_SINT: out = VK_FORMAT_R8G8B8A8_SINT; break;
-                case VK_FORMAT_R16G16B16_SFLOAT: out = VK_FORMAT_R16G16B16A16_SFLOAT; break;
-                case VK_FORMAT_R16G16B16_UNORM: out = VK_FORMAT_R16G16B16A16_UNORM; break;
-                case VK_FORMAT_R16G16B16_SNORM: out = VK_FORMAT_R16G16B16A16_SNORM; break;
                 case VK_FORMAT_R16G16B16_UINT: out = VK_FORMAT_R16G16B16A16_UINT; break;
-                case VK_FORMAT_R16G16B16_SINT: out = VK_FORMAT_R16G16B16A16_SINT; break;
                 default: break;
                 }
             known[i] = out;
@@ -556,15 +553,17 @@ void set_vertex_input(ListDraw& x, VkCommandBuffer cb, const DState& s, const Dr
     uint32_t nb = 0, na = 0;
     std::memset(vb, 0, sizeof vb), std::memset(va, 0, sizeof va);
     bool zero = false;
+    std::memset(x.vi_codes, 0, sizeof x.vi_codes);
     for (uint32_t i = 0; i < 16; i++) {
         if (!(prog.vs_loads >> i & 1)) continue;
         const nvn_va_st a = *reinterpret_cast<const nvn_va_st*>(&s.vattr[i]);
-        const VkFormat f = (int)i < s.nvattr ? vertex_format(a.fmt) : VK_FORMAT_UNDEFINED;
+        const VkFormat f = (int)i < s.nvattr ? vertex_fetch(a.fmt, x.vi_codes[i]) : VK_FORMAT_UNDEFINED;
         VkVertexInputAttributeDescription2EXT& d = va[na++];
         d.sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_ATTRIBUTE_DESCRIPTION_2_EXT;
         d.location = i;
-        if (f == VK_FORMAT_UNDEFINED || a.stream >= 15) {   // (an unset attribute reads (0, 0, 0, 1))
-            d.binding = 15, d.format = VK_FORMAT_R32_SFLOAT, d.offset = 0;
+        if (f == VK_FORMAT_UNDEFINED || a.stream >= 15) {   // (an unset attribute reads (0, 0, 0, 1): one 32-bit zero)
+            d.binding = 15, d.format = VK_FORMAT_R32_UINT, d.offset = 0;
+            x.vi_codes[i] = (uint8_t)(Shader::Backend::SPIRV::VERTEX_CONVERT_RAW | 2 << 4);
             zero = true;
             continue;
         }
@@ -1161,21 +1160,21 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         if (prim == NVN_DRAW_PRIMITIVE_QUADS) return count(l, R_QUADS);
         if (!topology(prim, topo)) return count(l, R_TOPOLOGY);
     }
-    // (the targets' colour types (Shader::AttributeType); a list with none of its own: float, as every logged pass. M6b: a location
-    // with no attachment is Disabled (5): the variant writes no output there, as Vulkan's validation asks)
+    // (the targets' colour types (Shader::AttributeType); a list with none of its own: float, as every logged pass. A location
+    // with no attachment is float: the fragment stage writes it all the same, and Vulkan discards the write)
     uint8_t ct[8]{};
     if (records)
-        for (int i = 0; i < 8; i++) ct[i] = i < p.n && p.color[i].format != VK_FORMAT_UNDEFINED ? color_type(p.color[i].format) : 5;
+        for (int i = 0; i < 8; i++) ct[i] = i < p.n && p.color[i].format != VK_FORMAT_UNDEFINED ? color_type(p.color[i].format) : 0;
     ShaderMiss why = SM_NONE;
     const DrawProg* prog;
     uint64_t ctw;
     std::memcpy(&ctw, ct, 8);
-    if (x.pick && x.pick_prog_gen == s.prog_gen && x.pick_vtx_gen == s.vtx_gen &&
+    if (x.pick && x.pick_prog_gen == s.prog_gen &&
         !std::memcmp(x.pick_bank_gen, s.bank_gen, sizeof x.pick_bank_gen) && x.pick_ct == ctw) {   // (nothing the pick reads changed since the last draw)
         prog = x.pick;
     } else {
         prog = shader_pick(s, ct, why);
-        x.pick = prog, x.pick_prog_gen = s.prog_gen, x.pick_vtx_gen = s.vtx_gen, x.pick_ct = ctw;
+        x.pick = prog, x.pick_prog_gen = s.prog_gen, x.pick_ct = ctw;
         std::memcpy(x.pick_bank_gen, s.bank_gen, sizeof x.pick_bank_gen);
     }
     // (M4c: a task+mesh program's draws counted by its stages' code, drawn or skipped (any reason): at the return)
@@ -1221,7 +1220,8 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         for (uint32_t i = 0; i < 16; i++) {
             if (!(prog->vs_loads >> i & 1) || (int)i >= s.nvattr) continue;
             const nvn_va_st a = *reinterpret_cast<const nvn_va_st*>(&s.vattr[i]);
-            if (a.stream < 15 && vertex_format(a.fmt) != VK_FORMAT_UNDEFINED) used[a.stream] = true;
+            uint8_t code;
+            if (a.stream < 15 && vertex_fetch(a.fmt, code) != VK_FORMAT_UNDEFINED) used[a.stream] = true;
         }
         for (int b = 0; b < 15; b++) {
             if (!used[b] || !s.vbuf[b].address) continue;
@@ -1330,6 +1330,8 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         } else {
             std::memcpy(vi_used, x.vi_used, sizeof vi_used);
         }
+        std::memcpy(push + Shader::Backend::SPIRV::VERTEX_FORMATS_PUSH_OFFSET, x.vi_codes, sizeof x.vi_codes);
+        std::memcpy(push + Shader::Backend::SPIRV::FRAGMENT_INPUTS_PUSH_OFFSET, &prog->frag_inputs, 4);
         uint32_t first = 16, last = 0, want = 0;
         for (uint32_t b = 0; b < 16; b++)
             if (vi_used[b]) first = std::min(first, b), last = b, want |= 1u << b;

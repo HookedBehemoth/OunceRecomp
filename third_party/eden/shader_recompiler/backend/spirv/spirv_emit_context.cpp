@@ -609,6 +609,16 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
         mesh_fallback = true;       // (direct M4c: its push block's members as the fallback task's, whoever makes the block first)
         wants_mesh_first = true;
     }
+    if (stage == Stage::VertexB && runtime_info.vertex_formats_pushed) {   // (before DefineInterfaces declares the inputs)
+        for (size_t index = 0; index < IR::NUM_GENERICS; ++index) {
+            wants_vertex_formats |= program.info.loads.Generic(index);
+        }
+    }
+    if (stage == Stage::Fragment && runtime_info.fragment_inputs_pushed) {
+        for (size_t index = 0; index < IR::NUM_GENERICS; ++index) {
+            wants_fragment_inputs |= program.info.loads.Generic(index);
+        }
+    }
     DefineCommonTypes(program.info);
     DefineCommonConstants();
     DefineInterfaces(program);
@@ -722,6 +732,22 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
         }
         mesh_info = program.mesh;
         DefineRescalingInputPushConstant();
+    }
+    if (wants_vertex_formats || wants_fragment_inputs) {
+        // (fork, RuntimeInfo::vertex_formats_pushed / fragment_inputs_pushed: the push block made here, before
+        // DefineAttributeMemAccess reads its words; with the page table's member if the stage could follow pointers, as the
+        // mesh fallback's)
+        if (program.info.uses_global_memory && profile.support_int64) {
+            wants_guest_pages = true;
+            if (!Sirit::ValidId(U64)) {
+                AddCapability(spv::Capability::Int64);
+                U64 = Name(TypeInt(64, false), "u64");
+            }
+        }
+        DefineRescalingInputPushConstant();
+        if (wants_vertex_formats) {
+            DefineVertexConvert();
+        }
     }
     DefineMesh(program);
     DefineLocalMemory(program);
@@ -1106,6 +1132,11 @@ void EmitContext::DefineAttributeMemAccess(const Info& info) {
                 ++label_index;
                 continue;
             }
+            if (generic.load_op == InputGenericLoadOp::Convert) {
+                OpReturnValue(ConvertedGeneric(static_cast<u32>(index), masked_index));
+                ++label_index;
+                continue;
+            }
             const Id pointer{
                 is_array ? OpAccessChain(generic.pointer_type, generic_id, vertex, masked_index)
                          : OpAccessChain(generic.pointer_type, generic_id, masked_index)};
@@ -1122,7 +1153,7 @@ void EmitContext::DefineAttributeMemAccess(const Info& info) {
                     return value;
                 };
             }()};
-            OpReturnValue(result);
+            OpReturnValue(wants_fragment_inputs ? FragmentInput(static_cast<u32>(index), result, masked_index) : result);
             ++label_index;
         }
         AddLabel(end_block);
@@ -1796,11 +1827,123 @@ void EmitContext::DefineRescalingInput(const Info& info) {
     }
 }
 
+Id EmitContext::VertexFormatCode(u32 index) {
+    const Id pointer{OpAccessChain(TypePointer(spv::StorageClass::PushConstant, U32[1]), rescaling_push_constants,
+                                   Const(vertex_formats_member_index), Const(index / 4))};
+    return OpBitFieldUExtract(U32[1], OpLoad(U32[1], pointer), Const(8 * (index % 4)), Const(8u));
+}
+
+Id EmitContext::FragmentInput(u32 index, Id value, Id component) {
+    const Id pointer{OpAccessChain(TypePointer(spv::StorageClass::PushConstant, U32[1]), rescaling_push_constants,
+                                   Const(fragment_inputs_member_index))};
+    const Id written{OpINotEqual(U1, OpBitwiseAnd(U32[1], OpLoad(U32[1], pointer), Const(1u << index)), u32_zero_value)};
+    const Id fallback{OpSelect(F32[1], OpIEqual(U1, component, Const(3u)), Const(1.0f), Const(0.0f))};
+    return OpSelect(F32[1], written, value, fallback);
+}
+
+Id EmitContext::ConvertedGeneric(u32 index, Id component) {
+    const Id fetched{OpLoad(U32[4], input_generics.at(index).id)};
+    return OpFunctionCall(F32[1], vertex_convert_func, std::array{fetched, VertexFormatCode(index), component});
+}
+
+/// (fork, RuntimeInfo::vertex_formats_pushed) f32 convert(uvec4 fetched, u32 code, u32 component): a switch on the conversion,
+/// which is the draw's (push data), so every invocation takes the same case; a component past the format's reads (0, 0, 0, 1)
+void EmitContext::DefineVertexConvert() {
+    const Id func_type{TypeFunction(F32[1], U32[4], U32[1], U32[1])};
+    const Id func{OpFunction(F32[1], spv::FunctionControlMask::MaskNone, func_type)};
+    const Id fetched{OpFunctionParameter(U32[4])};
+    const Id code{OpFunctionParameter(U32[1])};
+    const Id c{OpFunctionParameter(U32[1])};
+    AddLabel();
+    const auto is{[&](Id value, u32 k) { return OpIEqual(U1, value, Const(k)); }};
+    const Id width{OpBitFieldUExtract(U32[1], code, Const(4u), Const(2u))};
+    const Id count{OpIAdd(U32[1], OpBitFieldUExtract(U32[1], code, Const(6u), Const(2u)), Const(1u))};
+    constexpr u32 past{15};   // (the selector of a component past the format's)
+    const Id selector{OpSelect(U32[1], OpULessThan(U1, c, count), OpBitwiseAnd(U32[1], code, Const(15u)), Const(past))};
+    // (a component's bits: 8, 16 or 32; 10, or 2 for the fourth, in a 10:10:10:2 format)
+    const Id bits{OpSelect(U32[1], is(width, 0), Const(8u),
+                           OpSelect(U32[1], is(width, 1), Const(16u),
+                                    OpSelect(U32[1], is(width, 2), Const(32u), OpSelect(U32[1], is(c, 3), Const(2u), Const(10u)))))};
+    const auto component{[&](Id index) { return OpVectorExtractDynamic(U32[1], fetched, index); }};
+    const auto sext{[&](Id u) { return OpBitcast(S32[1], OpBitFieldSExtract(U32[1], u, u32_zero_value, bits)); }};
+    const auto unorm{[&](Id u) {
+        const Id umax{OpISub(U32[1], OpShiftLeftLogical(U32[1], Const(1u), bits), Const(1u))};
+        return OpFMul(F32[1], OpConvertUToF(F32[1], u), OpFDiv(F32[1], Const(1.0f), OpConvertUToF(F32[1], umax)));
+    }};
+    const std::array<u32, 9> kinds{VERTEX_CONVERT_UNORM, VERTEX_CONVERT_SNORM, VERTEX_CONVERT_SINT, VERTEX_CONVERT_USCALED,
+                                   VERTEX_CONVERT_SSCALED, VERTEX_CONVERT_HALF, VERTEX_CONVERT_R11G11B10F, VERTEX_CONVERT_UNORM_BGRA, past};
+    std::vector<Sirit::Literal> literals;
+    std::vector<Id> labels;
+    for (const u32 k : kinds) {
+        literals.push_back(k);
+        labels.push_back(OpLabel());
+    }
+    const Id raw_label{OpLabel()};   // (RAW, UINT: the bits as fetched)
+    const Id merge_label{OpLabel()};
+    OpSelectionMerge(merge_label, spv::SelectionControlMask::MaskNone);
+    OpSwitch(selector, raw_label, literals, labels);
+    AddLabel(raw_label);
+    OpReturnValue(OpBitcast(F32[1], component(c)));
+    for (size_t i = 0; i < kinds.size(); ++i) {
+        AddLabel(labels[i]);
+        const Id u{component(c)};
+        switch (kinds[i]) {
+        case VERTEX_CONVERT_UNORM:
+            OpReturnValue(unorm(u));
+            break;
+        case VERTEX_CONVERT_SNORM: {
+            const Id smax{OpISub(U32[1], OpShiftLeftLogical(U32[1], Const(1u), OpISub(U32[1], bits, Const(1u))), Const(1u))};
+            const Id scaled{OpFMul(F32[1], OpConvertSToF(F32[1], sext(u)), OpFDiv(F32[1], Const(1.0f), OpConvertUToF(F32[1], smax)))};
+            OpReturnValue(OpFMax(F32[1], scaled, Const(-1.0f)));
+            break;
+        }
+        case VERTEX_CONVERT_SINT:
+            OpReturnValue(OpBitcast(F32[1], sext(u)));
+            break;
+        case VERTEX_CONVERT_USCALED:
+            OpReturnValue(OpConvertUToF(F32[1], u));
+            break;
+        case VERTEX_CONVERT_SSCALED:
+            OpReturnValue(OpConvertSToF(F32[1], sext(u)));
+            break;
+        case VERTEX_CONVERT_HALF:
+            OpReturnValue(OpCompositeExtract(F32[1], OpUnpackHalf2x16(F32[2], u), 0u));
+            break;
+        case VERTEX_CONVERT_R11G11B10F: {
+            // (components 0 and 1 a 6-bit mantissa and 5-bit exponent at bits 0 and 11, component 2 a 5-bit mantissa at 22)
+            const Id word{OpCompositeExtract(U32[1], fetched, 0u)};
+            const Id field{OpShiftRightLogical(U32[1], word, OpSelect(U32[1], is(c, 0), u32_zero_value,
+                                                                     OpSelect(U32[1], is(c, 1), Const(11u), Const(22u))))};
+            const Id mbits{OpSelect(U32[1], is(c, 2), Const(5u), Const(6u))};
+            const Id m{OpBitFieldUExtract(U32[1], field, u32_zero_value, mbits)};
+            const Id e{OpBitFieldUExtract(U32[1], field, mbits, Const(5u))};
+            const Id mantissa{OpShiftLeftLogical(U32[1], m, OpISub(U32[1], Const(23u), mbits))};
+            const Id normal{OpBitwiseOr(U32[1], OpShiftLeftLogical(U32[1], OpIAdd(U32[1], e, Const(112u)), Const(23u)), mantissa)};
+            const Id special{OpBitwiseOr(U32[1], Const(0x7f800000u), mantissa)};
+            const Id denormal{OpFMul(F32[1], OpConvertUToF(F32[1], m),
+                                     OpSelect(F32[1], is(c, 2), Const(1.0f / 524288.0f), Const(1.0f / 1048576.0f)))};
+            OpReturnValue(OpSelect(F32[1], is(e, 0), denormal, OpBitcast(F32[1], OpSelect(U32[1], is(e, 31), special, normal))));
+            break;
+        }
+        case VERTEX_CONVERT_UNORM_BGRA:
+            OpReturnValue(unorm(component(OpSelect(U32[1], OpULessThan(U1, c, Const(3u)), OpISub(U32[1], Const(2u), c), c))));
+            break;
+        default:   // (past the format's components)
+            OpReturnValue(OpSelect(F32[1], is(c, 3), Const(1.0f), Const(0.0f)));
+            break;
+        }
+    }
+    AddLabel(merge_label);
+    OpUnreachable();
+    OpFunctionEnd();
+    vertex_convert_func = func;
+}
+
 void EmitContext::DefineRescalingInputPushConstant() {
     if (Sirit::ValidId(rescaling_push_constants)) {
         return;   // (the page table's call and the fallback's: one block)
     }
-    boost::container::static_vector<Id, 12> members{};
+    boost::container::static_vector<Id, 16> members{};
     u32 member_index{0};
 
     // (fork, RX_VK_DESC_HEAP_BDA=2) a render-area stage by address: one block, the render area at offset 0 where the host
@@ -1824,6 +1967,14 @@ void EmitContext::DefineRescalingInputPushConstant() {
     if (stage != Stage::Compute) {
         members.push_back(F32[1]);
         rescaling_downfactor_member_index = member_index++;
+    }
+    if (wants_fragment_inputs) {
+        members.push_back(U32[1]);
+        fragment_inputs_member_index = member_index++;
+    }
+    if (wants_vertex_formats) {
+        members.push_back(U32[4]);
+        vertex_formats_member_index = member_index++;
     }
     if (wants_guest_pages) {
         members.push_back(U64);
@@ -1873,6 +2024,14 @@ void EmitContext::DefineRescalingInputPushConstant() {
                        spv::Decoration::Offset,
                        static_cast<u32>(offsetof(RescalingLayout, down_factor)));
         MemberName(push_constant_struct, rescaling_downfactor_member_index, "down_factor");
+    }
+    if (wants_fragment_inputs) {
+        MemberDecorate(push_constant_struct, fragment_inputs_member_index, spv::Decoration::Offset, FRAGMENT_INPUTS_PUSH_OFFSET);
+        MemberName(push_constant_struct, fragment_inputs_member_index, "fragment_inputs");
+    }
+    if (wants_vertex_formats) {
+        MemberDecorate(push_constant_struct, vertex_formats_member_index, spv::Decoration::Offset, VERTEX_FORMATS_PUSH_OFFSET);
+        MemberName(push_constant_struct, vertex_formats_member_index, "vertex_formats");
     }
     if (wants_guest_pages) {
         MemberDecorate(push_constant_struct, guest_pages_member_index, spv::Decoration::Offset, GUEST_PAGES_PUSH_OFFSET);
@@ -2520,8 +2679,17 @@ void EmitContext::DefineInputs(const IR::Program& program) {
         tess_coord = DefineInput(*this, F32[3], false, spv::BuiltIn::TessCoord);
     }
     for (size_t index = 0; index < IR::NUM_GENERICS; ++index) {
+        if (wants_vertex_formats) {   // (fork: as fetched, a same-layout UINT format; converted where read)
+            if (loads.Generic(index)) {
+                const Id id{DefineInput(*this, U32[4], true)};
+                Decorate(id, spv::Decoration::Location, static_cast<u32>(index));
+                Name(id, fmt::format("in_attr{}", index));
+                input_generics[index] = InputGenericInfo{id, input_u32, U32[1], InputGenericLoadOp::Convert};
+            }
+            continue;
+        }
         const AttributeType input_type{runtime_info.generic_input_types[index]};
-        if (!runtime_info.previous_stage_stores.Generic(index)) {
+        if (!runtime_info.previous_stage_stores.Generic(index) && !wants_fragment_inputs) {
             continue;
         }
         if (!loads.Generic(index)) {
@@ -2828,13 +2996,6 @@ void EmitContext::DefineOutputs(const IR::Program& program) {
             const bool need_dual_source = runtime_info.dual_source_blend && index <= 1;
             if (!need_dual_source && !info.stores_frag_color[index] &&
                 !profile.need_declared_frag_colors) {
-                continue;
-            }
-            if (!need_dual_source && runtime_info.color_output_types[index] == AttributeType::Disabled) {
-                // (renderer, M6b: no attachment at this location in the pass the variant is drawn in)
-                frag_color[index] = DefineVariable(*this, F32[4], std::nullopt, spv::StorageClass::Private);
-                frag_color_private[index] = true;
-                Name(frag_color[index], fmt::format("frag_color{}_unattached", index));
                 continue;
             }
             const Id type{GetAttributeType(*this, runtime_info.color_output_types[index])};

@@ -154,6 +154,7 @@ enum class InputGenericLoadOp {
     Bitcast,
     SToF,
     UToF,
+    Convert,   // (fork, RuntimeInfo::vertex_formats_pushed: the vector as fetched, through vertex_convert_func)
 };
 
 struct InputGenericInfo {
@@ -308,6 +309,19 @@ public:
     Id fswzadd_lut_b{};
 
     Id indexed_load_func{};
+    /// (fork, RuntimeInfo::vertex_formats_pushed) f32 (uvec4 fetched, u32 code, u32 component): a generic input's component
+    bool wants_vertex_formats{};
+    u32 vertex_formats_member_index{};
+    Id vertex_convert_func{};
+    /// (fork, RuntimeInfo::fragment_inputs_pushed) the generics the stage before writes, a member of the push block
+    bool wants_fragment_inputs{};
+    u32 fragment_inputs_member_index{};
+    /// A fragment stage's generic input component: the value read, or its default where the stage before does not write it
+    Id FragmentInput(u32 index, Id value, Id component);
+    /// The attribute code of generic input index, read from the push data
+    Id VertexFormatCode(u32 index);
+    /// A generic input's component converted (load_op Convert): its vector loaded, its code read, the function called
+    Id ConvertedGeneric(u32 index, Id component);
     Id indexed_store_func{};
 
     Id rescaling_uniform_constant{};
@@ -412,10 +426,6 @@ public:
     std::array<Id, 30> patches{};
 
     std::array<Id, 8> frag_color{};
-    // (renderer, M6b) a colour output whose location has no attachment (color_output_types Disabled): a private
-    // variable, not an output, so the writes the program makes there are not written to an interface nothing reads (the
-    // alpha test still reads the first one)
-    std::array<bool, 8> frag_color_private{};
     Id sample_mask{};
     Id frag_depth{};
 
@@ -510,6 +520,7 @@ private:
     void DefineGlobalMemoryFunctions(const Info& info);
     void DefineRescalingInput(const Info& info);
     void DefineRescalingInputPushConstant();
+    void DefineVertexConvert();
     void DefineRescalingInputUniformConstant();
     void DefineRenderArea(const Info& info);
 

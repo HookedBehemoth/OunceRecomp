@@ -116,6 +116,13 @@ struct RuntimeInfo {
     /// area, both named by the draw's task header (its address pushed at MESH_FALLBACK_PAYLOAD_PUSH_OFFSET); the mesh stage
     /// (mesh_fallback not set) reads its map entry and its task's payload from there. Header words: TASK_HEADER_*
     bool task_buffer{};
+    /// (fork, direct back end) a vertex stage that reads its generic inputs as fetched by same-layout UINT formats and
+    /// converts them by a code per attribute in the push data (VERTEX_FORMATS_PUSH_OFFSET): generic_input_types unread
+    bool vertex_formats_pushed{};
+    /// (fork, direct back end) a fragment stage whose generic inputs are what it loads, whatever stage is before it: a
+    /// generic the stage before does not write (its bit clear in the push data's word at FRAGMENT_INPUTS_PUSH_OFFSET) reads
+    /// (0, 0, 0, 1). previous_stage_stores unread
+    bool fragment_inputs_pushed{};
 
     TessPrimitive tess_primitive{};
     TessSpacing tess_spacing{};

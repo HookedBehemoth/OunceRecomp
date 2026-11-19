@@ -1,10 +1,11 @@
 // Programs to shader objects (vk_shader.h). Lifted from gpu/legacy/vk/vk_shader.cpp (the code's reading and lowering, Env, the
-// profile, the graphics translation, the key, the answers, the cache's record format) with its switches as the constants
+// profile, the graphics translation, the key, the cache's record format) with its switches as the constants
 // the frozen back end runs with (RX_VK_DESC_HEAP_BDA=2: storage buffers by address, wide), and from vk_desc_heap.cpp
 // make_program (the heap mapping) and vk_shader_object.cpp so_make (the shader objects). What differs (docs/direct/shader-contract.md,
 // "What a draw provides"): uniform buffers are read through addresses (an address table in the frame arena, its
 // address pushed), not ring descriptors; a texture whose handle is a game buffer's word reads it there through the buffer's
-// pushed address, as a driver bank's; textures and samplers are the registration-time entries.
+// pushed address, as a driver bank's; textures and samplers are the registration-time entries; a stage is translated from
+// its code alone (no draw state reaches Env), so it can be translated before its first draw.
 // The caches beside the executable (docs/direct/shader-contract.md, "The caches"):
 // - ounce_renderer_programs.bin: translated variants by code pair. Stamped by the translation's code only
 //   (OUNCE_RENDERER_SHADER_STAMP, renderer/meson/shader_stamp.py: the translator, the compiler and flags that build it,
@@ -188,10 +189,13 @@ uint8_t canonical(uint8_t type, bool dim_fixed, uint8_t desc_type, bool depth_fl
 
 // </stamp shared>
 // <stamp graphics>
-// ---- the translator's questions (vk_shader.cpp Env, over a list's state) ----
+// ---- the translator's questions (vk_shader.cpp Env), answered from the stage's code alone ----
+// No draw state reaches a translation: a driver bank's word reads 0, so a texture's type is its instruction's (Color2D where
+// the instruction has none, a size query's) and no texture is an integer one. The draw checks the bound textures against
+// that (shader_pick, check_textures): one that contradicts it is an error
 class Env final : public Shader::Environment {
 public:
-    Env(const DState& state, const Code& c, Shader::Stage st) : s{state}, nvn{c} {
+    Env(const Code& c, Shader::Stage st) : nvn{c} {
         stage = st;
         start_address = 0;
         std::memcpy(&sph, nvn.sph, sizeof sph);
@@ -215,21 +219,12 @@ public:
             if ((size_t)offset + 4 <= nvn.c1.size()) std::memcpy(&v, nvn.c1.data() + offset, 4);
             return v;
         }
-        if (index == 0 || index == 2) return bank_word(s, (int)index, nvn.stage, offset);
-        // (step B: a game buffer's word is not read. Translation answers from the program alone where the draw cannot
-        // check the answer: a handle there is the shader's to read, a texture of it answers as its instruction says)
-        if (index >= 3) game_words++;
+        if (index >= 3) game_words++;   // (a driver bank's or a game buffer's word: not the stage's own, read 0)
         return 0;
     }
-    Shader::TextureType ReadTextureType(u32 handle) override {
-        questions++;
-        return handle ? (Shader::TextureType)(live_answer(handle) & 0x7f) : Shader::TextureType::Color2D;
-    }
+    Shader::TextureType ReadTextureType(u32) override { return Shader::TextureType::Color2D; }
     Shader::TexturePixelFormat ReadTexturePixelFormat(u32) override { return Shader::TexturePixelFormat{}; }
-    bool IsTexturePixelFormatInteger(u32 handle) override {
-        questions++;
-        return handle && (live_answer(handle) & 0x80);
-    }
+    bool IsTexturePixelFormatInteger(u32) override { return false; }
     u32 ReadViewportTransformState() override { return 1; }
     u32 TextureBoundBuffer() const override { return 2; }
     u32 LocalMemorySize() const override { return local_memory; }
@@ -262,11 +257,9 @@ public:
         mesh_registers = registers;
         if (primitive_sph) std::memcpy(&mesh_primitive_header, primitive_sph, sizeof mesh_primitive_header);
     }
-    int questions = 0;
     int game_words = 0;   // (words of game buffers the translator asked for: answered 0)
 
 private:
-    const DState& s;
     const Code& nvn;
     uint32_t local_memory = 0;
 };
@@ -365,35 +358,10 @@ std::unique_ptr<Translation> translate(Env& env, bool one_exit = false) {
     return t;
 }
 
-Shader::AttributeType attribute_type_of(uint32_t vattr) {
-    const nvn_va_st a = *reinterpret_cast<const nvn_va_st*>(&vattr);
-    switch (a.fmt) {
-    case NVN_FORMAT_R8UI: case NVN_FORMAT_RG8UI: case NVN_FORMAT_RGB8UI: case NVN_FORMAT_RGBA8UI:
-    case NVN_FORMAT_R16UI: case NVN_FORMAT_RG16UI: case NVN_FORMAT_RGB16UI: case NVN_FORMAT_RGBA16UI:
-    case NVN_FORMAT_R32UI: case NVN_FORMAT_RG32UI: case NVN_FORMAT_RGB32UI: case NVN_FORMAT_RGBA32UI:
-    case NVN_FORMAT_RGB10A2UI:
-        return Shader::AttributeType::UnsignedInt;
-    case NVN_FORMAT_R8I: case NVN_FORMAT_RG8I: case NVN_FORMAT_RGB8I: case NVN_FORMAT_RGBA8I: case NVN_FORMAT_R16I:
-    case NVN_FORMAT_RG16I: case NVN_FORMAT_RGB16I: case NVN_FORMAT_RGBA16I: case NVN_FORMAT_R32I: case NVN_FORMAT_RG32I:
-    case NVN_FORMAT_RGB32I: case NVN_FORMAT_RGBA32I: case NVN_FORMAT_RGB10A2I:
-        return Shader::AttributeType::SignedInt;
-    case NVN_FORMAT_RGB10A2_UI2F: return Shader::AttributeType::UnsignedScaled;
-    case NVN_FORMAT_RGB10A2_I2F: return Shader::AttributeType::SignedScaled;
-    default:
-        if (a.fmt >= NVN_FORMAT_R8_UI2F && a.fmt <= NVN_FORMAT_RGBA32_I2F)
-            return (a.fmt - NVN_FORMAT_R8_UI2F) & 1 ? Shader::AttributeType::SignedScaled : Shader::AttributeType::UnsignedScaled;
-        return Shader::AttributeType::Float;
-    }
-}
-/// A vertex and fragment program's key (vk_shader.cpp graphics_key)
-uint64_t graphics_key(uint64_t vs_key, const uint8_t* vs_sph, uint64_t fs_key, const uint8_t* fs_sph, const uint32_t vattr[16],
-                      const uint8_t color_types[8]) {
+/// A vertex and fragment program's key: its codes and the colour types the fragment stage writes (the vertex input formats
+/// are the draw's push data, read by the vertex stage)
+uint64_t graphics_key(uint64_t vs_key, uint64_t fs_key, const uint8_t* fs_sph, const uint8_t color_types[8]) {
     uint64_t key = vs_key ^ (fs_sph ? fs_key * 31 : 0);
-    for (int i = 0; i < 16; i++) {
-        const auto used = header_of(vs_sph).vtg.InputGeneric((size_t)i);
-        const bool read = used[0] || used[1] || used[2] || used[3];
-        key = key * 1099511628211ull ^ (uint64_t)(read ? attribute_type_of(vattr[i]) : Shader::AttributeType::Float) << i;
-    }
     uint8_t written[8];
     for (int i = 0; i < 8; i++) written[i] = fs_sph && header_of(fs_sph).ps.HasOutputComponents(i) ? color_types[i] : 0;
     return hash_bytes(written, 8, key);
@@ -432,15 +400,9 @@ struct VStage {
     std::vector<uint32_t> spirv;
     uint32_t threads = 0, payload_words = 0;   // (M4c: a task stage's threads and payload words, which the draw's task header needs)
 };
-struct RawAnswer {
-    uint16_t stage, desc;
-    uint8_t type;
-    bool image = false;
-};
 struct Variant {
     DrawProg d;
     std::vector<VStage> stages;
-    std::vector<RawAnswer> answers;
     Variant* next = nullptr;
 };
 // </stamp graphics>
@@ -459,7 +421,7 @@ struct Family {
     std::atomic<Variant*> variants{nullptr};
     std::atomic<bool> loaded{false};   // (its variants kept in the cache file are made)
     std::mutex mu;   // (pending, waiting, and loaded's change)
-    std::unordered_set<uint64_t> pending;   // (translations queued, by key and answers)
+    std::unordered_set<uint64_t> pending;   // (translations queued, by key)
     std::unordered_set<uint64_t> failed;    // (translations that failed)
     std::vector<std::atomic<int>*> waiting;  // (other slots of the code, made drawable when its kept variants are)
 };
@@ -521,7 +483,7 @@ constexpr uint32_t kSlots = 1u << 17;
 std::unique_ptr<std::atomic<Slot*>[]> table;
 std::mutex table_mu;
 std::atomic<double> last_miss_s{0};
-std::atomic<int64_t> st_object_ns{0}, st_disk_ns{0}, st_ubos_max{0}, st_ubos_sum{0}, st_ubos_variants{0}, st_ubos_over{0}, st_game_words{0}, st_multi_inputs{0}, st_multi_answers{0}, st_slots{0}, st_full{0}, st_translated{0}, st_failed{0}, st_from_disk{0}, st_objects_made{0}, st_late_stages{0}, st_late_changed{0}, st_late_moved{0}, st_late_ns{0},
+std::atomic<int64_t> st_object_ns{0}, st_disk_ns{0}, st_ubos_max{0}, st_ubos_sum{0}, st_ubos_variants{0}, st_ubos_over{0}, st_game_words{0}, st_multi_inputs{0}, st_contradicted{0}, st_slots{0}, st_full{0}, st_translated{0}, st_failed{0}, st_from_disk{0}, st_objects_made{0}, st_late_stages{0}, st_late_changed{0}, st_late_moved{0}, st_late_ns{0},
     st_object_failed{0}, st_translate_ns{0}, st_queued{0}, st_misses{0}, st_scan_failed{0}, st_bumped{0}, st_read_here{0};
 
 uint32_t slot_hash(uint64_t serial) { return (uint32_t)((serial * 0x9E3779B97F4A7C15ull) >> 47) & (kSlots - 1); }
@@ -537,7 +499,7 @@ Slot* slot_find(uint64_t serial) {
 
 // ---- the program cache file (its record: vk_shader.cpp's put_info / get_info, the rest this back end's) ----
 constexpr uint32_t kDiskMagic = 0x50445348;   // ('HSDP')
-constexpr uint64_t kDiskFormat = 3;            // (the record's layout below: a change to it changes this)
+constexpr uint64_t kDiskFormat = 4;            // (the record's layout below: a change to it changes this)
 std::mutex disk_mu;
 FILE* disk_out = nullptr;
 FILE* disk_in = nullptr;
@@ -765,8 +727,6 @@ void disk_save(const Variant& v, uint64_t pair) {
     o.reserve(128 << 10);
     put(o, pair);
     put(o, v.d.key);
-    put(o, (uint64_t)v.answers.size());
-    for (const RawAnswer& a : v.answers) put(o, a);
     put(o, (uint64_t)v.stages.size());
     for (const VStage& st : v.stages) {
         put(o, st.nvn_stage);
@@ -794,8 +754,6 @@ bool disk_read(const DiskRecord& d, Variant& v) {
     Reader r{data.data(), data.data() + data.size()};
     r.get<uint64_t>();   // (the pair)
     v.d.key = r.get<uint64_t>();
-    const uint64_t na = r.count(sizeof(RawAnswer));
-    for (uint64_t i = 0; i < na && !r.bad; i++) v.answers.push_back(r.get<RawAnswer>());
     const uint64_t n = r.count(1);
     if (r.bad || n == 0 || n > 3) return false;
     for (uint64_t k = 0; k < n && !r.bad; k++) {
@@ -808,10 +766,6 @@ bool disk_read(const DiskRecord& d, Variant& v) {
         get_info(r, st.info);
         if (st.spirv.empty()) r.bad = true;
     }
-    for (const RawAnswer& a : v.answers)
-        if (a.stage >= v.stages.size() ||
-            a.desc >= (a.image ? v.stages[a.stage].info.image_descriptors.size() : v.stages[a.stage].info.texture_descriptors.size()))
-            r.bad = true;
     return !r.bad;
 }
 
@@ -999,8 +953,8 @@ void save(uint64_t key, VkShaderEXT obj) {
 bool finish(Variant& v) {
     DrawProg& d = v.d;
     std::vector<std::vector<VkDescriptorSetAndBindingMappingEXT>> maps(v.stages.size());
-    uint32_t binding = 0;
     for (size_t si = 0; si < v.stages.size(); si++) {
+        uint32_t binding = 0;   // (each stage's from 0, as emit_stage numbers them)
         const VStage& st = v.stages[si];
         const Shader::Info& info = st.info;
         auto& m = maps[si];
@@ -1086,6 +1040,11 @@ bool finish(Variant& v) {
         if (st.vk_stage == VK_SHADER_STAGE_VERTEX_BIT)
             for (uint32_t i = 0; i < 16; i++)
                 if (info.loads.Generic(i)) d.vs_loads |= 1u << i;
+        if (st.vk_stage == VK_SHADER_STAGE_VERTEX_BIT || st.vk_stage == VK_SHADER_STAGE_GEOMETRY_BIT) {   // (a geometry stage last)
+            d.frag_inputs = 0;
+            for (uint32_t i = 0; i < 32; i++)
+                if (info.stores.Generic(i)) d.frag_inputs |= 1u << i;
+        }
         if (st.vk_stage == VK_SHADER_STAGE_FRAGMENT_BIT)
             for (int i = 0; i < 8; i++) {
                 if (info.stores_frag_color[i]) d.frag_stores |= (uint8_t)(1u << i);
@@ -1128,17 +1087,18 @@ bool finish(Variant& v) {
     }
     if (d.vk_ubos) d.push_bytes = std::max<uint32_t>(d.push_bytes, 192 + 8 * d.vk_ubos);
     if (d.push_bytes > caps.max_push) d.skip = d.skip ? d.skip : "push data over the device's limit";
-    // (the answers a draw checks: those whose handle is a driver bank word; one in a game buffer stands as translated)
-    for (const RawAnswer& a : v.answers) {
-        if (a.image || a.stage >= v.stages.size()) continue;
-        const auto& t = v.stages[a.stage].info.texture_descriptors[a.desc];
-        if (t.has_secondary || t.handle_program != ~0u || !(t.cbuf_index == 0 || t.cbuf_index == 2)) continue;
-        DrawProg::Answer x{};
-        x.stage = (uint8_t)v.stages[a.stage].nvn_stage, x.bank = (uint8_t)t.cbuf_index, x.offset = (uint16_t)t.cbuf_offset;
-        x.dim_fixed = t.type_fixed, x.desc_type = (uint8_t)t.type, x.depth_float = t.is_depth && !t.is_integer;
-        x.want = canonical(a.type, x.dim_fixed, x.desc_type, x.depth_float);
-        d.answers.push_back(x);
-    }
+    // (what a draw checks of its textures whose handle is a driver bank word: that the bound one is what the translation
+    // from the code alone took it for, Env's Color2D and not integer as its descriptor canonicalises it; one in a game
+    // buffer or made of two words the draw does not see)
+    for (const VStage& st : v.stages)
+        for (const auto& t : st.info.texture_descriptors) {
+            if (t.count != 1 || t.has_secondary || t.handle_program != ~0u || !(t.cbuf_index == 0 || t.cbuf_index == 2)) continue;
+            DrawProg::Answer x{};
+            x.stage = (uint8_t)st.nvn_stage, x.bank = (uint8_t)t.cbuf_index, x.offset = (uint16_t)t.cbuf_offset;
+            x.dim_fixed = t.type_fixed, x.desc_type = (uint8_t)t.type, x.depth_float = t.is_depth && !t.is_integer;
+            x.want = canonical((uint8_t)Shader::TextureType::Color2D, x.dim_fixed, x.desc_type, x.depth_float);
+            d.answers.push_back(x);
+        }
     // (the shader objects, unlinked: vertex then fragment)
     static const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo size32 = [] {
         VkPipelineShaderStageRequiredSubgroupSizeCreateInfo r{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO};
@@ -1209,16 +1169,13 @@ bool finish(Variant& v) {
 
 void publish(Family& s, Variant* v, uint64_t serial) {
     Variant* head = s.variants.load(std::memory_order_acquire);
-    if (head) {   // (a program's second variant or later: for another key (inputs: vertex attribute or colour types) or answers)
-        bool same_key = false;
-        for (const Variant* o = head; o; o = o->next) same_key |= o->d.key == v->d.key;
-        (same_key ? st_multi_answers : st_multi_inputs).fetch_add(1, std::memory_order_relaxed);
+    if (head) {   // (a program's second variant or later: for other colour target types)
+        st_multi_inputs.fetch_add(1, std::memory_order_relaxed);
         static std::atomic<int> told{0};
         if (told++ < 30) {
             int n = 1;
             for (const Variant* o = head; o; o = o->next) n++;
-            logf("direct: program serial %llu has variant %d: %s (key %016llx)", (unsigned long long)serial, n,
-                 same_key ? "the same inputs, other texture answers" : "other inputs (vertex attribute or colour types)",
+            logf("direct: program serial %llu has variant %d: other colour target types (key %016llx)", (unsigned long long)serial, n,
                  (unsigned long long)v->d.key);
         }
     }
@@ -1227,67 +1184,45 @@ void publish(Family& s, Variant* v, uint64_t serial) {
 }
 
 // <stamp graphics>
-// ---- translation (vk_shader.cpp translate_into's graphics half, record_answers) ----
-uint32_t cbuf_word(const DState& s, int stage, uint32_t index, uint32_t offset, const std::vector<uint8_t>& c1) {
-    if (index == 1) {
-        uint32_t v = 0;
-        if ((size_t)offset + 4 <= c1.size()) std::memcpy(&v, c1.data() + offset, 4);
-        return v;
-    }
-    if (index == 0 || index == 2) return bank_word(s, (int)index, stage, offset);
-    return 0;   // (a game buffer's word: not read, as Env::ReadCbufValue)
-}
-void record_answers(Variant& v, const DState& s) {
-    for (size_t k = 0; k < v.stages.size(); k++) {
-        const VStage& st = v.stages[k];
-        const auto& list = st.info.texture_descriptors;
-        for (size_t i = 0; i < list.size(); i++) {
-            if (list[i].count != 1) continue;
-            const auto& t = list[i];
-            uint32_t h = t.handle_program != ~0u ? 0 : cbuf_word(s, st.nvn_stage, t.cbuf_index, t.cbuf_offset, st.c1);
-            if (h && t.has_secondary)
-                h = h << t.shift_left | cbuf_word(s, st.nvn_stage, t.secondary_cbuf_index, t.secondary_cbuf_offset, st.c1) << t.secondary_shift_left;
-            const uint8_t a = h ? live_answer(h) : (uint8_t)((uint8_t)t.type | (t.is_integer ? 0x80 : 0));
-            v.answers.push_back({(uint16_t)k, (uint16_t)i, canonical(a, t.type_fixed, (uint8_t)t.type, t.is_depth && !t.is_integer)});
-        }
-    }
+// ---- translation (vk_shader.cpp translate_into's graphics half), from the stages' code alone ----
+/// A stage's SPIR-V: its bindings numbered from 0, its own (each stage's shader object has its own mappings, finish()), so a
+/// stage's SPIR-V does not depend on the stages beside it
+std::vector<uint32_t> emit_stage(VkShaderStageFlagBits stage, const Shader::RuntimeInfo& rt, Shader::IR::Program& program) {
+    Shader::Backend::Bindings bindings{};
+    return Shader::Backend::SPIRV::EmitSPIRV(profile_graphics(stage), rt, program, bindings);
 }
 
 /// A vertex program: its vertex stage, its geometry stage when it has one (stored last: stages vertex, fragment, geometry;
 /// translated for triangle input, the only input the draw path gives it), its fragment stage
-bool translate_variant(Variant& v, const DState& s, const Code& vsc, const Code* gsc, const Code* fsc, const uint8_t color_types[8]) {
+bool translate_variant(Variant& v, const Code& vsc, const Code* gsc, const Code* fsc, const uint8_t color_types[8]) {
     try {
-        Shader::Backend::Bindings bindings{};
-        int questions = 0;
-        Env vs_env{s, vsc, Shader::Stage::VertexB};
+        Env vs_env{vsc, Shader::Stage::VertexB};
         auto vs = translate(vs_env);
-        questions += vs_env.questions;
         Shader::RuntimeInfo vrt{};
         if (!gsc && !vs->program.info.stores[Shader::IR::Attribute::PointSize]) vrt.fixed_state_point_size = 1.0f;
-        for (int i = 0; i < 16; i++) vrt.generic_input_types[i] = attribute_type_of(s.vattr[i]);
+        vrt.vertex_formats_pushed = true;   // (the attributes' formats: the draw's push data, vk_draw.cpp vertex_fetch)
         vrt.previous_stage_stores.mask.set();
         vrt.convert_depth_mode = !gsc && host->depth_minus_w() != 0;   // (in the last stage before the rasterizer)
         VStage& vst = v.stages.emplace_back();
         vst.nvn_stage = 0, vst.vk_stage = VK_SHADER_STAGE_VERTEX_BIT;
-        vst.spirv = Shader::Backend::SPIRV::EmitSPIRV(profile_graphics(VK_SHADER_STAGE_VERTEX_BIT), vrt, vs->program, bindings);
+        vst.spirv = emit_stage(VK_SHADER_STAGE_VERTEX_BIT, vrt, vs->program);
         schedule_late(vst.spirv, late_vertex());
         vst.info = vs->program.info;
         vst.c1 = vsc.c1;
         std::unique_ptr<Translation> gs;
         if (gsc) {
-            Env gs_env{s, *gsc, Shader::Stage::Geometry};
+            Env gs_env{*gsc, Shader::Stage::Geometry};
             gs_env.pass_through(vs->program.info.stores);
             gs = translate(gs_env);
-            questions += gs_env.questions;
             st_game_words.fetch_add(gs_env.game_words, std::memory_order_relaxed);
         }
         if (fsc) {
-            Env fs_env{s, *fsc, Shader::Stage::Fragment};
+            Env fs_env{*fsc, Shader::Stage::Fragment};
             auto fs = translate(fs_env);
-            questions += fs_env.questions;
             st_game_words.fetch_add(fs_env.game_words, std::memory_order_relaxed);
             Shader::RuntimeInfo frt{};
-            frt.previous_stage_stores = gs ? gs->program.info.stores : vs->program.info.stores;
+            frt.fragment_inputs_pushed = true;   // (its inputs are what it loads; what the stage before writes is the draw's data)
+            frt.previous_stage_stores.mask.set();
             for (int i = 0; i < 8; i++) frt.color_output_types[i] = static_cast<Shader::AttributeType>(color_types[i]);
             uint32_t float_targets = 0;   // (the frozen back end's NaN guard of float targets, on by default)
             for (int i = 0; i < 8; i++)
@@ -1295,7 +1230,7 @@ bool translate_variant(Variant& v, const DState& s, const Code& vsc, const Code*
             Shader::Optimization::GuardFragmentOutputs(fs->program, float_targets);
             VStage& fst = v.stages.emplace_back();
             fst.nvn_stage = 1, fst.vk_stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-            fst.spirv = Shader::Backend::SPIRV::EmitSPIRV(profile_graphics(VK_SHADER_STAGE_FRAGMENT_BIT), frt, fs->program, bindings);
+            fst.spirv = emit_stage(VK_SHADER_STAGE_FRAGMENT_BIT, frt, fs->program);
             fst.info = fs->program.info;
             fst.c1 = fsc->c1;
         }
@@ -1306,11 +1241,10 @@ bool translate_variant(Variant& v, const DState& s, const Code& vsc, const Code*
             grt.convert_depth_mode = host->depth_minus_w() != 0;
             VStage& gst = v.stages.emplace_back();
             gst.nvn_stage = 2, gst.vk_stage = VK_SHADER_STAGE_GEOMETRY_BIT;
-            gst.spirv = Shader::Backend::SPIRV::EmitSPIRV(profile_graphics(VK_SHADER_STAGE_GEOMETRY_BIT), grt, gs->program, bindings);
+            gst.spirv = emit_stage(VK_SHADER_STAGE_GEOMETRY_BIT, grt, gs->program);
             gst.info = gs->program.info;
             gst.c1 = gsc->c1;
         }
-        if (questions) record_answers(v, s);
         st_game_words.fetch_add(vs_env.game_words, std::memory_order_relaxed);
         return true;
     } catch (const std::exception& e) {
@@ -1330,29 +1264,25 @@ uint64_t slot_pair(const Slot& s) {   // (M4c: a task+mesh program's salted with
 // <stamp graphics>
 /// A mesh-only program: its mesh stage (no task stage before it: the device has no task stage enabled) and fragment
 /// stage, as vk_shader.cpp translate_mesh_into translates them without the fallback
-bool translate_mesh_variant(Variant& v, const DState& s, const Code& mc, const Code* prim, const Code* fsc, const uint8_t color_types[8]) {
+bool translate_mesh_variant(Variant& v, const Code& mc, const Code* prim, const Code* fsc, const uint8_t color_types[8]) {
     try {
-        Shader::Backend::Bindings bindings{};
-        int questions = 0;
-        Env menv{s, mc, Shader::Stage::Mesh};
+        Env menv{mc, Shader::Stage::Mesh};
         menv.set_mesh(mesh_registers_of(mc), prim ? prim->sph : nullptr);
         auto ms = translate(menv, true);
-        questions += menv.questions;
         Shader::RuntimeInfo mrt{};
         mrt.previous_stage_stores.mask.set();
         mrt.convert_depth_mode = host->depth_minus_w() != 0;
         mrt.mesh_without_task = true;
         VStage& mst = v.stages.emplace_back();
         mst.nvn_stage = 7, mst.vk_stage = VK_SHADER_STAGE_MESH_BIT_EXT;
-        mst.spirv = Shader::Backend::SPIRV::EmitSPIRV(profile_graphics(VK_SHADER_STAGE_MESH_BIT_EXT), mrt, ms->program, bindings);
+        mst.spirv = emit_stage(VK_SHADER_STAGE_MESH_BIT_EXT, mrt, ms->program);
         schedule_late(mst.spirv, late_mesh());
         mst.info = ms->program.info;
         mst.c1 = mc.c1;
         st_game_words.fetch_add(menv.game_words, std::memory_order_relaxed);
         if (fsc) {
-            Env fs_env{s, *fsc, Shader::Stage::Fragment};
+            Env fs_env{*fsc, Shader::Stage::Fragment};
             auto fs = translate(fs_env);
-            questions += fs_env.questions;
             st_game_words.fetch_add(fs_env.game_words, std::memory_order_relaxed);
             Shader::RuntimeInfo frt{};
             frt.previous_stage_stores = ms->program.info.stores;
@@ -1371,11 +1301,10 @@ bool translate_mesh_variant(Variant& v, const DState& s, const Code& mc, const C
             Shader::Optimization::GuardFragmentOutputs(fs->program, float_targets);
             VStage& fst = v.stages.emplace_back();
             fst.nvn_stage = 1, fst.vk_stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-            fst.spirv = Shader::Backend::SPIRV::EmitSPIRV(profile_graphics(VK_SHADER_STAGE_FRAGMENT_BIT), frt, fs->program, bindings);
+            fst.spirv = emit_stage(VK_SHADER_STAGE_FRAGMENT_BIT, frt, fs->program);
             fst.info = fs->program.info;
             fst.c1 = fsc->c1;
         }
-        if (questions) record_answers(v, s);
         return true;
     } catch (const std::exception& e) {
         static std::atomic<int> told{0};
@@ -1388,20 +1317,19 @@ bool translate_mesh_variant(Variant& v, const DState& s, const Code& mc, const C
 /// its mesh workgroups and payload to the draw's task header), its mesh stage native with no task stage before it (it reads
 /// them from there), its fragment stage. Stages in the order mesh, fragment, task (stage 0 is the mesh stage, as a mesh-only
 /// program's)
-bool translate_task_mesh_variant(Variant& v, const DState& s, const Code& tc, const Code& mc, const Code* prim, const Code* fsc,
+bool translate_task_mesh_variant(Variant& v, const Code& tc, const Code& mc, const Code* prim, const Code* fsc,
                                  const uint8_t color_types[8]) {
     const size_t at = v.stages.size();
     try {
-        Shader::Backend::Bindings bindings{};
         const std::array<u32, 3> regs = mesh_registers_of(mc, &tc);
-        Env tenv{s, tc, Shader::Stage::Task};
+        Env tenv{tc, Shader::Stage::Task};
         tenv.set_mesh(regs, nullptr);
         auto ts = translate(tenv, true);
         const uint32_t threads = ts->program.workgroup_size[0];
         if (threads == 0 || threads > 256)   // (a map entry holds the index in its task in 8 bits)
             throw Shader::NotImplementedException("task stage of {} threads", threads);
         st_game_words.fetch_add(tenv.game_words, std::memory_order_relaxed);
-        Env menv{s, mc, Shader::Stage::Mesh};
+        Env menv{mc, Shader::Stage::Mesh};
         menv.set_mesh(regs, prim ? prim->sph : nullptr);
         auto ms = translate(menv, true);
         Shader::RuntimeInfo mrt{};
@@ -1411,16 +1339,14 @@ bool translate_task_mesh_variant(Variant& v, const DState& s, const Code& tc, co
         mrt.task_buffer = true;
         VStage& mst = v.stages.emplace_back();
         mst.nvn_stage = 7, mst.vk_stage = VK_SHADER_STAGE_MESH_BIT_EXT;
-        mst.spirv = Shader::Backend::SPIRV::EmitSPIRV(profile_graphics(VK_SHADER_STAGE_MESH_BIT_EXT), mrt, ms->program, bindings);
+        mst.spirv = emit_stage(VK_SHADER_STAGE_MESH_BIT_EXT, mrt, ms->program);
         schedule_late(mst.spirv, late_mesh());
         mst.info = ms->program.info;
         mst.c1 = mc.c1;
         st_game_words.fetch_add(menv.game_words, std::memory_order_relaxed);
-        int questions = menv.questions + tenv.questions;
         if (fsc) {
-            Env fs_env{s, *fsc, Shader::Stage::Fragment};
+            Env fs_env{*fsc, Shader::Stage::Fragment};
             auto fs = translate(fs_env);
-            questions += fs_env.questions;
             st_game_words.fetch_add(fs_env.game_words, std::memory_order_relaxed);
             Shader::RuntimeInfo frt{};
             frt.previous_stage_stores = ms->program.info.stores;
@@ -1438,23 +1364,21 @@ bool translate_task_mesh_variant(Variant& v, const DState& s, const Code& tc, co
             Shader::Optimization::GuardFragmentOutputs(fs->program, float_targets);
             VStage& fst = v.stages.emplace_back();
             fst.nvn_stage = 1, fst.vk_stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-            fst.spirv = Shader::Backend::SPIRV::EmitSPIRV(profile_graphics(VK_SHADER_STAGE_FRAGMENT_BIT), frt, fs->program, bindings);
+            fst.spirv = emit_stage(VK_SHADER_STAGE_FRAGMENT_BIT, frt, fs->program);
             fst.info = fs->program.info;
             fst.c1 = fsc->c1;
         }
-        // (its SPIR-V made last: the stages' bindings are numbered in the order finish() maps them, mesh, fragment, task)
         Shader::RuntimeInfo trt{};
         trt.previous_stage_stores.mask.set();
         trt.mesh_fallback = true;
         trt.task_buffer = true;
-        std::vector<uint32_t> tspirv = Shader::Backend::SPIRV::EmitSPIRV(profile_graphics(VK_SHADER_STAGE_COMPUTE_BIT), trt, ts->program, bindings);
+        std::vector<uint32_t> tspirv = emit_stage(VK_SHADER_STAGE_COMPUTE_BIT, trt, ts->program);
         VStage& tst = v.stages.emplace_back();
         tst.nvn_stage = 6, tst.vk_stage = VK_SHADER_STAGE_COMPUTE_BIT;
         tst.spirv = std::move(tspirv);
         tst.info = ts->program.info;
         tst.c1 = tc.c1;
         tst.threads = threads, tst.payload_words = ts->program.mesh.payload_words;
-        if (questions) record_answers(v, s);
         static std::atomic<int> told{0};
         if (told++ < 64)
             logf("direct: task+mesh program %016llx translated: task %016llx (%u threads, payload %u words) as a compute step, mesh %016llx "
@@ -1558,8 +1482,6 @@ void scan_slot(Slot* s) {
             (v->stages.back().vk_stage == VK_SHADER_STAGE_COMPUTE_BIT) != s->task ||
             (v->stages.back().vk_stage == VK_SHADER_STAGE_GEOMETRY_BIT) != s->has_gs)
             continue;
-        v->d.variant = 0;
-        for (const RawAnswer& a : v->answers) v->d.variant = (v->d.variant ^ ((uint64_t)a.stage << 32 | (uint64_t)a.desc << 16 | a.type)) * 1099511628211ull;
         v->d.codes[0] = s->vs.key, v->d.codes[1] = s->has_fs ? s->fs.key : 0, v->d.codes[2] = s->has_prim ? s->prim.key : s->has_gs ? s->gs.key : 0;
         v->d.task_code = s->task ? s->task_key : 0;
         if (!finish(*v)) continue;
@@ -1597,14 +1519,30 @@ Slot* slot_make(const nvn_prog& p) {
     return s;
 }
 
-/// The live answers' hash for the answers a variant of this key checks (what a new variant would be translated for)
-uint64_t live_hash(const DState& s, const DrawProg& p) {
-    uint64_t h = 0;
+/// The bound textures the variant reads by a driver bank word, against what its translation from the code alone took
+/// them for (finish: DrawProg::answers). One that contradicts it (an integer format, a rectangle, a buffer, or another type
+/// at a size query) is sampled wrong: an error, logged once a program and texture word with the texture, and counted
+void check_textures(const DState& s, const DrawProg& p) {
     for (const DrawProg::Answer& a : p.answers) {
-        const uint32_t hd = bank_word(s, a.bank, a.stage, a.offset);
-        h = (h ^ (hd ? canonical(live_answer(hd), a.dim_fixed, a.desc_type, a.depth_float) : 0xFFu)) * 1099511628211ull;
+        const uint32_t h = bank_word(s, a.bank, a.stage, a.offset);
+        if (!h) continue;
+        const uint8_t bound = canonical(live_answer(h), a.dim_fixed, a.desc_type, a.depth_float);
+        if (bound == a.want) continue;
+        st_contradicted.fetch_add(1, std::memory_order_relaxed);
+        static std::mutex mu;
+        static std::unordered_set<uint64_t> told;
+        {
+            std::lock_guard lk(mu);
+            if (!told.insert(p.key ^ ((uint64_t)a.stage << 56 | (uint64_t)a.bank << 48 | (uint64_t)a.offset << 32 | bound)).second) continue;
+        }
+        char tex[256];
+        heap_describe(h & 0xFFFFF, tex, sizeof tex);
+        char where[160];
+        std::snprintf(where, sizeof where, "program %016llx stage %d bank %d +%#x handle %#x: bound type %#x%s, translated for %#x",
+                      (unsigned long long)p.key, a.stage, a.bank, a.offset, h, bound & 0x7f, bound & 0x80 ? " integer" : "", a.want);
+        logf("direct: error: a bound texture contradicts the translation from the code alone: %s; %s", where, tex);
+        if (strict_on()) strict_event("a bound texture contradicts the translation from the code alone", "%s", where);
     }
-    return h;
 }
 
 }  // namespace
@@ -1658,14 +1596,6 @@ void shader_task_mesh_log(double frames) {
          (long long)st_task_mesh_full.load());
 }
 
-bool shader_answers_hold(const DState& s, const DrawProg& p) {
-    for (const DrawProg::Answer& a : p.answers) {
-        const uint32_t h = bank_word(s, a.bank, a.stage, a.offset);
-        if (h && canonical(live_answer(h), a.dim_fixed, a.desc_type, a.depth_float) != a.want) return false;
-    }
-    return true;
-}
-
 const DrawProg* shader_pick(const DState& s, const uint8_t color_types[8], ShaderMiss& why) {
     if (!s.has_prog) return why = SM_NO_PROGRAM, nullptr;
     Slot* slot = slot_find(s.prog.serial);
@@ -1683,31 +1613,25 @@ const DrawProg* shader_pick(const DState& s, const uint8_t color_types[8], Shade
     const uint64_t key = slot->task ? task_mesh_key(slot->task_key, slot->vs.key, slot->fs.key, slot->has_fs ? slot->fs.sph : nullptr,
                                                     slot->has_prim ? slot->prim.sph : nullptr, color_types)
                          : slot->mesh ? mesh_key(slot->vs.key, slot->fs.key, slot->has_fs ? slot->fs.sph : nullptr, slot->has_prim ? slot->prim.sph : nullptr, color_types)
-                                      : graphics_key(slot->vs.key, slot->vs.sph, slot->fs.key, slot->has_fs ? slot->fs.sph : nullptr, s.vattr, color_types) ^
+                                      : graphics_key(slot->vs.key, slot->fs.key, slot->has_fs ? slot->fs.sph : nullptr, color_types) ^
                                             (slot->has_gs ? hash_bytes("geom", 4, slot->gs.key) : 0);
-    const Variant* same_key = nullptr;
-    for (const Variant* v = slot->fam->variants.load(std::memory_order_acquire); v; v = v->next) {
-        if (v->d.key != key) continue;
-        same_key = v;
-        if (shader_answers_hold(s, v->d)) return why = SM_NONE, &v->d;
-    }
-    // (none: translated on a worker, once for these inputs and answers)
-    const uint64_t want = key ^ (same_key ? live_hash(s, same_key->d) * 0x9E3779B97F4A7C15ull : 0);
+    for (const Variant* v = slot->fam->variants.load(std::memory_order_acquire); v; v = v->next)
+        if (v->d.key == key) return check_textures(s, v->d), why = SM_NONE, &v->d;
+    // (none: translated on a worker, once for these colour types)
     st_misses.fetch_add(1, std::memory_order_relaxed);
     last_miss_s.store(seconds_since_device(), std::memory_order_relaxed);
     {
         std::lock_guard lk(slot->fam->mu);
-        if (slot->fam->failed.count(want)) return why = SM_FAILED, nullptr;
-        if (!slot->fam->pending.insert(want).second) return why = SM_TRANSLATING, nullptr;
+        if (slot->fam->failed.count(key)) return why = SM_FAILED, nullptr;
+        if (!slot->fam->pending.insert(key).second) return why = SM_TRANSLATING, nullptr;
     }
     struct Job {
         Slot* slot;
-        uint64_t key, want;
-        DState s;
+        uint64_t key;
         uint8_t ct[8];
     };
     auto job = std::make_shared<Job>();
-    job->slot = slot, job->key = key, job->want = want, job->s = s;
+    job->slot = slot, job->key = key;
     std::memcpy(job->ct, color_types, 8);
     st_queued.fetch_add(1, std::memory_order_relaxed);
     work::run(work::P0, [job] {
@@ -1730,12 +1654,11 @@ const DrawProg* shader_pick(const DState& s, const uint8_t color_types[8], Shade
             }
         // (M4c: a task stage only where the slot found one, and then always)
         const bool made = (ts >= 0) == sl.task && (fs >= 0) == sl.has_fs && (gs >= 0) == sl.has_gs &&
-                          (sl.task ? ms >= 0 && translate_task_mesh_variant(*v, job->s, codes[ts], codes[ms], prim >= 0 ? &codes[prim] : nullptr,
+                          (sl.task ? ms >= 0 && translate_task_mesh_variant(*v, codes[ts], codes[ms], prim >= 0 ? &codes[prim] : nullptr,
                                                                             fs >= 0 ? &codes[fs] : nullptr, job->ct)
-                           : sl.mesh ? ms >= 0 && translate_mesh_variant(*v, job->s, codes[ms], prim >= 0 ? &codes[prim] : nullptr, fs >= 0 ? &codes[fs] : nullptr, job->ct)
-                                     : vs >= 0 && translate_variant(*v, job->s, codes[vs], gs >= 0 ? &codes[gs] : nullptr, fs >= 0 ? &codes[fs] : nullptr, job->ct));
+                           : sl.mesh ? ms >= 0 && translate_mesh_variant(*v, codes[ms], prim >= 0 ? &codes[prim] : nullptr, fs >= 0 ? &codes[fs] : nullptr, job->ct)
+                                     : vs >= 0 && translate_variant(*v, codes[vs], gs >= 0 ? &codes[gs] : nullptr, fs >= 0 ? &codes[fs] : nullptr, job->ct));
         if (made) {
-            for (const RawAnswer& a : v->answers) v->d.variant = (v->d.variant ^ ((uint64_t)a.stage << 32 | (uint64_t)a.desc << 16 | a.type)) * 1099511628211ull;
             disk_save(*v, slot_pair(sl));
             v->d.codes[0] = sl.vs.key, v->d.codes[1] = sl.has_fs ? sl.fs.key : 0, v->d.codes[2] = sl.has_prim ? sl.prim.key : sl.has_gs ? sl.gs.key : 0;
             v->d.task_code = sl.task ? sl.task_key : 0;
@@ -1750,8 +1673,8 @@ const DrawProg* shader_pick(const DState& s, const uint8_t color_types[8], Shade
             st_failed.fetch_add(1, std::memory_order_relaxed);
         }
         std::lock_guard lk(sl.fam->mu);
-        sl.fam->pending.erase(job->want);
-        if (!ok) sl.fam->failed.insert(job->want);
+        sl.fam->pending.erase(job->key);
+        if (!ok) sl.fam->failed.insert(job->key);
     });
     return why = SM_TRANSLATING, nullptr;
 }
@@ -1768,14 +1691,14 @@ void shader_stats(char* out, size_t cap, double frames) {
     work::stats(pool, sizeof pool);
     std::snprintf(out, cap, "programs (since the start): %lld set (%lld distinct codes), %lld variants translated (%.1f s on the workers), %lld failed, %lld "
                   "from the cache (%.1f s read), %lld shader objects made (%.1f s, %lld failed; %lld from binaries, %lld binaries saved, %lld refused), %lld stages unreadable, table full %lld; misses %.1f a frame, "
-                  "%zu jobs waiting; variants past a program's first: %lld for other inputs, %lld for other answers; game buffer words "
+                  "%zu jobs waiting; variants past a program's first (other colour target types): %lld; bound textures that contradict the translation: %lld; game buffer words "
                   "asked at translation %lld; uniform buffers a variant reads: %.1f on average, %lld at most, %lld variants with more "
                   "than the push data's room for their addresses; the last miss %.2f s after the device; stages through the register-pressure pass at translation %lld, changed %lld (%lld instructions moved, %.1f ms in all); shader workers: %s; programs a draw moved ahead of the load's %lld, read at their first draw %lld", (long long)st_slots.load(), (long long)st_families.load(), (long long)st_translated.load(), st_translate_ns.load() / 1e9,
                   (long long)st_failed.load(), (long long)st_from_disk.load(), st_disk_ns.load() / 1e9, (long long)st_objects_made.load(),
                   st_object_ns.load() / 1e9,
                   (long long)st_object_failed.load(), (long long)sobin::st_hits.load(), (long long)sobin::st_saved.load(),
                   (long long)sobin::st_refused.load(), (long long)st_scan_failed.load(), (long long)st_full.load(),
-                  st_misses.exchange(0) / frames, queued, (long long)st_multi_inputs.load(), (long long)st_multi_answers.load(),
+                  st_misses.exchange(0) / frames, queued, (long long)st_multi_inputs.load(), (long long)st_contradicted.load(),
                   (long long)st_game_words.load(), st_ubos_variants.load() ? (double)st_ubos_sum.load() / st_ubos_variants.load() : 0.0,
                   (long long)st_ubos_max.load(), (long long)st_ubos_over.load(), last_miss_s.load(), (long long)st_late_stages.load(), (long long)st_late_changed.load(),
                   (long long)st_late_moved.load(), st_late_ns.load() / 1e6, pool, (long long)st_bumped.load(), (long long)st_read_here.load());

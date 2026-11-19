@@ -3,9 +3,9 @@
 //
 // A program is a slot found by its NVN serial in a table read without a lock. Its stages' code is read and lowered when the
 // game sets them (nvnProgramSetShaders), on a worker; the variants kept in the direct back end's own cache file for those
-// stages are made then too. A draw finds its variant by the key the frozen back end uses (the stages' code, the vertex input
-// types it reads, the colour types it writes) and the bound textures' answers; a miss skips the draw (counted) and queues
-// the translation on a worker. Variants are only ever added (a list per slot, prepended), so a draw reads them without a
+// stages are made then too. A stage is translated from its code alone: what else it reads (vertex formats, what the stage
+// before writes) is the draw's push data. A draw finds its variant by the stages' code and the colour types it writes, and
+// checks its bound textures against the translation; a miss skips the draw (counted) and queues the translation on a worker. Variants are only ever added (a list per slot, prepended), so a draw reads them without a
 // lock.
 #pragma once
 
@@ -27,7 +27,7 @@ enum ShaderMiss : uint8_t {
 
 /// A ready program variant, as a draw reads it
 struct DrawProg {
-    uint64_t key = 0, variant = 0;
+    uint64_t key = 0;
     VkShaderEXT vs = VK_NULL_HANDLE, fs = VK_NULL_HANDLE;
     VkShaderEXT gs = VK_NULL_HANDLE;   // (a geometry stage between them: drawn with triangle input only)
     // (M4b: a mesh-only program: its mesh stage's object, no vertex stage; drawn by DRAW_MESH only. Its stages' code keys and
@@ -44,6 +44,7 @@ struct DrawProg {
     uint16_t ssbo_slots[8]{};   // (M4b: by NVN stage, the storage buffer slots its stages read through the driver bank's table)
     mutable std::atomic<bool> used{false};
     uint32_t vs_loads = 0;          // (bit i: the vertex stage reads generic attribute i)
+    uint32_t frag_inputs = 0;       // (bit i: the stage before the fragment stage writes generic i; pushed for it to read)
     uint8_t frag_stores = 0;        // (bit i: the fragment stage writes colour output i)
     uint8_t frag_components[8]{};   // (and which of its components)
     bool uses_render_area = false;
@@ -63,12 +64,13 @@ struct DrawProg {
     };
     std::vector<Pushed> pushed;
     VkDeviceAddress c1[8]{};   // (each stage's c1 by NVN stage, made at load)
-    /// The variant's texture answers a draw checks (c0 / c2 words; one in a game buffer is taken as it was translated)
+    /// The textures a draw checks against the translation from the code alone (c0 / c2 words; one in a game buffer it does
+    /// not see): vk_shader.cpp check_textures
     struct Answer {
         uint8_t stage;
         uint8_t bank;
         uint16_t offset;
-        uint8_t want;      // (the canonical answer the variant was translated for)
+        uint8_t want;      // (the canonical answer the translation took: Color2D as the descriptor has it, not integer)
         uint8_t dim_fixed; // (the instruction fixes the type: the answer's dimension is no question, but rect / buffer)
         uint8_t desc_type; // (the descriptor's own type)
         bool depth_float;  // (a depth texture that is not integer: no integer bit)
@@ -101,8 +103,6 @@ bool shader_has_task(const DState& s);
 void shader_task_mesh_log(double frames);
 /// (logs) the bound program's stages: kind and code keys
 void shader_describe(const DState& s, char* out, size_t cap);
-/// Whether the textures bound now answer what the variant was translated for
-bool shader_answers_hold(const DState& s, const DrawProg& p);
 void shader_stats(char* out, size_t cap, double frames);
 /// The shader objects and variants alive, in counts (none is ever destroyed)
 void shader_held_stats(char* out, size_t cap);

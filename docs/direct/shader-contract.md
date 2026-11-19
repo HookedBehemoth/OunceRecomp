@@ -16,10 +16,21 @@ translator's push-data layout in `third_party/eden/shader_recompiler/backend/spi
 - A program has a vertex stage, optionally a geometry stage after it, and a fragment stage; or a mesh stage, optionally
   after a task stage. A geometry stage is translated for triangle input, so a draw of such a program with another
   topology is skipped and counted.
-- A draw finds its **variant** by a key made of the stages' code, the vertex input types the vertex stage reads and the
-  color-target types the fragment stage writes, plus the bound textures' **answers**: each texture's type and whether
-  it is an integer format, as the translation assumed them. A draw checks the answers it depends on before it draws.
-  In practice there is one variant per program.
+- A stage is translated from its code alone: no draw state reaches the translator. A texture's type is its
+  instruction's (2D where the instruction has none), and no texture is taken for an integer one.
+- A draw finds its **variant** by a key made of the stages' code and the numeric class (float, signed, unsigned) of the
+  color targets the fragment stage writes. In practice there is one variant per program.
+- A draw checks the textures it reads through a driver bank word against what the translation took them for. A bound
+  integer, rectangle or buffer texture, or another type at a size query, is an error: logged once per program and
+  texture word, counted, and it fails the smoke test.
+- What else a stage's SPIR-V could depend on is data the draw pushes, so a stage translates the same whatever it is drawn
+  with:
+  - **Vertex inputs:** every attribute is fetched as the UINT format of its layout, which keeps every bit, and the vertex
+    stage converts it (unorm, snorm, half, scaled, integer, packed) by a code per attribute.
+  - **The stage before the fragment stage:** the fragment stage declares the inputs it reads. A word in the push data
+    says which of them the stage before writes; one it does not write reads (0, 0, 0, 1).
+  - **Bindings:** each stage numbers its bindings from 0 and has its own heap mappings.
+  - **A color location with no attachment** is written as a float output, and Vulkan discards the write.
 - A draw with no ready variant is skipped and counted, and the translation is queued. Workers run four classes of jobs,
   most urgent first: what a load waits for, what a draw misses now, programs the game set at load, and speculative
   variants (`renderer/vk_work.h`).
@@ -30,6 +41,8 @@ translator's push-data layout in `third_party/eden/shader_recompiler/backend/spi
 | What the shader reads | How the back end provides it |
 |---|---|
 | push data | the translator's block, then the address of the uniform-buffer address table at offset 120 |
+| vertex attribute formats | a code byte per attribute in the translator's block (`VERTEX_FORMATS_PUSH_OFFSET`): the conversion, the component width and the component count |
+| which generics the stage before the fragment stage writes | a word in the translator's block (`FRAGMENT_INPUTS_PUSH_OFFSET`) |
 | c0 and c2, the driver banks (storage-buffer table, texture and sampler handles) | copied into the frame arena when the stage's binds change; reached through the address table |
 | c1, the program's own constants | a buffer made when the program loads |
 | c3 and up, the game's uniform buffers | the guest address, through the address table |
@@ -53,7 +66,7 @@ to know about:
 - **Polygons** are drawn as triangle fans. **Quads** have no Vulkan topology: their draws are skipped and counted.
   Tessellation is not translated.
 - **Write masks** cover only the components the fragment stage writes.
-- **Unset vertex attributes** read a zero buffer (0, 0, 0, 1).
+- **Unset vertex attributes** read one 32-bit zero from a zero buffer; the vertex stage completes it to (0, 0, 0, 1).
 
 ## The caches
 
@@ -62,7 +75,7 @@ read; you don't need to delete one.
 
 | File | Holds | Made again when |
 |---|---|---|
-| `ounce_renderer_programs.bin` | translated graphics variants (SPIR-V, interface info, answers) | the shader stamp changes (the translator, the compiler and flags that build it, the stamped regions of `vk_shader.cpp`, `vk_state.h`, the register-pressure pass), the record format, the device's subgroup answers, the depth mode, or the translation switches `nolate`, `latevertex` and `loopcap` |
+| `ounce_renderer_programs.bin` | translated graphics variants (SPIR-V, interface info) | the shader stamp changes (the translator, the compiler and flags that build it, the stamped regions of `vk_shader.cpp`, `vk_state.h`, the register-pressure pass), the record format, the device's subgroup answers, the depth mode, or the translation switches `nolate`, `latevertex` and `loopcap` |
 | `ounce_renderer_compute.bin` | translated compute variants | the compute stamp (the translator, the compiler and flags, the stamped regions), the record version, the device's answers or `loopcap` change |
 | `ounce_renderer_shader_objects.bin` | driver binaries of the shader objects | the driver's binary UUID or version changes; a binary the driver refuses is compiled again |
 

@@ -86,7 +86,7 @@ bool state_emit(DState& s, uint32_t op, const void* a, uint32_t size) {
         std::memset(s.vattr, 0, sizeof s.vattr);
         for (int i = 0; i < v.n && i < 16; i++) s.vattr[i] = v.st[i];
         s.nvattr = std::clamp(v.n, 0, 16);
-        if (nwas != s.nvattr || std::memcmp(was, s.vattr, sizeof was)) s.vtx_gen++, s.vi_gen++;   // (M3b: the pick reads the attributes only)
+        if (nwas != s.nvattr || std::memcmp(was, s.vattr, sizeof was)) s.vi_gen++;
         return true;
     }
     case NOP_BIND_VSTREAM: {
