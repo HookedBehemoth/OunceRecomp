@@ -128,7 +128,7 @@ The mesh stage runs natively. The task stage runs as a compute step before the p
 Occlusion queries are real Vulkan queries. At the end of the rendering they were recorded in, their results are copied
 and one compute step writes each report's 16 bytes (counter and timestamp) at its guest address. The game's CPU readers
 then read plain memory. A render condition is Vulkan conditional rendering on the low word of the report's first
-counter; `HOS_DBG=condcheck` counts conditions that need more than that (none seen). The details are in
+counter; `debug.condcheck` counts conditions that need more than that (none seen). The details are in
 `renderer/vk_query.h`.
 
 ## Submission

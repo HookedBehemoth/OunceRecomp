@@ -155,7 +155,7 @@ return address.
 
 ## Mario Kart World's other host special cases
 
-- **Idle thread dump.** `HOS_STATS_AFTER`'s thread dump skipped threads whose last return address was `0x825c6844`,
+- **Idle thread dump.** `stats_after`'s thread dump skipped threads whose last return address was `0x825c6844`,
   where MKW's idle threads wait.
 - **Occlusion grid reader.** The hook on OoT's `agl::utl::DepthBufferEx` reader (`0x80365f00`) declined at once for
   MKW, which has other code there.

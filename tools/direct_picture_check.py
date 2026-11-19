@@ -2,7 +2,7 @@
 """Per-pass picture checks that can fail.
 
 A frame dump of either back end at full resolution (frozen: RX_VK_DUMP=<present> RX_VK_DUMP_W=4096 RX_VK_DUMP_RAW=1; direct:
-HOS_DBG=dump:<present>,dumpw:4096,dumpraw) is packed into a compact lossless store, passes of two runs are lined up by a stable
+debug.dump=<present>,dumpw:4096,dumpraw) is packed into a compact lossless store, passes of two runs are lined up by a stable
 identity, and each aligned pair gets a verdict from per-tile errors against the frozen back end's own run-to-run noise.
 
     direct_picture_check.py pack <run>/log.txt <dump dir> <out dir>        a run's dump packed (pass targets only)

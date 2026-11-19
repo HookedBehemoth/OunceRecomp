@@ -23,7 +23,7 @@ every program a material reaches) and adds every program of the other archives.
 scene: the models a scene's own files name (its placement files' actors, each actor's pack, its model components), a bfres
 basename a line, for check --models.
 
-check: the programs one frame of a run drew (HOS_DBG=drawlog:<present>: each draw's stages' code keys and its first colour
+check: the programs one frame of a run drew (debug.drawlog=<present>: each draw's stages' code keys and its first colour
 target's format) against the programs the map predicts; --models limits the prediction to the bfres files named in a list
 (one basename a line).
 
@@ -645,7 +645,7 @@ def cmd_stats(a):
 
 
 def cmd_check(a):
-    """The programs a run drew (HOS_DBG=drawlog:<present>: one frame's draws, each with its stages' code keys and its first
+    """The programs a run drew (debug.drawlog=<present>: one frame's draws, each with its stages' code keys and its first
     colour target's format) against the map's prediction"""
     import re
     drawn = collections.defaultdict(lambda: {"formats": collections.Counter(), "lr": collections.Counter(), "draws": 0})

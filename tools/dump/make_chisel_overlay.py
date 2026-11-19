@@ -1,4 +1,4 @@
-"""Build a HOS_FS_OVERLAY folder that boots straight into a map (patched sequence graphs). Game-derived output: local only.
+"""Build a fs.overlay folder that boots straight into a map (patched sequence graphs). Game-derived output: local only.
 
 usage: work/venv/bin/python tools/dump/make_chisel_overlay.py <out_dir> --route newgame|load [--banc KokiriForest_Child] [--start NAME] [--keep-intro]
                               [--skip-title] [--skip-fades] [--slot N] [--romfs DIR]
@@ -13,7 +13,7 @@ usage: work/venv/bin/python tools/dump/make_chisel_overlay.py <out_dir> --route 
            default. Both: work/assets/native/boot-speed.md.
 Reads the sequence graphs from the config's oot dump (ounce config; --romfs: another romfs folder), and writes the resource
 size table with the entries of the graphs that grew raised (tools/dump/rstb.py). Then run the game with
-HOS_FS_OVERLAY=<out_dir>.
+fs.overlay=<out_dir>.
 """
 import sys, os, argparse
 HERE = os.path.dirname(os.path.abspath(__file__))

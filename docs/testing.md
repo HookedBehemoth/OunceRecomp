@@ -79,7 +79,7 @@ map. To make one and run it, run:
 
 ```sh
 work/venv/bin/python -I tools/dump/make_chisel_overlay.py work/overlay/chisel_kokiri --route newgame --banc KokiriForest_Child
-ounce run oot --set HOS_FS_OVERLAY=$PWD/work/overlay/chisel_kokiri
+ounce run oot --set fs.overlay=$PWD/work/overlay/chisel_kokiri
 ```
 
 `--route load [--slot N]` continues a save instead, `--start <name>` picks a start position, and `--skip-title` and
@@ -90,7 +90,7 @@ own saves. Maps that work include `KokiriForest_Child`, `HyruleField_Child`, `Hy
 An *actor zoo* is a scene described in `games/oot/zoo/<scene>.toml`: an existing map, a start position, which of its
 actors stay, and actors to add. `work/venv/bin/python -I tools/dump/make_zoo.py <scene>` makes its overlay in
 `work/overlay/<scene>` when it is missing or out of date, and prints the folder. A scene that sets the time of day
-also needs `--set HOS_INPUT_LIVE=<folder>/live.txt`. A zoo scene keeps the base map's collision, navigation and baked
+also needs `--set input.live=<folder>/live.txt`. A zoo scene keeps the base map's collision, navigation and baked
 lighting.
 
 Both tools raise the game's resource size table entry of every file they make larger. If you patch a game file by
@@ -127,7 +127,7 @@ set anew. The golden data is in `~/.local/share/ounce/<game>/golden/<test>/`.
 To measure frame times, run:
 
 ```sh
-ounce run oot --headless --seconds 110 --bench 600 --exclusive --set HOS_FS_OVERLAY=<overlay folder>
+ounce run oot --headless --seconds 110 --bench 600 --exclusive --set fs.overlay=<overlay folder>
 ```
 
 The game steps exactly 1/60 s a frame and presents as fast as it can, so two runs simulate the same game time whatever
@@ -149,7 +149,7 @@ To replay it headless from that save, run `ounce run oot --replay <name> --headl
 match the game's pad reads, so a load that takes longer in the replay still shifts the timing: release the controls
 during loads, and wait a second after one.
 
-For short scripted input, set `HOS_INPUT_SCRIPT` ([Switches](switches.md#drive-the-game-with-scripted-input)).
+For short scripted input, set `input.script` ([Switches](switches.md#drive-the-game-with-scripted-input)).
 
 ### Profile the CPU
 

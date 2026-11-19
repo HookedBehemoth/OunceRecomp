@@ -136,9 +136,9 @@ pub fn build(args: &[String]) {
     println!("built {}; the log is {}", out.as_deref().map_or(layout.game_dir(), |o| o.to_path_buf()).display(), log.display());
 }
 
-/// `NAME=VALUE`
+/// `key=value`
 fn switch(v: &str) -> (String, String) {
-    let (k, v) = v.split_once('=').unwrap_or_else(|| fail(format!("--set {v}: NAME=VALUE")));
+    let (k, v) = v.split_once('=').unwrap_or_else(|| fail(format!("--set {v}: key=value")));
     (k.to_string(), v.to_string())
 }
 

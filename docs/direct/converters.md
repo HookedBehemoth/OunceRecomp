@@ -62,5 +62,5 @@ No texture is refused, and every texture keeps its channels where the source has
 
 ## Point the game at the output
 
-The host finds the store in the game folder's `prepared/`. To use another folder, set `HOS_PREPARED=<folder>`:
+The host finds the store in the game folder's `prepared/`. To use another folder, set `prepared=<folder>`:
 `<folder>/tex` is the texture store.

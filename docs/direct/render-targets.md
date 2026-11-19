@@ -23,11 +23,10 @@ swapchain, so a window resize only remakes the swapchain.
 
 | Switch | Effect |
 |---|---|
-| `HOS_OUTPUT_RES=<n>` or `output_res=<n>` in `ounce_options.ini` | `O`: 0 the game's 2048 x 1152 frame, 1 2560 x 1440, 2 3840 x 2160, 3 1920 x 1080, 4 5120 x 1440 |
-| `HOS_SCENE_NATIVE=1` | the scene's base scale 1.0 instead of the game's 0.8 |
-| `HOS_RES_SCALE=<s>` | the fixed 3D scale, up to 2.0; above 1.0 the frame is rendered larger and taken down (Upscaling) |
-| `HOS_DYNRES=1` | the game's own dynamic resolution, driven by GPU time |
-| `HOS_RT_POOL_MB=<MB>` | the game's render-target pool; by default it scales with `O`'s pixels and is at least 512 MB |
+| `output_res=<choice>` (a user setting) | `O`: the game's 2048 x 1152 frame, 2560 x 1440, 3840 x 2160, 1920 x 1080 or 5120 x 1440 |
+| `render_scale=<choice>` (a user setting) | the fixed 3D scale, 50% to 200%; above 100% the frame is rendered larger and taken down (Upscaling); above the boot value it waits for the next start |
+| `scene_native=1` | the scene's base scale 1.0 instead of the game's 0.8 |
+| `rt_pool_mb=<MB>` | the game's render-target pool; by default it scales with `O`'s pixels and is at least 512 MB |
 
 A change of `s` reaches the targets on its own: the next frame's descriptors differ, so the allocator makes new targets.
 The window textures, `F` and the UI layer are made once at boot; the game does not support changing them in play.
@@ -45,7 +44,7 @@ The host hooks the allocator in `games/oot/patches/rt_slots.c`:
 - Local shadow maps get their size rounded up to a size class (below).
 - Persistent targets are left to the game.
 
-To log every slot made, with its name, size and format, run with `HOS_RT_SLOTS_LOG=1`.
+To log every slot made, with its name, size and format, run with `rt.log`.
 
 ## What the targets are
 
@@ -75,7 +74,7 @@ A local shadow map lives for one frame: it is allocated when the local-shadow pa
 lighting in the same frame, and freed at the view's last pipeline stage. Its viewport comes from the target's own
 width, so a larger map is drawn whole. The host rounds each light's map up to a size class (256, 384, 512, 640, 768,
 1024, 1280, 1536, 2048, 2432) and keeps a light in its class until it needs a larger one or falls to 90% of the class
-below. That keeps the number of distinct shapes small. `HOS_RT_QUANT=0` turns the classes off.
+below. That keeps the number of distinct shapes small. `rt.quant=0` turns the classes off.
 
 Shadow filter widths are in texels, so a larger map gives a narrower penumbra unless the filter scales with it.
 
@@ -124,4 +123,4 @@ upscaler (FSR3, XeSS, DLSS) also needs:
   allocator alone leaves part of it unused. Only passes that read the target's own size, like the local shadows, can
   be resized at the allocator.
 - **The pool scales with `O` only**, while scene targets grow with `S`. A large `S` at a small `O` needs
-  `HOS_RT_POOL_MB`.
+  `rt_pool_mb`.

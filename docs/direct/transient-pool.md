@@ -17,7 +17,7 @@ of VRAM, made once, and nothing is allocated or freed for them in play.
 
 1. **The host names the range once.** In direct mode the allocator's slots lie past the end of the game's pool, at
    GPU addresses `runtime/nvn_native.c` leaves unused. The slot range is twice the game's pool, and at least 512 MB
-   (`RX_RT_SLOTS_MB` overrides it). The host hands the range to the back end (`gpu_transient_pool`), which allocates it
+   (`rt_slots_mb` overrides it). The host hands the range to the back end (`gpu_transient_pool`), which allocates it
    with one `vkAllocateMemory`.
 2. **Slots are sized by the device's need.** Before placing a target, the host asks the back end how much memory an
    image of that format and shape needs (`gpu_image_need`), and tells it each slot's bytes before a texture is
@@ -45,7 +45,7 @@ storage and shape. Past 1,024 objects, the ones longest unclaimed go.
 
 ## What the strict events mean
 
-Each of these is a strict event (`HOS_DBG=strict` stops at it) and should count 0:
+Each of these is a strict event (`debug.strict` stops at it) and should count 0:
 
 | Event | Meaning |
 |---|---|
@@ -55,7 +55,7 @@ Each of these is a strict event (`HOS_DBG=strict` stops at it) and should count 
 | a transient target sampled after another took its memory | a draw binds an image that no longer owns its range |
 | the transient pool was not made | the back end could not allocate the range |
 
-If "placed outside the slots" appears, the range is too small for the scene: raise `RX_RT_SLOTS_MB` and report the
+If "placed outside the slots" appears, the range is too small for the scene: raise `rt_slots_mb` and report the
 scene. Scene loads are the peak, because the dynamic resolution steps through several sizes in a few presents and each
 size is a full set of targets.
 
@@ -69,13 +69,13 @@ Every 600 presents:
   `REUSE_AFTER`. A count in the "3+" column means 3 presents is no longer safe.
 - `rt slots: transient pool: N MB of M held at a present at most ...`: the peak use of the range.
 
-`HOS_RT_SLOTS_LOG=1` adds the slots' state at the first failed placements. `RX_NVN_LOG_TEX=<w>x<h>` logs every
+`rt.log` adds the slots' state at the first failed placements. `nvn.log_tex=<w>x<h>` logs every
 initialization and finalize of textures of one size.
 
 ## Parking
 
 When the game frees a transient target that it will ask for again, the host keeps the whole entry (texture object and
-descriptor) and hands it back at the next request with the same key, oldest first (`HOS_RT_PARK=0` turns this off). An
+descriptor) and hands it back at the next request with the same key, oldest first. An
 entry not handed back for a few presents is freed for real. Parking keeps the game from initializing and registering
 the same target again each frame.
 

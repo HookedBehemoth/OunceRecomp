@@ -1,54 +1,58 @@
-# Switches
+# Settings
 
-This page lists the environment switches you use most when you test and debug the game, explains the debug items of
-`HOS_DBG`, and describes the log format. It also tells you how to find the rest: the code reads many more switches
-than this page lists, and the comment beside each read says what it does.
+This page explains how the game's settings are given and kept, lists the ones you use most when you test and debug
+the game, and describes the log format. The full list is the table in `renderer/api/settings.h`, and the game prints
+it.
 
-## Set a switch
+## How settings are given
 
-The game reads its switches from the environment, or from `ounce_env.txt` beside `image.bin` (one `NAME=VALUE` a
-line, `#` for notes). `HOS_ENV_FILE=<path>` reads another file instead. `ounce_env.txt` is a file players pass
-around, so it accepts only the game's own prefixes (`HOS_`, `RX_`, `OUNCE_` and a few others) and never a switch
-that names a file to write. The test scripts pass switches after `--`.
+Every setting is a typed key in one table (`renderer/api/settings.h`): a bool, an int, a float, an enum (one of named
+choices) or a string, with its default and its range or choices. `runtime/settings.c` is their one reader and writer;
+the runtime, the renderer and the game patches ask it through `setting_bool`, `setting_int` and their siblings, and
+nothing reads the environment for a setting.
 
-Runtime switches start with `HOS_`, renderer switches with `RX_`, build switches with `OUNCE_` or `RX_`. A switch is
-off, or neutral, unless set, and costs nothing while off.
+- **User settings** are kept in the options file: `ounce_options.ini` beside the game, or the file that `--options
+  <file>` names. A line is `<key>=<value>`, and an enum takes its choice's name or number. The game's Options screen
+  shows some of them (OoT's Frame Rate row) and writes a change back into the file, with the file's other lines kept.
+- **Dev settings** are given on the command line only, as `--set <key>=<value>`, and never kept. `--set` also sets a
+  user setting for one run without writing it.
 
-To find a switch that this page does not list, search the code for its prefix:
+A value the setting does not take stops the start when it comes from `--set`, and is reported and left out when it
+comes from the file. The log's first lines name every setting that is not at its default, and where it came from.
+
+To list every setting, its value now, its default and what it does, run the game with `--list-settings`:
 
 ```sh
-git grep -n 'getenv("HOS_' -- runtime
-git grep -n 'getenv("RX_' -- runtime renderer
+"work/oot/game/Ocarina of Time" --list-settings
 ```
 
-The build's own switches are in [Build and iterate on the lifter](lifter-build.md#lifter-switches) and in
-`ounce help`.
+`ounce run` and `ounce test` pass `--set <key>=<value>` through. A headless run, a test and a replay get an options
+file of their own in the run folder, so they never change yours; a window run uses the game folder's.
 
-## Common runtime switches
+## Common settings
 
-| Switch | What it does |
+| Setting | What it does |
 |---|---|
-| `HOS_HEADLESS` | No window: the renderer draws offscreen |
-| `HOS_WINDOW_SIZE=<w>x<h>` | The window's size (by default 720 high at the monitor's shape), or the headless image's (by default 1920x1080). The game's frame follows the window's pixels |
-| `HOS_AUDIO=0` | Opens no sound device |
-| `HOS_OUTPUT_RES=<0..4>` | A fixed output resolution, over the options file; without one the frame follows the window |
-| `HOS_ASPECT=<ratio>` | A fixed picture shape instead of the window's; wider than 16:9 the HUD, menus and movies keep the middle 16:9 |
-| `HOS_FS_OVERLAY=<folder>` | Patched game files read before the RomFS (a chiseled boot) |
-| `HOS_NO_MOVIES` | Reports movie files as missing, so the game goes on without them |
-| `HOS_TRACE=1` | Logs every Horizon call, like `--trace` |
-| `HOS_FPS_MAX=<fps>` | The frame-rate cap (60 to 240), over the option; above 60 frames are paced up to the display's refresh rate and the game is told the display has a variable refresh |
-| `HOS_BENCH=<frames>[,<ready frames>[,<GPU frames>[,noplay]]]` | A benchmark run (`ounce run --bench` sets it). `<GPU frames>`: the GPU timed by pass over the first measured frames (`passtime.csv`); `noplay`: ready without the player in play (`ounce profile` sets both) |
-| `RX_VK_SHOTS=<dir>`, `RX_VK_SHOT_EVERY=<n>` | Saves a PNG of the presented frame every `n` presents, in the frame's shape with a long side of 1280 |
+| `frame_rate=<30, 60, 120, vsync>` | The frame-rate cap (user setting, the Options screen's Frame Rate row, live). `vsync`: the display's refresh rate, presented in step with it. Above 60 the game is told the display has a variable refresh |
+| `output_res=<choice>` | A fixed output resolution (user setting, at the next start); without one the frame follows the window |
+| `headless=1` | No window: the renderer draws offscreen |
+| `window_size=<w>x<h>` | The window's size (by default 720 high at the monitor's shape), or the headless image's (by default 1920x1080). The game's frame follows the window's pixels |
+| `audio=0` | Opens no sound device |
+| `aspect=<ratio>` | A fixed picture shape instead of the window's; wider than 16:9 the HUD, menus and movies keep the middle 16:9 |
+| `fs.overlay=<folder>` | Patched game files read before the RomFS (a chiseled boot) |
+| `trace=1` | Logs every Horizon call |
+| `bench=<frames>[,<ready frames>[,<GPU frames>[,noplay]]]` | A benchmark run (`ounce run --bench` sets it). `<GPU frames>`: the GPU timed by pass over the first measured frames (`passtime.csv`); `noplay`: ready without the player in play (`ounce profile` sets both) |
+| `shots=<dir>`, `shot_every=<n>` | Saves a PNG of the presented frame every `n` presents, in the frame's shape with a long side of 1280 |
 
 ## Drive the game with scripted input
 
-| Switch | What it does |
+| Setting | What it does |
 |---|---|
-| `HOS_INPUT_SCRIPT=<presses>` | Presses timed from the game's first controller read |
-| `HOS_INPUT_LIVE=<file>` | Reads lines of presses that a test appends, every 30 ms |
-| `HOS_INPUT_EXCLUSIVE` | The script alone drives the game until 5 s after its last press; without it your devices add to the script |
-| `HOS_INPUT_FRAME_CLOCK=1` | The script's time runs at 60 game frames a second instead of the wall clock |
-| `HOS_INPUT_RECORD=<dir>`, `HOS_INPUT_REPLAY=<dir>/input.rec` | Records or replays a session ([Test in the game](testing.md#record-and-replay-a-session)) |
+| `input.script=<presses>` | Presses timed from the game's first controller read |
+| `input.live=<file>` | Reads lines of presses that a test appends, every 30 ms |
+| `input.exclusive=1` | The script alone drives the game until 5 s after its last press; without it your devices add to the script |
+| `input.frame_clock=<off, presents, game>` | The script's time: the wall clock, 60 presents a second, or the game's clock |
+| `input.record=<dir>`, `input.replay=<dir>/input.rec` | Records or replays a session ([Test in the game](testing.md#record-and-replay-a-session)) |
 
 A press is `<seconds>:<button>[+<button>...][/<ms>]`, and presses are separated by commas, for example
 `2:A,5.5:LUP/1500,9:ZL+R`. The buttons are `A B X Y L R ZL ZR PLUS MINUS LS RS LEFT UP RIGHT DOWN`, and the sticks
@@ -58,32 +62,33 @@ otherwise. Names are case-sensitive.
 Scripted input reaches the game even when its window is not in front; a log line saying so does not mean the presses
 were lost. The game must still be in a state that reads the controller.
 
-## Turn on debug aids with HOS_DBG
+## Turn on debug aids
 
-`HOS_DBG=<item>,<item>:<value>,...` turns on debug aids of the renderer and the host. Each costs a load and a branch
-while off. These are the ones you reach for first:
+The `debug.*` settings turn on debug aids of the renderer, the host and the game patches. Each costs a load and a
+branch while off. These are the ones you reach for first:
 
-| Item | What it does |
+| Setting | What it does |
 |---|---|
-| `validation` | The Khronos validation layer, with synchronization validation |
-| `strict` | Any validation warning or error ends the run |
-| `logall`, `log<part>` | Brings back the renderer's detailed per-block log lines (`logmesh`, `logpass`, `logdraw`, `loglists`, `logcompute`, `logpatch`, `lognvn`, `logvi`) |
-| `dump:<present>[+<frames>]` | Saves every pass's targets of the frame after that present as PNGs |
-| `frames`, `gputime` | `frames.csv`: a row per present, with the GPU's busy and idle time |
-| `marks` | GPU breadcrumbs for a lost device: the unfinished draws are logged |
-| `crit[:<first>[:<presents>]]` | A trace of every guest thread over a window of presents, for `tools/crit_path.py` |
-| `resize:<w>x<h>@<present>[+...]` | Resizes the window (or the headless image) at that present, as a drag would |
-| `noassets` | Turns off the prepared-asset patches, for a before-and-after comparison |
+| `debug.validation=1` | The Khronos validation layer, with synchronization validation |
+| `debug.strict=<present>` | Any validation warning or error from that present on ends the run |
+| `debug.logall=1`, `debug.log<part>=1` | Brings back the detailed per-block log lines (`logmesh`, `logpass`, `logdraw`, `loglists`, `logcompute`, `logpatch`, `lognvn`, `logvi`) |
+| `debug.dump=<present>[+<frames>]` | Saves every pass's targets of the frame after that present as PNGs |
+| `debug.frames=1`, `debug.gputime=1` | `frames.csv`: a row per present, with the GPU's busy and idle time |
+| `debug.marks=1` | GPU breadcrumbs for a lost device: the unfinished draws are logged |
+| `debug.crit=<first>[:<presents>]` | A trace of every guest thread over a window of presents, for `tools/crit_path.py` |
+| `debug.resize=<w>x<h>@<present>[+...]` | Resizes the window (or the headless image) at that present, as a drag would |
+| `debug.noassets=1` | Turns off the prepared-asset patches, for a before-and-after comparison |
 
-To find every item, search `runtime/` and `renderer/` for `dbg_has`, `dbg_log` and `hos_dbg_item`.
+The `log.*` settings each turn on one subsystem's log lines (`log.fps`, `log.fs`, `log.sleep` and the others).
 
 ## Read the log
 
 Every line of `ounce_log.txt` (or a test run's `log.txt`) starts with `[hos <seconds> p<present> <thread>]`.
-`HOS_LOG_TIME=0` leaves out the time and present. A line longer than 4 KB ends in `~`.
+`log.time=0` leaves out the time and present. A line longer than 4 KB ends in `~`.
 
 - The first line names the build as `<version> (source <hash>)`. The hash is a fingerprint of `runtime/`, `renderer/` and
-  `games/`, so it tells apart two builds of one commit.
+  `games/`, so it tells apart two builds of one commit. The lines after it name the settings not at their default.
+- `settings: <key> = <value>, kept in <file>` means the Options screen changed a user setting.
 - `vk: <n> presents, <x> fps` gives the frame rate.
 - `FATAL: the game threw a C++ exception of type <name> from <address>` means a throw stopped the game: the lifted code
   cannot unwind ([What the lifter emits](lifter-output.md#fibers-and-c-exceptions)).
@@ -91,8 +96,3 @@ Every line of `ounce_log.txt` (or a test run's `log.txt`) starts with `[hos <sec
   ([Write a patch](patches.md#calls-that-stop-the-game)).
 - `ring owner: ring N pushed by <A> and <B>` means a second thread wrote one of the game's per-core rings, which the
   game updates without a lock. It is an assertion that the host's threading keeps the game's assumption.
-
-## The options file
-
-`ounce_options.ini` beside the game holds `<key>=<number>` lines. The host reads `output_res` (0 to 4, as
-`HOS_OUTPUT_RES`), `handheld_profile` (0 or 1) and `frame_rate_cap` (an index into 60, 90, 120, 144, 165, 240).

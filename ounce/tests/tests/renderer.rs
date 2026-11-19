@@ -30,7 +30,7 @@ fn layer0_windows() {
 #[test]
 fn layer0_pools() {
     let pools = read("renderer/vk_pools.cpp");
-    assert!(!pools.contains("getenv"), "vk_pools.cpp reads the environment (no switch but HOS_DBG, read in vk_main.cpp)");
+    assert!(!pools.contains("getenv"), "vk_pools.cpp reads the environment (settings come from the host: renderer/api/settings.h)");
     // every bind goes through range_places (pieces cut at the window's end); chunk_places only names the windows to make
     assert!(block(&pools, "void add_binds(").contains("l0::range_places(lo, hi, ps)"));
     let claimed = block(&pools, "void bind_claimed(");
@@ -134,20 +134,40 @@ fn strict_stops_and_logs() {
     assert!(s.sources["vk_present.cpp"].contains("strict_present(n)"));
 }
 
-/// The back end's switches are HOS_DBG only, read in vk_main.cpp.
+/// The settings have one reader (runtime/settings.c): no getenv in the runtime, the renderer or the game patches but the
+/// system's and the libraries' own variables (XDG_*, HOME, SDL_*, the Vulkan loader's), and strict is a setting.
 #[test]
-fn strict_switches() {
+fn settings_one_reader() {
     let s = strict();
-    let getenv = Regex::new(r#"getenv\("([^"]+)"\)"#).unwrap();
-    for (name, text) in &s.sources {
-        if text.contains("getenv") {
-            assert_eq!(name, "vk_main.cpp", "{name} reads the environment");
-            for m in getenv.captures_iter(text) {
-                assert_eq!(&m[1], "HOS_DBG");
+    assert!(s.check.contains("bool strict_enabled;") && read("renderer/vk_main.cpp").contains("strict_enabled = dbg(SET_DBG_STRICT);"));
+    let getenv = Regex::new(r#"\bgetenv\(\s*("?)([A-Za-z0-9_]*)"#).unwrap();
+    let mut files = Vec::new();
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if matches!(p.extension().and_then(|x| x.to_str()), Some("c" | "h" | "cpp")) {
+                out.push(p);
             }
         }
     }
-    assert!(s.check.contains("dbg(\"strict\")"));
+    for d in ["runtime", "renderer", "games"] {
+        walk(&path(d), &mut files);
+    }
+    for f in &files {
+        let rel = f.strip_prefix(root()).unwrap().display().to_string();
+        if rel == "runtime/settings.c" {
+            continue;
+        }
+        let text = std::fs::read_to_string(f).unwrap();
+        for m in getenv.captures_iter(&text) {
+            let name = &m[2];
+            let system = name.starts_with("XDG_") || name.starts_with("SDL_") || name == "HOME"
+                || (rel == "renderer/vk_main.cpp" && &m[1] == "" && name == "v");   // (the Vulkan loader's layer variables)
+            assert!(system, "{rel} reads the environment ({name}): settings go through renderer/api/settings.h");
+        }
+    }
 }
 
 /// Every place that counts a skipped or dropped draw, dispatch, clear, copy, report or job also raises the event, so a

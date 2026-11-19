@@ -8,11 +8,10 @@ static unsigned output_width, output_height;
 static const char *override;
 static uint32_t hos_output_size(int height) { return height ? output_height : output_width; }
 static void hos_log(const char *fmt, ...) { (void)fmt; }
-static const char *fixture_env(const char *name) {
-    if (strcmp(name, "HOS_RT_POOL_MB")) exit(2);
-    return override;
+static int answer(setting_id id, int64_t *v) {   /* (rt_pool_mb: the case's, 0 none) */
+    if (id != SET_RT_POOL_MB) exit(2);
+    return *v = override ? strtoll(override, NULL, 0) : 0, 1;
 }
-#define getenv fixture_env
 @BODY@
 #define WIDE(w, h) ((uint64_t)(h) << 32 | (w))
 static const struct {
@@ -30,12 +29,12 @@ static const struct {
     {2560, 1440, 0, 305, "256", 256},
     {3840, 2160, WIDE(7680, 2160), 305, "768", 768},
     {2560, 1440, 0, 305, "0x200", 512},
-    {2560, 1440, 0, 305, "0", 0},
     {2560, 1440, 0, 768, NULL, 768},
     {3840, 2160, 0, 768, NULL, 1728},
 };
 int main(void) {
     int failed = 0;
+    fixture_setting_hook = answer;
     for (unsigned i = 0; i < sizeof cases / sizeof *cases; i++) {
         output_width = cases[i].width; output_height = cases[i].height;
         hos_wide_out = cases[i].wide; override = cases[i].env;

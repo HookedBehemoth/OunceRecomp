@@ -91,6 +91,6 @@ raises `kDiskFormat` or `kDiskVersion`.
 
 | Switch | Effect |
 |---|---|
-| `HOS_DBG=drawlog:<present>` | logs every draw of one frame with its program and state |
-| `HOS_DBG=logdraw`, `logcompute`, `logmesh` | more draw, dispatch and mesh lines |
-| `HOS_DBG=workers:<n>` | the number of shader workers |
+| `debug.drawlog=<present>` | logs every draw of one frame with its program and state |
+| `debug.logdraw`, `logcompute`, `logmesh` | more draw, dispatch and mesh lines |
+| `debug.workers=<n>` | the number of shader workers |

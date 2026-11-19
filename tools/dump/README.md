@@ -8,7 +8,7 @@ game's dictionaries in `work/zsdic` (`ZSDIC=<folder>` for another).
 
 | script | what it is |
 |---|---|
-| `make_chisel_overlay.py` | builds a `HOS_FS_OVERLAY` folder whose patched sequence graphs boot straight into a map |
+| `make_chisel_overlay.py` | builds a `fs.overlay` folder whose patched sequence graphs boot straight into a map |
 | `make_zoo.py` | builds an actor-zoo overlay from a scene description (`games/oot/zoo/*.toml`): the chiseled boot into an existing map whose bancs hold the scene's actors |
 | `ainb.py` | AINB (AI node graph) reader: `ainb.load(bytes)`, `ainb.to_text(graph)`; `python tools/dump/ainb.py <file>` prints it |
 | `ainb_patch.py` | patches an AINB's parameters and plugs (`in:`, `prop:`, `plug:`, `unlink:` operations) and writes a copy |
@@ -23,7 +23,7 @@ game's dictionaries in `work/zsdic` (`ZSDIC=<folder>` for another).
 To make a chiseled boot into Kokiri Forest from a new game and run it:
 
     work/venv/bin/python -I tools/dump/make_chisel_overlay.py work/overlay/chisel_kokiri --route newgame --banc KokiriForest_Child
-    ounce run oot --set HOS_FS_OVERLAY=$PWD/work/overlay/chisel_kokiri
+    ounce run oot --set fs.overlay=$PWD/work/overlay/chisel_kokiri
 
 `--route load` continues the save instead; `--start NAME` picks a start position (the market overlay is a start in
 Hyrule Field at the drawbridge); `--skip-fades` and `--skip-title` cut the loading fades and the title movie.

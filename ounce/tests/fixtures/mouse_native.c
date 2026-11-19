@@ -12,7 +12,11 @@ void hos_log(const char *fmt, ...) { va_list a; va_start(a, fmt); vfprintf(stder
 int64_t hos_now_ns(void) { return clock_ns; }
 static int32_t move_x, move_y;
 static int captured = 1, menu_invert, menu_native = 1;
-int rx_option(int id, int otherwise) { return id == 8 ? menu_invert : id == 6 ? menu_native : otherwise; }
+static int answer(setting_id id, int64_t *v) {   /* (mouse_invert_y, mouse_camera: 1 native) */
+    if (id == SET_MOUSE_INVERT_Y) return *v = menu_invert, 1;
+    if (id == SET_MOUSE_CAMERA) return *v = menu_native, 1;
+    return 0;
+}
 int hos_mouse_take(int32_t *dx, int32_t *dy) { *dx = move_x, *dy = move_y; move_x = move_y = 0; return captured; }
 void hos_mouse_give_back(int32_t dx, int32_t dy) { move_x += dx, move_y += dy; }
 int game_mouse_camera(void);
@@ -28,6 +32,7 @@ static void state(uint32_t v) { memcpy(GP(CAM + 0x204), &v, 4); }
 static int near(float a, float b) { return fabsf(a - b) < 1e-3f; }
 static void frame(int32_t dx, int32_t dy) { move_x += dx, move_y += dy; clock_ns += 16666667; hos_mouse_camera(CAM); }
 int main(void) {
+    fixture_setting_hook = answer;
     fake_heap = (uint8_t *)calloc(64, 4096);
     putf(CAM + 0x178, -85), putf(CAM + 0x17c, 89);
     putf(PITCH, 10), putf(YAW, 30);

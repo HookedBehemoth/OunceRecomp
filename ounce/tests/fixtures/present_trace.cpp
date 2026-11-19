@@ -7,20 +7,18 @@ typedef long long LONG64;
 static volatile int present_interval = 1;
 static int64_t next_frame_at, window_start, frames_in_window, shown_at[16];
 static volatile LONG64 presents, shown_count;
-static int scans, steps, sleeps, reads;
+static int steps, sleeps, reads;
 static int64_t clock_now;
 #define GP(a) ((void *)(uintptr_t)(a))
 #define os_atomic_inc(p) (++*(p))
 static int64_t hos_now_ns(void) { ++reads; return clock_now; }
-static void hos_sleep_ns(int64_t ns) { (void)ns; ++sleeps; }
-static void scan_dt(long long frame) { (void)frame; ++scans; }
 static void game_frame_timing(int64_t now) { (void)now; ++steps; }   /* (the game's patches) */
-static int hos_bench_on(void) { return 0; }   /* (HOS_BENCH off) */
+static int hos_bench_on(void) { return 0; }   /* (the bench setting off) */
 static void hos_bench_present(int64_t now) { (void)now; }
-static void hos_thread_fp_log(long long present) { (void)present; }   /* (HOS_FP_LOG off) */
+static void hos_thread_fp_log(long long present) { (void)present; }   /* (log.fp off) */
 void hos_code_ptr_report(void) {}   /* (runtime/code_ptrs.c) */
 static void hos_log(const char *fmt, ...) { (void)fmt; }
-static int hos_log_switch(const char *item) { (void)item; return 0; }
+static int hos_log_switch(setting_id id) { (void)id; return 0; }
 static int64_t frame_period(void) { return 1000000000LL / 60 * present_interval; }   /* (nn_vi.c: the console's 60 here) */
 @HELPER@
 @PRESENTED@
@@ -41,9 +39,9 @@ int main(int argc, char **argv) {
             if (lines != 5) return 2; /* header + four returned frames flushed after the stall */
         }
     }
-    if (presents != 5 || shown_count != 5 || scans != 5 || steps != 5 || sleeps != 0 || reads != 5) return 3;
-    printf("STATE %lld %lld %lld %d %d %d %d\n", (long long)presents, (long long)shown_count,
-           (long long)next_frame_at, scans, steps, sleeps, reads);
+    if (presents != 5 || shown_count != 5 || steps != 5 || sleeps != 0 || reads != 5) return 3;
+    printf("STATE %lld %lld %lld %d %d %d\n", (long long)presents, (long long)shown_count,
+           (long long)next_frame_at, steps, sleeps, reads);
     if (!enabled) {
         FILE *probe = fopen(argv[2], "rb");
         if (probe) { fclose(probe); return 4; }

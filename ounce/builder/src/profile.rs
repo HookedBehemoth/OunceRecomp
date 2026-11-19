@@ -1,7 +1,7 @@
 //! `ounce profile <game>`: the scenes of games/<game>/profile.toml, one headless benchmark run each (runtime/bench.c),
 //! read into a table a scene and a summary across them. A run reports the frame time, the CPU time a frame by part
 //! (guest logic, guest draw, host draw, other) and the GPU's time a frame by pass (renderer/vk_passtime.h, passtime.csv).
-//! With --shaders a second run per scene takes HOS_DBG=pstats:bench's per-draw times of one frame and names the costliest
+//! With --shaders a second run per scene takes debug.pstats=bench's per-draw times of one frame and names the costliest
 //! programs of the costliest passes, with ACO's statistics from the newest shader census (tools/shadercensus).
 
 use crate::{config, fail};
@@ -190,17 +190,19 @@ fn read_log(dir: &Path, r: &mut SceneResult) {
     read_passtime(&dir.join("passtime.csv"), r);
 }
 
-/// The play size: the game folder's Output resolution (ounce_options.ini output_res) when it names one, else 2560x1440
-fn play_size(layout: &Layout) -> String {
-    let ini = std::fs::read_to_string(layout.game_dir().join("ounce_options.ini")).unwrap_or_default();
-    let res = ini.lines().find_map(|l| l.trim().strip_prefix("output_res=")).and_then(|v| v.trim().parse::<u32>().ok());
-    match res {
-        Some(2) => "3840x2160",
-        Some(3) => "1920x1080",
-        Some(4) => "5120x1440",
-        _ => "2560x1440",
+/// The play size: the game folder's Output resolution (the output_res setting, as the game reads its options file: its
+/// --list-settings) when one is chosen, else 2560x1440
+fn play_size(layout: &Layout, exe: &str) -> String {
+    let out = std::process::Command::new(layout.game_dir().join(exe)).arg("--list-settings").output().ok();
+    let list = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    let res = list.lines().find_map(|l| {
+        let w: Vec<&str> = l.split_whitespace().collect();
+        (w.first() == Some(&"output_res")).then(|| w.get(3).map(|v| v.to_string())).flatten()
+    });
+    match res.as_deref() {
+        Some(v @ ("3840x2160" | "1920x1080" | "5120x1440")) => v.into(),
+        _ => "2560x1440".into(),
     }
-    .into()
 }
 
 /// The scene's overlay folder in the data folder, made when missing (tools/dump/make_chisel_overlay.py)
@@ -256,7 +258,7 @@ fn hex(s: &str) -> u64 {
     u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap_or(0)
 }
 
-/// The costliest programs of the costliest passes, from HOS_DBG=pstats:bench's pstats.csv (one frame, every command
+/// The costliest programs of the costliest passes, from debug.pstats=bench's pstats.csv (one frame, every command
 /// bracketed): a rendering's own draws (its list's SetRenderTargets number) and its jobs' (their pass key)
 fn shaders_of(dir: &Path, r: &SceneResult, census: Option<&Path>) -> Vec<String> {
     let Ok(text) = std::fs::read_to_string(dir.join("pstats.csv")) else { return vec!["  (no pstats.csv)".into()] };
@@ -357,7 +359,7 @@ fn table(name: &str, s: &Scene, r: &SceneResult, top: usize) -> String {
                          r.passes.iter().skip(top).map(|p| p.count).sum::<u64>() as f64 / fr, r.passes.len().saturating_sub(top));
     }
     if !r.shaders.is_empty() {
-        let _ = writeln!(o, "  costliest programs (one frame, HOS_DBG=pstats: time with every draw bracketed; ACO: VGPRs/SGPRs, waves a SIMD, instructions, latency):");
+        let _ = writeln!(o, "  costliest programs (one frame, debug.pstats: time with every draw bracketed; ACO: VGPRs/SGPRs, waves a SIMD, instructions, latency):");
         for l in &r.shaders {
             let _ = writeln!(o, "{l}");
         }
@@ -365,20 +367,20 @@ fn table(name: &str, s: &Scene, r: &SceneResult, top: usize) -> String {
     o
 }
 
-/// Runs one headless benchmark of the scene; with `shaders`, the per-draw run (HOS_DBG=pstats:bench) instead
+/// Runs one headless benchmark of the scene; with `shaders`, the per-draw run (debug.pstats=bench) instead
 fn run_scene(layout: &Layout, game: &Game, name: &str, s: &Scene, dir: &Path, size: &str, frames: u32, shaders: bool) -> PathBuf {
     let config = config();
-    let mut set: Vec<(String, String)> = vec![("HOS_WINDOW_SIZE".into(), size.into())];
+    let mut set: Vec<(String, String)> = vec![("window_size".into(), size.into())];
     if let Some(ov) = overlay(layout, dir, s) {
-        set.push(("HOS_FS_OVERLAY".into(), ov.to_string_lossy().into_owned()));
+        set.push(("fs.overlay".into(), ov.to_string_lossy().into_owned()));
     }
     let play = if s.play { "" } else { ",noplay" };
     let run_name = if shaders { format!("profile-{name}-shaders") } else { format!("profile-{name}") };
     if shaders {
-        set.push(("HOS_BENCH".into(), format!("30,60,0{play}")));
-        set.push(("HOS_DBG".into(), "pstats:bench".into()));
+        set.push(("bench".into(), format!("30,60,0{play}")));
+        set.push(("debug.pstats".into(), "bench".into()));
     } else {
-        set.push(("HOS_BENCH".into(), format!("{frames},60,{}{play}", frames.saturating_sub(8).min(300))));
+        set.push(("bench".into(), format!("{frames},60,{}{play}", frames.saturating_sub(8).min(300))));
     }
     // (the benchmark run keeps a picture of the scene beside the overlay, taken while it measured: every `frames - 8`
     // presents puts one shot in any `frames` presents in a row, at least 8 before the run's end, past the shot's
@@ -439,7 +441,7 @@ pub fn command(args: &[String]) {
             fail(format!("profile: no scene {s} (games/{}/profile.toml has {})", game.name, game.scenes.iter().map(|x| x.0.as_str()).collect::<Vec<_>>().join(", ")));
         }
     }
-    let size = o.size.clone().unwrap_or_else(|| play_size(&layout));
+    let size = o.size.clone().unwrap_or_else(|| play_size(&layout, &game.exe));
     let census = o.census.clone().or_else(|| find_census(&layout, &game.name));
     let data = config().data_dir().join(&game.name).join("profile");
     let mut report = format!("ounce profile {}: {} scenes at {size}, {} measured frames each\n", game.name,

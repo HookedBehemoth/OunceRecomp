@@ -100,7 +100,7 @@ ounce profile oot --exclusive [--scene <name>]... [--size <w>x<h>] [--shaders]
 The scenes are listed in `games/<game>/profile.toml`. Each scene is one headless benchmark run: the scene boots
 straight into its map, waits until it has settled, and then measures 600 frames (`--frames` sets another number). The
 first time a scene runs, `ounce profile` makes its overlay in the data folder's `<game>/profile/<scene>/`. The frame
-size is the game folder's Output resolution when `ounce_options.ini` names one, and 2560x1440 otherwise.
+size is the game's `output_res` setting when its options file chooses one, and 2560x1440 otherwise.
 
 For each scene the report gives:
 

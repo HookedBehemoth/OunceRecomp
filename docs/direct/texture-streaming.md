@@ -67,7 +67,7 @@ The source file exists only during the load, so the host must find the prepared 
 
 - **Prepared textures need their channel map.** The prepared store keeps a texture's channels in its own order, so every
   sampled view of a prepared image applies the game's swizzle on top of the store's. Without it, static meshes come out
-  under-lit. `HOS_DBG=nochanmap` turns the map off, for a comparison.
+  under-lit. `debug.nochanmap` turns the map off, for a comparison.
 - **The game renders into compressed textures.** It encodes its noise volumes to BC4 on the GPU, through a view of an
   uncompressed format of the block's size. A compressed image that is not from the prepared store is therefore made
   view-compatible and usable as a color attachment.
@@ -79,7 +79,7 @@ The source file exists only during the load, so the host must find the prepared 
 
 | Switch | Effect |
 |---|---|
-| `HOS_DBG=noassets` | turns the asset patches off, for a before/after comparison |
-| `HOS_DBG=nodata[:<name part>]` | logs every load with no data; with a name part, watches those textures' slots for CPU writes |
-| `HOS_DBG=texwatch` | finds code that writes texels with the CPU (each write to a texture's pages faults once) |
-| `HOS_PREPARED=<folder>` | the prepared store's folder (default the game folder's `prepared/`) |
+| `debug.noassets` | turns the asset patches off, for a before/after comparison |
+| `debug.nodata[:<name part>]` | logs every load with no data; with a name part, watches those textures' slots for CPU writes |
+| `debug.texwatch` | finds code that writes texels with the CPU (each write to a texture's pages faults once) |
+| `prepared=<folder>` | the prepared store's folder (default the game folder's `prepared/`) |

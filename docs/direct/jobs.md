@@ -69,12 +69,12 @@ layer on the first thread that enters a job loop:
 3. At each job-call site, that thread waits until every job of the pass has gone through the recorder. The game's own
    sites don't wait; without the wait they would draw the pass inline.
 
-It is on by default; `HOS_LAYER_AHEAD=0` turns it off. Log line "direct patch layer ahead": run ahead 1.00 a frame, waits
+It is always on. Log line "direct patch layer ahead": run ahead 1.00 a frame, waits
 given up 0.
 
 ## Check that the job patches apply
 
-Run with `HOS_DBG=logpatch`. Every 600 presents each patch logs one line ("direct patch passes", "mesh system", "mesh
+Run with `debug.logpatch`. Every 600 presents each patch logs one line ("direct patch passes", "mesh system", "mesh
 binds", "job sync", "layer ahead"). In steady play, the "passes" line shows no inline passes of keys a recorder asked
 for, except on a key's first frame.
 

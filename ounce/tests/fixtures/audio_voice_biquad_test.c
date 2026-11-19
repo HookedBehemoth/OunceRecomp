@@ -19,8 +19,6 @@ static void *guest_ptr(uint64_t address) { CHECK(address < sizeof guest); return
 static int lock_depth;
 static void au_lock(void) { CHECK(lock_depth++ == 0); }
 static void au_unlock(void) { CHECK(--lock_depth == 0); }
-static const char *fixture_getenv(const char *name) { (void)name; return NULL; }
-#define getenv fixture_getenv
 
 /* The extracted production types precede these globals and the actual queue functions. */
 #define FLOAT_SETTER imp__ZN2nn5audio29SetVoiceBiquadFilterParameterEPNS0_9VoiceTypeEiRKNS0_22TBiquadFilterParameterIfEE

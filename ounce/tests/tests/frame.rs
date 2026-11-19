@@ -20,7 +20,7 @@ fn body<'a>(text: &'a str, marker: &str) -> &'a str {
     &text[s..s + find(&text[s..], "\n}\n") + 3]
 }
 
-/// HOS_BENCH's ready condition (frames with every part settled in a row, again from any frame with one not) and its
+/// bench's ready condition (frames with every part settled in a row, again from any frame with one not) and its
 /// summary (median and p99 as the frame-time line takes them, the input left as it was; the game steps' violations).
 #[test]
 fn bench_ready_and_summary() {
@@ -29,21 +29,20 @@ fn bench_ready_and_summary() {
     run(&mut clean(&exe));
 }
 
-/// HOS_BENCH in the source: it answers the menu's game speed "per frame" (rx_option 0), the real-time step keeps the
-/// whole 1/60 s step with no frame seconds at any cap, and the window's acquire waits for nothing.
+/// The bench setting in the source: the real-time step keeps the whole 1/60 s step with no frame seconds at any cap, the
+/// present interval is the game's, and the window's acquire waits for nothing.
 #[test]
 fn bench_fixed_step_and_unpaced() {
     let vi = read("runtime/nn_vi.c");
     let oot = read("games/oot/patches/frame_rate.c");
     let step = body(&oot, "void game_frame_timing(int64_t now) {");
-    let branch = &step[find(step, "if ((!rx_option(0, 1) && hos_fps_max() <= 60) || hos_bench_on())")..];
+    let branch = &step[find(step, "if (hos_bench_on()) {")..];
     let branch = &branch[..find(branch, "return;")];
     assert!(branch.contains("__atomic_store_n(&hos_frame_seconds_bits, 0, __ATOMIC_RELAXED);"), "no frame seconds");
     assert!(branch.contains("*slot = 60;"), "the nominal rate: a whole 1/60 s step");
-    assert!(body(&vi, "void hos_vi_native_acquire(int active) {").contains("no_pacing = getenv(\"HOS_NO_PACING\") != NULL || hos_bench_on();"));
+    assert!(body(&vi, "void hos_vi_native_acquire(int active) {").contains("no_pacing = setting_bool(SET_NO_PACING) || hos_bench_on();"));
     assert!(body(&vi, "void hos_vi_native_presented(void) {").contains("if (hos_bench_on()) hos_bench_present(now);"));
-    let option = body(&read("runtime/rx_backend.c"), "int rx_option(int id, int otherwise) {").to_string();
-    assert!(option.contains("|| hos_bench_on();") && option.contains("if (id == 0 && per_frame) return 0;"));
+    assert!(body(&vi, "int hos_vi_native_interval(Ctx *c, int requested) {").contains("present_interval = hos_bench_on() ? clamped : 1;"));
 }
 
 /// Frame-time jitter does not make the real-time game clock run fast (realtime_rate: the debt kept and bounded, high
@@ -58,7 +57,7 @@ fn realtime_rate() {
     run(&mut clean(&exe));
 }
 
-/// HOS_PRESENT_TRACE: the returned frames written, an 8 s stall kept; unset or empty writes nothing; pacing, counters
+/// present_trace: the returned frames written, an 8 s stall kept; unset or empty writes nothing; pacing, counters
 /// and clock reads are the same either way.
 #[test]
 fn present_trace() {
@@ -75,8 +74,8 @@ fn present_trace() {
         let mut c = clean(&exe);
         c.args([mode, csv.to_str().unwrap()]).current_dir(t.path());
         match mode {
-            "enabled" => c.env("HOS_PRESENT_TRACE", &csv),
-            "empty" => c.env("HOS_PRESENT_TRACE", ""),
+            "enabled" => c.env("FIXTURE_SET", format!("present_trace={}", csv.display())),
+            "empty" => c.env("FIXTURE_SET", "present_trace="),
             _ => &mut c,
         };
         states.push(text(&run(&mut c).stdout));
@@ -142,7 +141,7 @@ fn widescreen_shapes() {
 }
 
 /// The game says at boot when memory and swap are below about 10 GB (hos_main.c memory_notice): the threshold at a few
-/// sizes, the boot line with this PC's numbers, no message box with HOS_HEADLESS, and the call made at boot.
+/// sizes, the boot line with this PC's numbers, no message box with headless, and the call made at boot.
 #[test]
 fn low_memory_notice() {
     let src = read("runtime/hos_main.c");
@@ -178,8 +177,8 @@ fn dlss_math() {
 
 /// A frame-rate cap above 60 steps the game by the frames' own time: the two At probes after the engine's step divides
 /// (oot_probes.c hos_oot_frame_step, as the lifter scans them) take the time nn_vi.c realtime_step publishes while the
-/// cap is above 60; at 60 the bits stay 0 (the lifted code as shipped, a long unpaced stretch repaying bounded debt);
-/// HOS_FPS_STEP=0 raises the engine's rate to the cap instead.
+/// cap is above 60; at 60 the bits stay 0 (the lifted code as shipped, a long unpaced stretch repaying bounded debt); at 30
+/// the engine's rate follows the frames down to 30.
 #[test]
 fn frame_rate_cap_step() {
     let sites: Vec<_> = scan().at.iter().filter(|r| r.fname.starts_with("hos_oot_frame_step")).collect();
@@ -205,20 +204,17 @@ fn frame_rate_cap_step() {
     let vi = read("runtime/nn_vi.c");
     let frame = read("games/oot/patches/frame_rate.c");
     let host = [block_top(&vi, "static int fps_max(void) {"), "int hos_fps_max(void) { return fps_max(); }",
-                block_top(&frame, "static float text_scale("), block_top(&frame, "static int realtime_rate("),
+                { let s = find(&frame, "static float text_scale("); &frame[s..s + find(&frame[s..], "\n")] }, block_top(&frame, "static int realtime_rate("),
                 block_top(&frame, "void game_frame_timing(")]
         .join("\n");
     let t = Tmp::new("cap-step");
     let exe = build(&t, "fixture.c", &fixture("frame_rate_cap_step.c").replace("@HOST@", &host).replace("@PROBES@", &hooks),
                     &["-std=c11", "-Wall", "-Wextra", "-Werror", &inc("runtime")]);
-    for (mode, cap, step) in [("cap 120", Some("120"), None), ("cap 60", None, None), ("step off", Some("120"), Some("0"))] {
+    for (mode, rate) in [("cap 120", Some("2")), ("cap 60", None), ("cap 30", Some("0"))] {   // (frame_rate's choice index)
         let mut c = clean(&exe);
         c.arg(mode);
-        if let Some(v) = cap {
-            c.env("HOS_FPS_MAX", v);
-        }
-        if let Some(v) = step {
-            c.env("HOS_FPS_STEP", v);
+        if let Some(v) = rate {
+            c.env("FIXTURE_SET", format!("frame_rate={v}"));
         }
         run(&mut c);
     }
@@ -226,7 +222,7 @@ fn frame_rate_cap_step() {
 
 /// Above a 60 cap a movie's frame count grows by the frames' time, so a cutscene's cues stay with its movie: the At
 /// probe after the player update's add (oot_probes.c hos_oot_movie_count) makes the step nn_vi.c hos_movie_frames,
-/// 1 with no frame time (a cap of 60, or HOS_FPS_MOVIE=0) and the frames' time in 60ths otherwise, each player its own
+/// 1 with no frame time (a cap of 60) and the frames' time in 60ths otherwise, each player its own
 /// carry, any number of players. The game's own step fails the same checks (they prove something).
 #[test]
 fn movie_frame_count() {
@@ -247,10 +243,6 @@ fn movie_frame_count() {
     let flags = ["-std=c11", "-Wall", "-Wextra", "-Werror", &inc("runtime")];
     let exe = build(&t, "fixture.c", &fixture("movie_frame_count.c").replace("@HOST@", &format!("{host}\n{count}")).replace("@LIFTED@", &lifted), &flags);
     run(&mut clean(&exe));
-    run(clean(&exe).env("HOS_FPS_MOVIE", "1")); // (read by its value: 1 is on)
-    run(clean(&exe).arg("off").env("HOS_FPS_MOVIE", "0"));
-    let r = output(clean(&exe).arg("off"));
-    assert!(!r.status.success() && text(&r.stderr).contains("FAIL:"), "the count is the game's own without HOS_FPS_MOVIE=0");
     // (the negative control: the game's own step of one an update fails the same checks at 120 fps)
     let t2 = Tmp::new("movie-count-plain");
     let plain = build(&t2, "plain.c", &fixture("movie_frame_count.c").replace("@HOST@", &host).replace("@LIFTED@", &format!("{LOAD_ADD}{STORE}")),

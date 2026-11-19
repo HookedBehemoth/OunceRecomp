@@ -9,9 +9,8 @@ static uint8_t guest[0x4000];
 #define GP(a) ((void *)(guest + (a)))
 #define MOD 0x1000u
 static void hos_log(const char *fmt, ...) { (void)fmt; }
-int rx_option(int id, int otherwise) { (void)id; return otherwise; }
-static int hos_bench_on(void) { return 0; }   /* (HOS_BENCH off: frame::bench_* check it on) */
-int hos_ini_option(const char *key, int otherwise) { (void)key; return otherwise; }
+static int hos_bench_on(void) { return 0; }   /* (the bench setting off: frame::bench_* check it on) */
+int hos_display_refresh_mhz(void) { return 0; }
 volatile uint64_t hos_gfx_module = MOD;
 volatile int hos_fixed_resolution, hos_dynres_runs;
 volatile uint32_t hos_fixed_scale_bits;
@@ -56,9 +55,9 @@ int main(int argc, char **argv) {
             if (*rate == 40) { recovered = 1; break; }
         }
         CHECK(recovered && lifted_step(60.0f, (float)*rate) == 1.5f);
-    } else {   /* (HOS_FPS_STEP=0: the rate up to the cap) */
-        CHECK(frames(10, 1.0 / 120) == 0.0f && *rate == 120 && *limit == 120);
-        CHECK(lifted_step(60.0f, 60.0f) == 1.0f);
+    } else {   /* (cap 30: the rate follows the frames, a 60th's two steps each) */
+        CHECK(frames(600, 1.0 / 30) == 0.0f && *rate == 30);
+        CHECK(lifted_step(60.0f, (float)*rate) == 2.0f);
     }
     printf("PASS: %s\n", mode);
     return 0;

@@ -33,7 +33,7 @@ The main loop (`frame_main_loop`) calls the framework's frame function forever. 
    - **Stage C**: the calc jobs (culling: `job_calc_runner`), then the **render jobs** (`render_job_record`, about 17
      rounds of six), a second BaseProc step, then the **layer lists**, including the 3D pipeline.
 3. **Wait and acquire** (`frame_wait_present_acquire`): wait until the Presentation Thread finished the previous
-   present, then `nvnWindowAcquireTexture`. The host's display pacing acts here (`HOS_NO_PACING=1` turns it off).
+   present, then `nvnWindowAcquireTexture`. The host's display pacing acts here (`no_pacing` turns it off).
 4. **Draw** (`frame_proc_draw`): record the gate primary. It begins with a GPU wait on the gate event, records the queue
    heads and one `CallCommands` of the nine layer lists recorded in stage C, then the final composite to the window
    texture. Then it sends message 1 to the Presentation Thread.
@@ -68,8 +68,7 @@ the end of the stage (about 2 ms of 7.4 in the market). The `HOS_LAYER_AHEAD` pa
 see [render jobs](jobs.md#the-long-layer-runs-ahead).
 
 **The calc jobs** run one function on all six threads. The occlusion grid is built by one thread while the other five
-poll with 20 µs sleeps; the shape culling then spreads over all six. `HOS_CALC_NAP=0` turns the host's timed sleeps for
-those polls back into spins.
+poll with 20 µs sleeps; the shape culling then spreads over all six.
 
 ## Inside stage A
 
@@ -88,5 +87,5 @@ tasks on the BaseProc executors; see [Havok](havok.md).
 | present wait and acquire | `frame_wait_present_acquire` |
 | present | `frame_present_submit` on the Presentation Thread |
 
-To see the frame's critical path, run with `HOS_DBG=crit`: it writes `crit.bin` in the run folder, and
+To see the frame's critical path, run with `debug.crit`: it writes `crit.bin` in the run folder, and
 `tools/crit_path.py` reads it.

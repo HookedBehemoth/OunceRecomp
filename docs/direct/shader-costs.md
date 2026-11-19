@@ -25,9 +25,9 @@ stages one by one does not pay.
 
 ## Measure one frame in the game
 
-Run with `HOS_DBG=pstats:<present>` (or `pstats:bench`, the first frame a benchmark measures). At that present the back end puts a pipeline-statistics query and two timestamps
+Run with `debug.pstats=<present>` (or `pstats:bench`, the first frame a benchmark measures). At that present the back end puts a pipeline-statistics query and two timestamps
 around every command and writes the results; `tools/shadercensus/scene.py` turns them into a per-program table.
-`HOS_DBG=gputime` logs the GPU's busy time a frame.
+`debug.gputime` logs the GPU's busy time a frame.
 
 Take timings with the frame cap off, on an idle machine, with one game process. Under other load, the numbers are not
 a result.
@@ -65,7 +65,7 @@ which programs each model's materials select. Its subcommands:
 - `stats` summarizes the map: how many materials reach one program, programs no model reaches, and how many shader
   objects and pipelines a load would make.
 - `scene <romfs> <banc files>... --to <models>` lists the models a scene's own placement files name.
-- `check <map> <log>` compares one frame's draws (`HOS_DBG=drawlog:<present>`) against the prediction.
+- `check <map> <log>` compares one frame's draws (`debug.drawlog=<present>`) against the prediction.
 
 ## Time a precompile
 

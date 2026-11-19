@@ -40,4 +40,3 @@ Without one, it builds a plain renderer that draws the two planes, converting BT
 layer.
 
 `games/oot/patches/movie.c` passes no NDVE resource, so every movie takes the plain path and shows the picture as decoded.
-`HOS_NDVE=1` leaves the resource to the game, for a comparison.

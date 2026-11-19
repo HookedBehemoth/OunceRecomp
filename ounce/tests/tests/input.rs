@@ -52,15 +52,15 @@ fn alt_enter() {
 }
 
 /// The keys-only controls (the left stick's and the camera's directions) and the mouse's buttons are bindings like the
-/// Switch's buttons: nn_hid.c's binding table and bound_down against fake key states and a fake ounce_options.ini (the
-/// defaults, a mouse button only while captured and once the capturing click was let go, key_move_up from the file, a
-/// pad_ line for a keys-only control ignored, a key taken from the control that had it, Enter with Alt no key).
+/// Switch's buttons: nn_hid.c's binding table and bound_down against fake key states and settings (the defaults, a mouse
+/// button only while captured and once the capturing click was let go, key_move_up from its setting, a key taken from the
+/// control that had it, Enter with Alt no key).
 #[test]
 fn bound_keys() {
     let hid = read("runtime/nn_hid.c");
     let code = [
         block(&hid, "static int kmap_down(").to_string(),
-        lines_to_block(&hid, "static const char *const bind_names[HOS_KEY_N]", "void hos_bind("),
+        lines_to_block(&hid, "_Static_assert(SET_PAD_DOWN - SET_PAD_A + 1", "void hos_bind("),
         lines_to_block(&hid, "static int mouse_vk_slot(", "static int bound_down("),
     ]
     .join("\n");
@@ -70,7 +70,6 @@ fn bound_keys() {
     }
     assert!(!read_input.contains("key('W')"), "read_input still reads WASD itself");
     let t = Tmp::new("bound-keys");
-    t.write("ounce_options.ini", "key_move_up=90,0\npad_move_up=0\n");
     let c = t.write("t.c", &fixture("bound_keys.c").replace("@CODE@", &code));
     let exe = compile(
         &cc(),
@@ -78,7 +77,7 @@ fn bound_keys() {
           inc("runtime/os"), inc("runtime"), inc("runtime/media"), c.display().to_string()],
         &t.join("t"),
     );
-    run(clean(&exe).arg(t.path()));
+    run(clean(&exe).env("FIXTURE_SET", "key_move_up=90,0"));
 }
 
 /// HD rumble's encoder (runtime/media/hd_rumble.h): the game's VibrationValue as the 4 bytes a Switch controller plays a
@@ -106,7 +105,7 @@ fn hd_rumble_poll() {
 }
 
 /// The poll sends the felt, strength-scaled encoding (a single Joy-Con both sides merged) before the motor path, and
-/// HOS_HD_RUMBLE and the game's vibration reach it.
+/// the hd_rumble setting and the game's vibration reach it.
 #[test]
 fn hd_rumble_wired_in() {
     let pad = read("runtime/media/pad_sdl.c");
@@ -118,7 +117,7 @@ fn hd_rumble_wired_in() {
     }
     assert!(find(&poll, "hd_rumble_felt(hv[0]") < find(&poll, "hd_rumble_encode(felt[0]"));
     assert!(find(&poll, "if (hd_poll(i, side, now)) continue;") < find(&poll, "rumble_due("));
-    assert!(function(&pad, "static void hd_open").contains("getenv(\"HOS_HD_RUMBLE\")"));
+    assert!(function(&pad, "static void hd_open").contains("setting_bool(SET_HD_RUMBLE)"));
     assert!(function(&read("runtime/nn_hid.c"), "static void vibration_send").contains("hos_sdl_rumble_hd(dev, v);"));
 }
 
@@ -156,13 +155,13 @@ fn mouse_native() {
     run(&mut clean(&exe));
 }
 
-/// The poll scales both motors by the menu's Rumble strength (option 9), heavy first, before deciding to send, and the
+/// The poll scales both motors by the rumble setting (percent), heavy first, before deciding to send, and the
 /// game's vibration is mapped by rumble_map.
 #[test]
 fn rumble_strength_wired_in() {
     let ws = Regex::new(r"\s+").unwrap();
     let poll = ws.replace_all(&function(&read("runtime/media/pad_sdl.c"), "static void pads_poll"), " ").into_owned();
-    assert!(Regex::new(r"\brx_option\(\s*9\s*,\s*100\s*\)").unwrap().is_match(&poll));
+    assert!(poll.contains("setting_int(SET_RUMBLE)"));
     let call = Regex::new(r"\brumble_strength\(([^;]*)\);").unwrap().captures(&poll).expect("the poll does not scale the rumble by the menu's strength");
     assert!(Regex::new(r"rumble_low\b.*rumble_high\b").unwrap().is_match(&call[1]), "heavy first, light second");
     assert!(call.get(0).unwrap().start() < find(&poll, "rumble_due("), "Off is a change: a stop is sent");
@@ -214,7 +213,7 @@ fn stick_rest() {
     build_run(&t, &fixture("stick_rest.c").replace("@BLOCK@", &src[start..end]).replace("int32_t", "int"), &["-std=gnu11", "-Wall", "-Wextra", "-Werror"]);
 }
 
-/// A headless run ends on SIGTERM: with HOS_HEADLESS there is no window to read SDL's quit event, so pads_start sets
+/// A headless run ends on SIGTERM: with the headless setting there is no window to read SDL's quit event, so pads_start sets
 /// SDL_NO_SIGNAL_HANDLERS before SDL starts, and only then.
 #[test]
 fn headless_sigterm() {
@@ -226,5 +225,5 @@ fn headless_sigterm() {
     assert!(hint >= 0, "pads_start does not turn off SDL's signal handlers: a headless run ignores SIGTERM");
     assert!(init >= 0 && hint < init, "pads_start sets SDL_NO_SIGNAL_HANDLERS after SDL starts: SDL reads it when it starts");
     let line = &body[body[..hint as usize].rfind('\n').unwrap_or(0)..hint as usize];
-    assert!(line.contains("getenv(\"HOS_HEADLESS\")"), "SDL_NO_SIGNAL_HANDLERS is not limited to HOS_HEADLESS: a window's close on SIGTERM needs them");
+    assert!(line.contains("setting_bool(SET_HEADLESS)"), "SDL_NO_SIGNAL_HANDLERS is not limited to headless runs: a window's close on SIGTERM needs them");
 }

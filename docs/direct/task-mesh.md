@@ -44,7 +44,7 @@ compiles or runs it. The translator emits the native code's order, which can loa
 
 - **The register-pressure pass** reorders every translated mesh stage so fewer values are live at once; see
   [the register-pressure pass](spv-late.md).
-- **A wait before task+mesh draws.** `HOS_DBG=tmwait` records a framebuffer-local barrier before every task+mesh draw.
+- **A wait before task+mesh draws.** `debug.tmwait` records a framebuffer-local barrier before every task+mesh draw.
   It is off by default.
 
 ## Check your change
@@ -52,4 +52,4 @@ compiles or runs it. The translator emits the native code's order, which can loa
 1. Run the register gate (`tools/shaders/late_gate.py`, see [the register-pressure pass](spv-late.md)). No mesh stage
    may start to spill.
 2. Walk from Kokiri to Hyrule Field and stand in the market. Save the kernel log into the run folder after any device
-   loss, and use `HOS_DBG=marks` to see which command was running.
+   loss, and use `debug.marks` to see which command was running.

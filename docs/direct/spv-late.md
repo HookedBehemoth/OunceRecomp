@@ -36,8 +36,8 @@ command) but off: it made some stages spill more.
 
 | Switch | Effect |
 |---|---|
-| `HOS_DBG=nolate` | the translator's order, unchanged (a diagnosis) |
-| `HOS_DBG=latevertex` | the pass on vertex stages too (a trial; off by default) |
+| `debug.nolate` | the translator's order, unchanged (a diagnosis) |
+| `debug.latevertex` | the pass on vertex stages too (a trial; off by default) |
 
 The translated SPIR-V is kept in `ounce_renderer_programs.bin`. The pass's source is part of the shader stamp, and both
 switches are part of the cache's stamp. So a build that changes the pass, or a run that flips a switch, translates

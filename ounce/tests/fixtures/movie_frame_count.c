@@ -11,7 +11,6 @@ typedef int os_mutex;
 static void os_mutex_lock(os_mutex *l) { CHECK(!*l); *l = 1; }
 static void os_mutex_unlock(os_mutex *l) { CHECK(*l); *l = 0; }
 volatile uint32_t hos_frame_seconds_bits;
-static int hos_dbg_item(const char *item) { (void)item; return 0; }
 static void hos_log(const char *fmt, ...) { (void)fmt; }
 static int64_t hos_now_ns(void) { return 0; }
 @HOST@
@@ -34,15 +33,8 @@ static void seconds(double s) {
     hos_frame_seconds_bits = s > 0 ? bits : 0;
 }
 static int within(uint32_t got, uint32_t want) { return got + 1 >= want && got <= want + 1; }
-int main(int argc, char **argv) {
+int main(void) {
     uint32_t n = 0, before;
-    if (argc > 1 && !strcmp(argv[1], "off")) {   /* (HOS_FPS_MOVIE=0: the game's own count at any rate) */
-        seconds(1.0 / 120);
-        for (int i = 0; i < 600; i++) n = update(0);
-        CHECK(n == 600);
-        printf("PASS: off\n");
-        return 0;
-    }
     /* no frame time (a cap of 60): one an update, as the game counts */
     seconds(0);
     for (int i = 0; i < 600; i++) n = update(0);

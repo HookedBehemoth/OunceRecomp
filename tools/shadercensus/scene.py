@@ -1,9 +1,9 @@
-"""A scene's GPU work by program: HOS_DBG=pstats's per-command statistics joined with the census's static cost per unit.
+"""A scene's GPU work by program: debug.pstats's per-command statistics joined with the census's static cost per unit.
 
     work/venv/bin/python -I tools/shadercensus/scene.py <run dir> --census <stages.jsonl> [--clock 2.3]
                                                        [--simds 160] [--out <dir>]
 
-<run dir> is a run of the game with HOS_DBG=pstats:<present>,drawlog:<present> (pstats.csv and the
+<run dir> is a run of the game with debug.pstats=<present>,drawlog:<present> (pstats.csv and the
 drawlog lines in log.txt). For each command: the vertex stage's cost a vertex x its vertex invocations, the fragment stage's
 cost a pixel x its fragment invocations, the task stage's cost a workgroup x its workgroups (compute invocations / threads),
 a dispatch's cost an invocation x its compute invocations (mesh stages are not costed: RADV gives no mesh invocation

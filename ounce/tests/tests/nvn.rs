@@ -135,7 +135,7 @@ fn texture_handle() {
 
 /// The render-target pool's size (nn_applet.c hos_rt_pool_size): a 512 MiB floor (the 305 MiB default crashed in
 /// Castle Town's guard house), growth for 4K and ultrawide pictures up to 3840 x 2160 of room, the game's own larger
-/// size, and HOS_RT_POOL_MB overrides, below the floor too. 12 cases.
+/// size, and rt_pool_mb overrides, below the floor too. 12 cases.
 #[test]
 fn rt_pool_minimum() {
     let body = block(&read("runtime/nn_applet.c"), "uint64_t hos_rt_pool_size(uint64_t game)").to_string();

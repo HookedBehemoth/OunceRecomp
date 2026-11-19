@@ -53,7 +53,7 @@ yet; it is on the open-work list in [the direct back end plan](../direct-backend
 
 If a texture shows wrong content and no NVN call explains it:
 
-1. Run with `HOS_DBG=texwatch`. Every texture's storage pages are write-protected, and each writer is logged once with
+1. Run with `debug.texwatch`. Every texture's storage pages are write-protected, and each writer is logged once with
    its guest return address ("texwatch: ...").
 2. Identify the function, add its label to `games/oot/labels.txt`, and write a patch that hands the bytes to the
    back end at that writer.

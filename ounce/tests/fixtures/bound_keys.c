@@ -10,19 +10,15 @@
 #define VK_XBUTTON2 0x06
 void os_once_run(os_once *o, void (*fn)(void *), void *arg) { if (!o->state) { o->state = 3; fn(arg); } }
 static void hos_log(const char *f, ...) { (void)f; }
-static const char *ini_dir;
-static uint32_t hos_game_path_a(char *b, uint32_t n) { return (uint32_t)snprintf(b, n, "%s/game", ini_dir); }
 static int held[256];
 static int key(int vk) { return held[vk & 255]; }
 @CODE@
 static int fails;
 #define CHECK(c) do { if (!(c)) { printf("FAIL line %d: %s\n", __LINE__, #c); fails++; } } while (0)
 static void release(void) { memset(held, 0, sizeof held); }
-int main(int argc, char **argv) {
-    (void)argc;
-    ini_dir = argv[1];
+int main(void) {
     binds_load();
-    CHECK(hos_binding(HOS_BIND_KEY, HOS_KEY_MOVE_UP, 0) == 'Z');   /* from the file */
+    CHECK(hos_binding(HOS_BIND_KEY, HOS_KEY_MOVE_UP, 0) == 'Z');   /* from the setting */
     CHECK(hos_binding(HOS_BIND_KEY, HOS_KEY_MOVE_LEFT, 0) == 'A');   /* the default */
     CHECK(hos_binding(HOS_BIND_PAD, HOS_KEY_MOVE_UP, 0) == -1);   /* no gamepad input for a keys-only control */
     CHECK(hos_binding(HOS_BIND_KEY, HOS_SW_Y, 0) == VK_LBUTTON && hos_binding(HOS_BIND_KEY, HOS_SW_ZL, 1) == VK_RBUTTON);

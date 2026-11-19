@@ -21,9 +21,9 @@ again, and no step looks back to decide what an earlier command was.
 
 ## Rules
 
-1. **One path.** The back end has no per-feature switches. A debug aid is a build option or an item of `HOS_DBG=<list>`.
+1. **One path.** The back end has no per-feature switches. A debug aid is a build option or a `debug.*` setting.
 2. **No fallback.** Every miss has one defined behavior: wait (at load time only), or skip the work and count it (in
-   play). `HOS_DBG=strict` stops at the first miss. Steady play counts zero.
+   play). `debug.strict` stops at the first miss. Steady play counts zero.
 3. **Known when recorded.** If a command needs data that is not final when it is recorded, move the data: to load time,
    to a read on the GPU, or to one flat copy at the guest's submit. Never add a per-draw step at submit.
 4. **Prepare offline.** The romfs can be changed. If a build-time tool can remove a problem, don't solve it at run time.
@@ -48,7 +48,7 @@ Each item is open at the time of writing. Remove an item when you close it.
   destroy a texture that the game released in the same present while recorded draws still sample it ("texture with no
   image sampled"). Fix the patch so it does not, or lower the margin. The margin was sized when render targets still
   cost VRAM at a scene change; the [transient pool](direct/transient-pool.md) now holds them at a constant size.
-- **A frame at each step up of the dynamic resolution** (`HOS_DYNRES=1`, off by default). The first frame at a larger 3D
+- **A frame at each step up of the dynamic resolution** (the game's own path, no longer reachable: the 3D stays at the fixed scale). The first frame at a larger 3D
   scale shows the previous picture at the old scale in the top-left part of the screen. Find which image the final
   upscale reads on that frame: either the game's own one-frame lag, or a target made again at the larger size over the
   old target's storage while the pass still reads the old image.
@@ -67,7 +67,7 @@ Each item is open at the time of writing. Remove an item when you close it.
   stages sit at the register limit without spilling, the scan covers three scenes and no fragment stage, and why a
   spilling mesh stage hangs the GPU is inferred, not known. A report to Mesa is not written.
 - **The transient pool's size** (twice the game's pool) is measured on the market walk and a six-stop scene cycle only.
-  The full scene cycle and a long soak under `HOS_DBG=strict` are not run.
+  The full scene cycle and a long soak under `debug.strict` are not run.
 
 ### Frame time
 
@@ -95,11 +95,11 @@ Each item is open at the time of writing. Remove an item when you close it.
 | What | How |
 |---|---|
 | Quick run | `ounce test oot --exclusive` |
-| Pictures per pass | `HOS_DBG=dump:<present>` dumps the targets; `tools/direct_picture_check.py` compares them with stored references |
-| Validation | `HOS_DBG=validation` runs the Vulkan validation layers with synchronization validation; any message is a failure |
+| Pictures per pass | `debug.dump=<present>` dumps the targets; `tools/direct_picture_check.py` compares them with stored references |
+| Validation | `debug.validation` runs the Vulkan validation layers with synchronization validation; any message is a failure |
 | Counters | the `direct:` log lines every 600 presents: skipped draws and jobs, unclassified lists, objects created a frame, cross-list uniform overlaps; all 0 in steady play |
-| Game patches | `HOS_DBG=logpatch`: one line per patch every 600 presents, which shows that it still applies |
-| Hangs | `HOS_DBG=marks` writes GPU breadcrumbs for a lost device; save the kernel log into the run folder after each loss |
+| Game patches | `debug.logpatch`: one line per patch every 600 presents, which shows that it still applies |
+| Hangs | `debug.marks` writes GPU breadcrumbs for a lost device; save the kernel log into the run folder after each loss |
 
 If you take timing, turn the frame cap off and run one game process on an idle machine. Frames per second at the cap
 are not a result.

@@ -33,7 +33,7 @@ int main(void) {
         if (got != (int)cases[i][2]) return printf("FAIL: wrong answer\n"), 1;
         if (got && (!strstr(text, "8.0 GB") && cases[i][0] == 8192)) return printf("FAIL: the text has no size: %s\n", text), 1;
     }
-    setenv("HOS_HEADLESS", "1", 1);
+    setenv("headless", "1", 1);
     memory_notice();
     printf("boxes %d\n", boxes);
     return 0;

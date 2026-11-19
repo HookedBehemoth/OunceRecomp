@@ -45,7 +45,8 @@ hand it takes these arguments:
 | `image.bin` | The game image to run |
 | `--romfs <folder>` | The extracted RomFS folder |
 | `--user <folder>` | Where the game keeps saves, caches and temporary files |
-| `--trace` | Logs every Horizon OS call (the same as `HOS_TRACE=1`) |
+| `--options <file>` | The options file (default: `ounce_options.ini` beside the game) |
+| `--set <key>=<value>` | A setting for this run ([Settings](docs/switches.md)); `--list-settings` lists them |
 
 The [development guide](docs/development.md) has the build and run loop and the test tools, and the
 [documentation index](docs/README.md) lists every page. The [design page](docs/design.md) has the rules every change keeps.

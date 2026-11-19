@@ -1,10 +1,10 @@
-"""Build an actor-zoo overlay: a scene we describe, placed in an existing map, booted straight into (HOS_FS_OVERLAY).
+"""Build an actor-zoo overlay: a scene we describe, placed in an existing map, booted straight into (fs.overlay).
 Game-derived output: local only.
 
 usage: work/venv/bin/python tools/dump/make_zoo.py <scene.toml> <out_dir> [--romfs DIR]
        work/venv/bin/python tools/dump/make_zoo.py <name>
 The second form is the scene games/oot/zoo/<name>.toml into work/overlay/<name>, made only when that is missing or older
-than its description or this tool; it prints the overlay's folder (for `ounce run oot --set HOS_FS_OVERLAY=<folder>`).
+than its description or this tool; it prints the overlay's folder (for `ounce run oot --set fs.overlay=<folder>`).
 
 The scene description (games/oot/zoo/*.toml) holds actor names and numbers only:
     base = "SageRoom"            an existing map (its GameBancParam name); its two bancs are rewritten in the overlay
@@ -12,7 +12,7 @@ The scene description (games/oot/zoo/*.toml) holds actor names and numbers only:
     keep = ["StartPos", ...]     the base map's actors kept, by Gyaml name ("*" every one); the rest are left out
     hour = 12                    the time of day the run sets (0-23): the overlay's live.txt holds the host command
                                  ("!cheat 1<hour>", the Cheats page's Set time), passed with
-                                 --set HOS_INPUT_LIVE=<overlay>/live.txt (optional; a new game's field is at night)
+                                 --set input.live=<overlay>/live.txt (optional; a new game's field is at night)
     [[actor]]                    one entry per actor, or per grid of copies
     name = "Obj_Pot_A_01"        the actor (Pack/Actor/<name>.pack.zs)
     translate = [x, y, z]        metres; rotate = [x, y, z] degrees; scale = [x, y, z] (both optional)

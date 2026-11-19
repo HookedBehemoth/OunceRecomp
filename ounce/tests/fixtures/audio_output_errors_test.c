@@ -21,7 +21,6 @@ static char last_log[512];
 /* (single-threaded here: the lock is only checked to be taken and given back in pairs) */
 void os_mutex_lock(os_mutex *m) { (void)m; CHECK(!locked); locked = 1; lock_calls++; }
 void os_mutex_unlock(os_mutex *m) { (void)m; CHECK(locked); locked = 0; }
-static const char *test_getenv(const char *name) { (void)name; return NULL; }
 static void hos_log(const char *format, ...) {
     va_list args;
     va_start(args, format);
@@ -43,7 +42,6 @@ static int hos_sdl_audio_open(int freq, int channels, int s16, void (*pull)(void
 static uint64_t au_ms(void) { return now_ms; }
 static int speakers = 2;   /* (the game's speakers: 6 in the "surround" and "fallback" cases) */
 static int au_speakers(void) { return speakers; }
-#define getenv test_getenv
 #include "audio_output.inc"
 
 /* the bytes the device has played, in order */

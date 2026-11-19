@@ -1,7 +1,7 @@
 //! A game run from the checkout's build (`ounce run`, `ounce test`). The game reads its romfs from the config's
-//! dump and writes its log into `work/<game>/runs/<name>/`; any other runtime setting is a NAME=VALUE passed through. A window run keeps
-//! the user's own saves (the data folder); a headless run is muted, takes screenshots and keeps its saves in the run
-//! folder. While the game runs, `timeline.txt` gets one line a second (seconds, presents, RSS in MB) and `mem.txt`
+//! dump and writes its log into `work/<game>/runs/<name>/`; settings (renderer/api/settings.h) are passed as `--set
+//! key=value`. A window run keeps the user's own saves (the data folder) and options file (the game folder's); a headless
+//! run is muted, takes screenshots and keeps its saves and options file in the run folder, so it never changes the user's. While the game runs, `timeline.txt` gets one line a second (seconds, presents, RSS in MB) and `mem.txt`
 //! the free and shared memory (MB).
 
 use crate::config::Config;
@@ -22,9 +22,9 @@ pub struct Options {
     pub record: Option<String>,
     /// replay rec/<name> (from its copy of the saves, with the switches its header names)
     pub replay: Option<String>,
-    /// HOS_BENCH: measure this many frames once the scene is ready
+    /// the bench setting: measure this many frames once the scene is ready
     pub bench: Option<u32>,
-    /// game switches: NAME=VALUE environment variables of the game
+    /// settings: key=value, passed as --set
     pub set: Vec<(String, String)>,
     /// the run folder's name (default: play, or headless)
     pub name: Option<String>,
@@ -122,7 +122,7 @@ pub fn run(layout: &Layout, config: &Config, game: &Game, o: &Options) -> Result
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
 
-    let mut env: Vec<(String, String)> = Vec::new();
+    let mut set: Vec<(String, String)> = Vec::new();
     let s = |p: &Path| p.to_string_lossy().into_owned();
     // (the saves: a window run plays with the user's own, any other run with a copy of its own in the run folder)
     let user = if o.headless || o.replay.is_some() { dir.join("user") } else { config.data_dir() };
@@ -132,20 +132,16 @@ pub fn run(layout: &Layout, config: &Config, game: &Game, o: &Options) -> Result
             return Err(format!("{} exists: record under another name", rec.display()));
         }
         std::fs::create_dir_all(rec.parent().unwrap()).map_err(|e| e.to_string())?;
-        env.push(("HOS_INPUT_RECORD".into(), s(&rec)));
+        set.push(("input.record".into(), s(&rec)));
     }
     if let Some(r) = &o.replay {
         let rec = layout.recordings(config).join(r);
         let input = rec.join("input.rec");
         let data = std::fs::read(&input).map_err(|e| format!("{}: {e}", input.display()))?;
         let head = String::from_utf8_lossy(data.split(|&b| b == b'\n').next().unwrap_or(&[]));
-        // (the switches the recording was made with, from its first line)
-        for w in head.split_whitespace() {
-            if let Some((k, v)) = w.split_once('=').filter(|(k, _)| k.starts_with("HOS_") && k.bytes().all(|b| b.is_ascii_uppercase() || b == b'_')) {
-                env.push((k.into(), v.into()));
-            }
-        }
-        env.push(("HOS_INPUT_REPLAY".into(), s(&input)));
+        // (the settings the recording was made with, from its first line)
+        set.extend(record_settings(&head));
+        set.push(("input.replay".into(), s(&input)));
         if rec.join("user").is_dir() {
             copy_tree(&rec.join("user"), &user)?;
         }
@@ -153,16 +149,16 @@ pub fn run(layout: &Layout, config: &Config, game: &Game, o: &Options) -> Result
     if o.headless {
         let shots = dir.join("shots");
         std::fs::create_dir_all(&shots).map_err(|e| e.to_string())?;
-        env.push(("HOS_HEADLESS".into(), "1".into()));
-        env.push(("HOS_AUDIO".into(), "0".into()));
-        env.push(("RX_VK_SHOTS".into(), s(&shots)));
+        set.push(("headless".into(), "1".into()));
+        set.push(("audio".into(), "0".into()));
+        set.push(("shots".into(), s(&shots)));
         let every = o.shot_every.unwrap_or(if o.bench.is_some() { 1_000_000 } else { 300 });
-        env.push(("RX_VK_SHOT_EVERY".into(), every.to_string()));
+        set.push(("shot_every".into(), every.to_string()));
     }
     if let Some(n) = o.bench {
-        env.push(("HOS_BENCH".into(), format!("{n},60")));
+        set.push(("bench".into(), format!("{n},60")));
     }
-    env.extend(o.set.iter().cloned());
+    set.extend(o.set.iter().cloned());
     std::fs::create_dir_all(&user).map_err(|e| format!("{}: {e}", user.display()))?;
 
     let need = config.run_free_mem_gb() << 10;
@@ -180,7 +176,6 @@ pub fn run(layout: &Layout, config: &Config, game: &Game, o: &Options) -> Result
         .arg(&romfs)
         .arg("--user")
         .arg(&user)
-        .envs(env.iter().map(|(k, v)| (k, v)))
         .current_dir(&dir)
         .stdin(Stdio::null())
         .stdout(file("stdout.txt")?)
@@ -194,6 +189,13 @@ pub fn run(layout: &Layout, config: &Config, game: &Game, o: &Options) -> Result
     }
     let start_epoch = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     let t0 = Instant::now();
+    if o.headless || o.replay.is_some() {
+        // (a run of the tests' own: its options file in the run folder, empty at the start)
+        cmd.arg("--options").arg(dir.join("ounce_options.ini"));
+    }
+    for (k, v) in &set {
+        cmd.arg("--set").arg(format!("{k}={v}"));
+    }
     let mut child = cmd.spawn().map_err(|e| format!("{}: {e}", exe.display()))?;
     let pid = child.id();
     let (mut timeline, mut mem) = (file("timeline.txt")?, file("mem.txt")?);
@@ -241,4 +243,28 @@ pub fn run(layout: &Layout, config: &Config, game: &Game, o: &Options) -> Result
     }
     let summary = format!("run '{name}': {} s, {how}, peak RSS {peak} MB", t0.elapsed().as_secs());
     Ok(Outcome { dir, summary })
+}
+
+/// The settings an input recording's first line names: `key=value` words (version 2), or the HOS_ names of version 1
+fn record_settings(head: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for w in head.split_whitespace() {
+        let Some((k, v)) = w.split_once('=') else { continue };
+        let key = match k {
+            "build" => continue,
+            "HOS_OUTPUT_RES" => "output_res",
+            "HOS_LANGUAGE" => "language",
+            "HOS_FPS_MAX" => match v {
+                "120" => {
+                    out.push(("frame_rate".into(), "120".into()));
+                    continue;
+                }
+                _ => continue,
+            },
+            k if k.starts_with("HOS_") => continue,
+            k => k,
+        };
+        out.push((key.to_string(), v.to_string()));
+    }
+    out
 }
