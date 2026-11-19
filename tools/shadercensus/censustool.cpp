@@ -9,10 +9,6 @@
 //
 //   censustool <seed> <first> <count> [--compile] [--spv <dir>] [--only <index>...] [--front old|new]
 //              [--late <kinds>] [--budget N] [--sink-peak N] [--objects] [--list]
-//   censustool <seed> precompile <list | -> [--workers N] [--binaries <file>] [--warm]
-// precompile: the programs of a list (shadermap.py list; "-": the whole seed) translated and made as the back end's shader
-// objects on a worker pool, cold (driver compiles from SPIR-V, binaries saved) or --warm (from the saved binaries); one JSON
-// line of times and memory (run it with MESA_SHADER_CACHE_DISABLE=true: a cold run is then cold). See the section below.
 // One JSON line a stage on stdout; "@@stage <index>" on stderr before each (a crash names its stage).
 // --late <kinds>: the back end's register-pressure pass (renderer/vk_spv_late.h) on the stages of these kinds (a comma
 // list of vertex, fragment, mesh, task, compute; "all"), as the game applies it after EmitSPIRV. Every line carries the pass's
@@ -69,7 +65,6 @@ struct Seed {
     std::vector<std::vector<uint32_t>> programs;
 };
 Seed seed;
-std::vector<bool> seed_header_only;   // (precompile: stages with no code, left out)
 bool seed_read(const char* path) {
     FILE* f = std::fopen(path, "rb");
     if (!f) return false;
@@ -432,7 +427,6 @@ struct Dev {
 } gdev;
 PFN_vkCreateShadersEXT create_shaders = nullptr;
 PFN_vkDestroyShaderEXT destroy_shader = nullptr;
-PFN_vkGetShaderBinaryDataEXT get_binary = nullptr;
 bool dev_init() {
     VkApplicationInfo ai{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     ai.pApplicationName = "censustool", ai.apiVersion = VK_API_VERSION_1_4;
@@ -506,8 +500,7 @@ bool dev_init() {
     }
     create_shaders = (PFN_vkCreateShadersEXT)vkGetDeviceProcAddr(gdev.dev, "vkCreateShadersEXT");
     destroy_shader = (PFN_vkDestroyShaderEXT)vkGetDeviceProcAddr(gdev.dev, "vkDestroyShaderEXT");
-    get_binary = (PFN_vkGetShaderBinaryDataEXT)vkGetDeviceProcAddr(gdev.dev, "vkGetShaderBinaryDataEXT");
-    return create_shaders && destroy_shader && get_binary;
+    return create_shaders && destroy_shader;
 }
 struct Made {   // (a stage translated: what a pipeline needs of it)
     VkShaderStageFlagBits vk = VK_SHADER_STAGE_VERTEX_BIT;
@@ -1005,307 +998,6 @@ void one(int id, bool do_compile, const char* spv_dir) {
     }
 }
 
-// ---- precompile: a program list's stages translated and made as shader objects on a worker pool, as the back end would
-// ahead of the draws ----
-// Each stage is translated once in the context its SPIR-V depends on (since 21790625 a vertex or fragment stage alone; a
-// geometry stage after its vertex stage; a mesh stage with its task stage; a fragment stage after a mesh stage with that
-// mesh stage), on the back end's worker count (vk_work.cpp: half the machine's threads, 2 to 12), and made into its shader
-// object as vk_shader.cpp finish makes it; objects whose create info hashes the same (sobin::key_of) are made once. Cold:
-// translate and make in one job, each object's binary appended to the binary cache (the back end's
-// ounce_renderer_shader_objects.bin format). Warm (--warm): every stage translated first, then every object made from the
-// binary cache, the two phases timed apart (the second is the back end's path with its program cache filled).
-namespace pre {
-using clk = std::chrono::steady_clock;
-double thread_ms() {
-    timespec t;
-    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t);
-    return t.tv_sec * 1e3 + t.tv_nsec / 1e6;
-}
-double since_ms(clk::time_point t0) { return std::chrono::duration<double, std::milli>(clk::now() - t0).count(); }
-long status_kb(const char* field) {   // (/proc/self/status VmRSS, VmHWM)
-    FILE* f = std::fopen("/proc/self/status", "r");
-    char line[256];
-    long v = -1;
-    const size_t n = std::strlen(field);
-    while (f && std::fgets(line, sizeof line, f))
-        if (!std::strncmp(line, field, n)) v = std::atol(line + n + 1);
-    if (f) std::fclose(f);
-    return v;
-}
-
-/// The machine's busy CPU seconds (/proc/stat) less this process's own (getrusage): what other processes took meanwhile
-double busy_s() {
-    FILE* f = std::fopen("/proc/stat", "r");
-    unsigned long long v[8]{};
-    if (f && std::fscanf(f, "cpu %llu %llu %llu %llu %llu %llu %llu %llu", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7]) != 8) v[0] = 0;
-    if (f) std::fclose(f);
-    return (double)(v[0] + v[1] + v[2] + v[5] + v[6] + v[7]) / (double)sysconf(_SC_CLK_TCK);
-}
-double self_s() {
-    rusage r;
-    getrusage(RUSAGE_SELF, &r);
-    return r.ru_utime.tv_sec + r.ru_utime.tv_usec / 1e6 + r.ru_stime.tv_sec + r.ru_stime.tv_usec / 1e6;
-}
-
-/// A stage in the context its translation depends on
-struct Job {
-    int id = -1, vs = -1, mesh = -1, task = -1;
-    bool before_gs = false;
-    auto tie() const { return std::tie(id, vs, mesh, task, before_gs); }
-    bool operator<(const Job& o) const { return tie() < o.tie(); }
-};
-/// The jobs of a program (its stage indices in the seed)
-void jobs_of(const std::vector<uint32_t>& prog, std::set<Job>& out) {
-    int vs = -1, fs = -1, gs = -1, mesh = -1, task = -1, cs = -1;
-    for (uint32_t id : prog) {
-        if (seed_header_only[id]) continue;
-        switch (seed.stages[id].stage) {
-        case 0: vs = (int)id; break;
-        case 1: fs = (int)id; break;
-        case 2: gs = (int)id; break;
-        case 5: cs = (int)id; break;
-        case 6: task = (int)id; break;
-        case 7: mesh = (int)id; break;
-        }
-    }
-    if (cs >= 0) out.insert({cs});
-    if (mesh >= 0) {
-        out.insert({mesh, -1, -1, task});
-        if (task >= 0) out.insert({task, -1, mesh});
-        if (fs >= 0) out.insert({fs, -1, mesh, task});
-    } else if (vs >= 0) {
-        out.insert({vs, -1, -1, -1, gs >= 0});
-        if (gs >= 0) out.insert({gs, vs});
-        if (fs >= 0) out.insert({fs});
-    }
-}
-/// The job's stage translated as the back end translates it (vk_shader.cpp translate_variant, translate_mesh_variant,
-/// translate_task_mesh_variant; vk_compute.cpp): its create info
-ObjectInfo translate(const Job& j) {
-    Made m, ctx;
-    const uint32_t st = seed.stages[(size_t)j.id].stage;
-    VkShaderStageFlags next = 0;
-    if (st == 0) make_vs(m, j.id, j.before_gs), next = j.before_gs ? VK_SHADER_STAGE_GEOMETRY_BIT : VK_SHADER_STAGE_FRAGMENT_BIT;
-    else if (st == 2) make_vs(ctx, j.vs, true), make_gs(m, j.id, ctx, true), next = VK_SHADER_STAGE_FRAGMENT_BIT;
-    else if (st == 1) {
-        if (j.mesh >= 0) make_mesh(ctx, j.mesh, j.task);
-        make_fs(m, j.id, j.mesh >= 0 ? &ctx : nullptr);
-    } else if (st == 7) {
-        make_mesh(m, j.id, j.task), next = VK_SHADER_STAGE_FRAGMENT_BIT;
-        hsd::spv_schedule_late(m.spv, nullptr, hsd::LateOptions{});   // (vk_shader.cpp late_mesh: on by default)
-    } else if (st == 6) make_task(m, j.id, j.mesh);
-    else if (st == 5) make_cs(m, j.id);
-    else throw Shader::RuntimeError("stage kind {} not handled", st);
-    return object_info(m, next);
-}
-
-/// The binary cache (vk_shader.cpp sobin: header, then {key, size} and the bytes a record)
-struct Header {
-    uint32_t magic, version;
-    uint8_t uuid[VK_UUID_SIZE];
-    uint32_t binary_version, pad;
-};
-Header want() {
-    VkPhysicalDeviceShaderObjectPropertiesEXT so{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_PROPERTIES_EXT};
-    VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
-    p2.pNext = &so;
-    vkGetPhysicalDeviceProperties2(gdev.phys, &p2);
-    Header h{};
-    h.magic = 0x4f445348, h.version = 1, h.binary_version = so.shaderBinaryVersion;
-    std::memcpy(h.uuid, so.shaderBinaryUUID, VK_UUID_SIZE);
-    return h;
-}
-std::unordered_map<uint64_t, std::vector<uint8_t>> read_binaries(const char* path) {
-    std::unordered_map<uint64_t, std::vector<uint8_t>> at;
-    FILE* f = std::fopen(path, "rb");
-    Header got{};
-    const Header h = want();
-    if (f && std::fread(&got, sizeof got, 1, f) == 1 && !std::memcmp(&got, &h, sizeof h)) {
-        uint64_t rec[2];
-        while (std::fread(rec, 8, 2, f) == 2) {
-            std::vector<uint8_t> b(rec[1]);
-            if (std::fread(b.data(), 1, b.size(), f) != b.size()) break;
-            at[rec[0]] = std::move(b);
-        }
-    }
-    if (f) std::fclose(f);
-    return at;
-}
-
-struct Totals {
-    std::atomic<int64_t> translate_us{0}, create_us{0}, create_wall_us{0}, save_us{0};
-    std::atomic<int> translated{0}, failed{0}, made{0}, same{0}, create_failed{0}, from_binary{0}, missing{0};
-    std::atomic<int64_t> spv_bytes{0}, bin_bytes{0};
-    std::map<std::string, std::array<double, 3>> by_kind;   // (count, translate ms, create ms; under mu)
-    std::mutex mu;
-    void kind(VkShaderStageFlagBits vk, double tr, double cr) {
-        const char* k = vk == VK_SHADER_STAGE_VERTEX_BIT ? "vertex" : vk == VK_SHADER_STAGE_FRAGMENT_BIT ? "fragment"
-                      : vk == VK_SHADER_STAGE_GEOMETRY_BIT ? "geometry" : vk == VK_SHADER_STAGE_MESH_BIT_EXT ? "mesh" : "compute";
-        std::lock_guard lk(mu);
-        auto& a = by_kind[k];
-        a[0] += tr > 0, a[1] += tr, a[2] += cr;
-    }
-};
-
-/// The jobs run on n workers: fn(job index) on each
-void pool(size_t count, int n, const std::function<void(size_t)>& fn) {
-    std::atomic<size_t> next{0};
-    std::vector<std::thread> ts;
-    for (int w = 0; w < n; w++)
-        ts.emplace_back([&] {
-            for (size_t i; (i = next.fetch_add(1)) < count;) fn(i);
-        });
-    for (auto& t : ts) t.join();
-}
-
-int run(const char* list, int workers, const char* bin_path, bool warm) {
-    // (the list: a line a program, its stages as "<nvn stage>:<code key>", as shadermap.py writes them; "-": the whole seed)
-    std::unordered_map<uint64_t, uint32_t> by_key;
-    seed_header_only.assign(seed.stages.size(), false);
-    for (size_t i = 0; i < seed.stages.size(); i++) {
-        const offline::Code c = code_of((int)i);
-        by_key[c.key] = (uint32_t)i, seed_header_only[i] = c.header_only;
-    }
-    std::vector<std::vector<uint32_t>> progs;
-    int listed = 0, absent = 0;
-    if (!std::strcmp(list, "-")) progs = seed.programs, listed = (int)progs.size();
-    else {
-        std::ifstream in(list);
-        if (!in) return std::fprintf(stderr, "cannot read the list %s\n", list), 1;
-        for (std::string line; std::getline(in, line);) {
-            if (line.empty()) continue;
-            listed++;
-            std::vector<uint32_t> ids;
-            bool ok = true;
-            for (size_t at = 0; at < line.size();) {
-                const size_t end = std::min(line.find(' ', at), line.size());
-                const std::string tok = line.substr(at, end - at);
-                at = end + 1;
-                const size_t colon = tok.find(':');
-                if (colon == std::string::npos) continue;
-                const auto it = by_key.find(std::stoull(tok.substr(colon + 1), nullptr, 16));
-                if (it == by_key.end()) ok = false;
-                else ids.push_back(it->second);
-            }
-            if (ok) progs.push_back(std::move(ids));
-            else absent++;
-        }
-    }
-    std::set<Job> js;
-    for (const auto& p : progs) jobs_of(p, js);
-    const std::vector<Job> jobs(js.begin(), js.end());
-    std::fprintf(stderr, "precompile: %d programs listed, %d not in the seed; %zu stages to translate on %d workers\n", listed, absent,
-                 jobs.size(), workers);
-    Totals tot;
-    std::mutex mu;
-    std::unordered_set<uint64_t> keys;
-    std::vector<VkShaderEXT> objects;
-    FILE* out = nullptr;
-    std::unordered_map<uint64_t, std::vector<uint8_t>> bins;
-    const Header h = want();
-    if (bin_path && !warm) {
-        if ((out = std::fopen(bin_path, "wb"))) std::fwrite(&h, sizeof h, 1, out);
-    } else if (bin_path) {
-        bins = read_binaries(bin_path);
-        std::fprintf(stderr, "precompile: %zu binaries read\n", bins.size());
-    }
-    const long rss0 = status_kb("VmRSS:");
-    if (FILE* f = std::fopen("/proc/self/clear_refs", "w")) std::fputs("5", f), std::fclose(f);   // (the peak from here)
-    int errors_told = 0;
-    auto translate_one = [&](const Job& j, ObjectInfo& o) {
-        const double t0 = thread_ms();
-        try {
-            o = translate(j);
-        } catch (const std::exception& e) {
-            tot.failed++;
-            std::lock_guard lk(mu);
-            if (errors_told++ < 10) std::fprintf(stderr, "precompile: stage %d not translated: %s\n", j.id, e.what());
-            return false;
-        }
-        const double ms = thread_ms() - t0;
-        tot.translate_us += (int64_t)(ms * 1e3), tot.translated++, tot.spv_bytes += (int64_t)o.spv.size() * 4;
-        tot.kind(o.stage, ms, 0);
-        return true;
-    };
-    auto make = [&](ObjectInfo& o, bool bin) {
-        const uint64_t key = o.key();
-        {
-            std::lock_guard lk(mu);
-            if (!keys.insert(key).second) return void(tot.same++);
-        }
-        VkShaderCreateInfoEXT ci = o.info();
-        if (bin) {
-            const auto it = bins.find(key);
-            if (it == bins.end()) return void(tot.missing++);
-            ci.codeType = VK_SHADER_CODE_TYPE_BINARY_EXT, ci.codeSize = it->second.size(), ci.pCode = it->second.data();
-        }
-        VkShaderEXT obj = VK_NULL_HANDLE;
-        const double c0 = thread_ms();
-        const auto w0 = clk::now();
-        const VkResult r = create_shaders(gdev.dev, 1, &ci, nullptr, &obj);
-        const double cms = thread_ms() - c0, wms = since_ms(w0);
-        if (r != VK_SUCCESS) return void(tot.create_failed++);
-        tot.create_us += (int64_t)(cms * 1e3), tot.create_wall_us += (int64_t)(wms * 1e3), tot.made++;
-        if (bin) tot.from_binary++;
-        tot.kind(o.stage, 0, wms);
-        if (out) {   // (sobin::save; not in the compile's time)
-            const auto s0 = clk::now();
-            size_t n = 0;
-            std::vector<uint8_t> data;
-            if (get_binary(gdev.dev, obj, &n, nullptr) == VK_SUCCESS && n) {
-                data.resize(n);
-                if (get_binary(gdev.dev, obj, &n, data.data()) == VK_SUCCESS) {
-                    const uint64_t rec[2] = {key, n};
-                    std::lock_guard lk(mu);
-                    std::fwrite(rec, 8, 2, out), std::fwrite(data.data(), 1, n, out);
-                    tot.bin_bytes += (int64_t)n;
-                }
-            }
-            tot.save_us += (int64_t)(since_ms(s0) * 1e3);
-        }
-        std::lock_guard lk(mu);
-        objects.push_back(obj);   // (kept, as the back end keeps them: the driver's memory counts)
-    };
-    double wall_translate = 0, wall_make = 0;
-    const double busy0 = busy_s(), self0 = self_s();
-    const auto t0 = clk::now();
-    if (!warm) {
-        pool(jobs.size(), workers, [&](size_t i) {
-            ObjectInfo o;
-            if (translate_one(jobs[i], o)) make(o, false);
-        });
-    } else {
-        std::vector<ObjectInfo> made(jobs.size());
-        std::vector<char> ok(jobs.size());
-        pool(jobs.size(), workers, [&](size_t i) { ok[i] = translate_one(jobs[i], made[i]); });
-        wall_translate = since_ms(t0);
-        const auto t1 = clk::now();
-        pool(jobs.size(), workers, [&](size_t i) {
-            if (ok[i]) make(made[i], true);
-        });
-        wall_make = since_ms(t1);
-    }
-    const double wall = since_ms(t0);
-    const double self_cpu = self_s() - self0, others = busy_s() - busy0 - self_cpu;
-    const long hwm = status_kb("VmHWM:");
-    if (out) std::fclose(out);
-    for (VkShaderEXT o : objects) destroy_shader(gdev.dev, o, nullptr);
-    std::printf("{\"mode\":\"%s\",\"workers\":%d,\"listed\":%d,\"absent\":%d,\"stages\":%zu,\"translated\":%d,\"failed\":%d,"
-                "\"objects\":%d,\"same_object\":%d,\"create_failed\":%d,\"from_binary\":%d,\"binary_missing\":%d,"
-                "\"translate_cpu_s\":%.2f,\"create_cpu_s\":%.2f,\"create_wall_sum_s\":%.2f,\"save_s\":%.2f,\"wall_s\":%.2f,"
-                "\"wall_translate_s\":%.2f,\"wall_make_s\":%.2f,\"spirv_mb\":%.1f,\"binaries_mb\":%.1f,\"rss_before_mb\":%.0f,"
-                "\"peak_mb\":%.0f,\"process_cpu_s\":%.1f,\"others_cpu_s\":%.1f,\"by_kind\":{",
-                warm ? "warm" : "cold", workers, listed, absent, jobs.size(), tot.translated.load(), tot.failed.load(), tot.made.load(),
-                tot.same.load(), tot.create_failed.load(), tot.from_binary.load(), tot.missing.load(), tot.translate_us / 1e6,
-                tot.create_us / 1e6, tot.create_wall_us / 1e6, tot.save_us / 1e6, wall / 1e3, wall_translate / 1e3, wall_make / 1e3,
-                tot.spv_bytes / 1048576.0, tot.bin_bytes / 1048576.0, rss0 / 1024.0, hwm / 1024.0, self_cpu, others);
-    bool first = true;
-    for (const auto& [k, a] : tot.by_kind)
-        std::printf("%s\"%s\":[%.0f,%.1f,%.1f]", first ? "" : ",", k.c_str(), a[0], a[1], a[2]), first = false;
-    std::printf("}}\n");
-    return 0;
-}
-}  // namespace pre
 
 }  // namespace
 
@@ -1313,20 +1005,6 @@ int main(int argc, char** argv) {
     if (argc < 4) return std::fprintf(stderr, "censustool <seed> <first> <count> [--compile] [--spv <dir>] [--only <index>...]\n"), 2;
     if (!seed_read(argv[1])) return std::fprintf(stderr, "cannot read the seed %s\n", argv[1]), 1;
     partners_make();
-    if (!std::strcmp(argv[2], "precompile")) {
-        const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
-        int workers = (int)std::clamp(hw / 2, 2u, 12u);   // (vk_work.cpp: n_workers)
-        const char* bins = nullptr;
-        bool warm = false;
-        for (int i = 4; i < argc; i++) {
-            if (!std::strcmp(argv[i], "--workers") && i + 1 < argc) workers = std::max(1, std::atoi(argv[++i]));
-            else if (!std::strcmp(argv[i], "--binaries") && i + 1 < argc) bins = argv[++i];
-            else if (!std::strcmp(argv[i], "--warm")) warm = true;
-        }
-        if (warm && !bins) return std::fprintf(stderr, "--warm needs --binaries\n"), 2;
-        if (!dev_init()) return std::fprintf(stderr, "no device\n"), 1;
-        return pre::run(argv[3], workers, bins, warm);
-    }
     int first = std::atoi(argv[2]), count = std::atoi(argv[3]);
     bool do_compile = false;
     const char* spv_dir = nullptr;

@@ -1623,6 +1623,7 @@ dependencies = [
  "ounce-core",
  "ounce-dump",
  "ounce-lift",
+ "ounce-shaders",
  "ounce-tex",
  "png",
  "regex",
@@ -1675,6 +1676,15 @@ dependencies = [
  "sha1",
  "sha2",
  "toml",
+]
+
+[[package]]
+name = "ounce-shaders"
+version = "0.1.0"
+dependencies = [
+ "memchr",
+ "ounce-tex",
+ "rayon",
 ]
 
 [[package]]

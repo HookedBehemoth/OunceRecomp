@@ -56,9 +56,18 @@ fn logged(mut cmd: Command, what: &str, log: &Path) {
     }
 }
 
-/// The renderer (Meson and Ninja, in the checkout's work/renderer: the same build for every game). `meson setup`
+/// A release's renderer, built with it (the AppImage's): used instead of the checkout's Meson build when it is there
+pub const PREBUILT_RENDERER: &str = "prebuilt/ounce_renderer.so";
+
+/// The renderer: a release's prebuilt one, else Meson and Ninja in the checkout's work/renderer: the same build for every game). `meson setup`
 /// runs when the folder has no build.ninja yet. Returns ounce_renderer.so.
 fn renderer(layout: &Layout, log: &Path) -> PathBuf {
+    // (a release ships it built: no Meson, Ninja or C++ compiler on a player's PC)
+    let prebuilt = layout.root.join(PREBUILT_RENDERER);
+    if prebuilt.is_file() {
+        println!("the renderer: {} (prebuilt)", prebuilt.display());
+        return prebuilt;
+    }
     let dir = layout.renderer_build();
     for (tool, why) in [("meson", "the renderer's build"), ("ninja", "the renderer's build"), ("clang++", "the renderer's compiler (renderer/meson/clang.ini)")] {
         if Command::new(tool).arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_err() {
@@ -91,7 +100,7 @@ pub fn build(args: &[String]) {
             "--out" => out = Some(val().into()),
             "--dump" => dump = Some(val()),
             "--quality" => pass.extend(["--quality".into(), val()]),
-            "--gen-parts" | "--progress" => pass.push(a.clone()),
+            "--gen-parts" | "--progress" | "--shaders" => pass.push(a.clone()),
             _ => fail(format!("build: what is {a}? (ounce help)")),
         }
     }

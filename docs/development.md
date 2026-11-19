@@ -60,6 +60,10 @@ cache, and the store only when the dump or the encoder changed. The first build 
 which takes several minutes. `ounce run` opens a window with sound and
 uses your own saves; it warns when the build is older than the checkout.
 
+`ounce build <game> --shaders` also makes the game's shader pack and fills the game folder's shader caches with the
+game's `--precompile`, as a player's game folder always is ([shaders](builder-plan.md#shaders)). Without it, the game
+translates each program at its first draw.
+
 On a shared PC, and always as an agent, pass `--exclusive` to `build`, `run` and `test`: it waits until no other build
 or game run is going. See [Rules for agents](agents.md).
 

@@ -175,6 +175,8 @@ bool os_file_trylock(os_file *f);
 /* the whole file mapped read-only (its size into *size): NULL when empty or on failure. Kept for the process's life;
    it outlives the file's closing. */
 const void *os_file_map_read(os_file *f, size_t *size);
+/* reads of the file will be scattered: no read-ahead (a scan of record headers through a large file reads those alone) */
+void os_file_random(os_file *f);
 enum { OS_PATH_NONE = 0, OS_PATH_FILE = 1, OS_PATH_DIR = 2, OS_PATH_LINK = 4 };   /* (LINK: added to FILE or DIR) */
 int os_path_kind(const char *path);   /* what is there (links followed; OS_PATH_LINK when the path itself is one) */
 int os_mkdir(const char *path);       /* 0, OS_EEXIST, OS_ENOENT (the parent is missing), ... */

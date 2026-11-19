@@ -27,7 +27,7 @@ The target is 15 minutes on a 16-thread PC. Measured on a Ryzen 7 5800X3D (16 th
 | Host C | `runtime/*.c`, libopus and the runtime by clang in this process (`ounce/builder/src/host.rs`) | 4 s |
 | Link | lld in this process (`ounce/builder/src/link.rs`), against the prebuilt host and the sysroot; then the labels | 1 s |
 | Textures | `ounce/tex`: every BNTX texture deswizzled, ASTC re-encoded to BC7 and BC5, packed (`ounce tool textures`); the romfs copy's texture files written with their texels zeroed | 258 s (fast, the default); 1055 s with `--quality high` (16,000 CPU-s, 2.6 GB peak) |
-| Shaders | optional: the game translates its programs ahead of time into the folder's caches | not written |
+| Shaders | the shader pack from the romfs (`ounce/shaders`), then the game's `--precompile`: the renderer translates and compiles every program into the folder's caches ([shaders](#shaders)) | pack 4 s; precompile 124 s at 16 threads, cold (0.1 s when current) |
 
 ## The prepared assets
 
@@ -180,7 +180,8 @@ whole game:
 | the game's executable (game.toml's `exe`, `Ocarina of Time`), `ounce_renderer.so`, `image.bin` | the game, its renderer and its image |
 | `romfs/` | the dump's romfs; its texture files hold their headers, their texels are zeroed |
 | `prepared/tex/` | the texture store; `prepared/hollowed.txt` lists the romfs files whose texels it holds |
-| `ounce_renderer_*.bin` | the shader caches, written by the game beside the executable |
+| `shaders.pack` | the shader pack: the programs the game can draw with, each stage's bytes once ([shaders](#shaders)) |
+| `ounce_renderer_*.bin` (and `.idx`), `ounce_renderer_shaders.stamp` | the shader caches, filled by the build's precompile and written by the game beside the executable |
 | `user/` | the saves |
 
 - The host takes everything from beside the executable when it starts with no arguments: the image, `romfs/`,
@@ -225,10 +226,11 @@ The lines it reads, one per line on standard output:
 |---|---|
 | `@@dump <what>`, `@@identity <pass\|fail> <build id or why>` | `dump --check` |
 | `@@probe <key> <state> <value>`, `@@probe verdict <pass\|fail> <keys>` | `probe` |
-| `@@stages <key>...` | `build --progress`: the steps this build runs, of `dump host lift link romfs textures` |
+| `@@stages <key>...` | `build --progress`: the steps this build runs, of `dump host lift link romfs textures shaders` |
 | `@@stage <key> <what>` | a step begins; `@@stage done <folder>` ends a build |
 | `@@plan <modules> <modules>`, `@@file <name> <seconds> <new\|cached>`, `@@eta <seconds>` | the lift's compiles, the estimate from the last build's seconds (`seconds.txt` in the cache) |
 | `@@tex <files done> <files> <bytes done> <bytes> <path>` | the texture step, at most four a second |
+| `@@shaders pack <files done> <files>`, `@@shaders <done> <programs> <translated> <kept> <failed>` | the shader step: the pack, then the game's precompile, four a second |
 | `@@error <message>` | the build failed (the message on one line; the log has the rest) |
 
 Stopping a build kills the process, and a build run again over the same folder finishes it:
@@ -239,6 +241,40 @@ Stopping a build kills the process, and a build run again over the same folder f
   whose texels were zeroed is smaller than the dump's, so it is written whole again.
 - The texture store's packs and index are written again from the start; a `.hollow.tmp` file left in the romfs is
   not read.
+
+## Shaders
+
+The last step of a game folder's build makes its shaders ahead of the game, so the first boot finds them warm.
+
+1. **The pack** (`ounce/shaders`, `ounce tool shaders`): every model's materials are resolved to the bfsha programs
+   their static options select (gsys's own options from the material's render infos, any choice where gsys sets them
+   at a draw; the pass and the skinning are chosen per draw, so every one of them), and every program of the other
+   shader archives is added (agl's, its networks, the movie upscaler's, the particle sets' and layouts'). The pack,
+   `shaders.pack` beside the executable, holds each stage's control section and code once, in the seed format the
+   shader tools read. It depends on the romfs alone: OoT 37,618 programs, 485 MB, in 5 s; it is made again when the
+   files it reads change (`shaders.pack.key`).
+2. **The precompile**: the build runs the game with `--precompile`. Nothing of the game runs: the renderer makes its
+   device, then on every core makes each graphics program of the pack as its first draw into float targets would
+   make it, through the same code (vk_shader.cpp `shader_precompile`): translated into `ounce_renderer_programs.bin`
+   unless it is there, its shader objects made, their driver binaries kept in `ounce_renderer_shader_objects.bin`.
+   Compute programs are left to their first dispatch: their translation reads the dispatch's bank. When it is done
+   the renderer writes `ounce_renderer_shaders.stamp`: the caches' stamp and the pack's size.
+
+The precompile depends on the GPU and its driver, so it runs on the PC that builds the game, which is the one that plays
+it. The caches' stamp is the program cache's (the translator's code, the device's subgroup answers, the depth mode)
+and the driver binaries' header (VK_EXT_shader_object's `shaderBinaryUUID` and `shaderBinaryVersion`, which a driver
+update changes). At every start the renderer compares it with the stamp file: when they differ (a driver update, a
+new renderer, a build without the precompile), the driver binaries of another driver are dropped as before, and the
+pack's programs are made again on the shader workers' background half while the game plays; the stamp file is
+written when they are done. A precompile of a folder whose stamp is current returns at once.
+
+Measured for OoT (Ryzen 7 5800X3D, RX 6950 XT, RADV): 33,478 graphics variants translated, 12 failed and 4,128
+compute programs left in 124 s; the program cache is then 4.2 GB and the driver binaries 346 MB. Each cache keeps an
+index beside it (`<file>.idx`: every record's key, offset and size, written by the precompile and at a start that read
+new records), so a start reads 0.8 MB instead of the head of every record (9.6 s from a cold disk without it). A
+Kokiri boot from such a folder translated 24 graphics variants (other colour target types) and made 11,823 of its
+11,865 shader objects from binaries; its 590 compute variants were still translated at their dispatches (8.5 s on the
+workers).
 
 ## The device check
 
@@ -278,4 +314,4 @@ user open the device (the group that owns it, often `kvm`).
 5. The dump reader in Rust (done: `ounce/dump`).
 6. The texture converter in Rust (done: `ounce/tex`).
 7. The game folder and the host's defaults for it (done); the AppImage.
-8. Shaders ahead of time.
+8. Shaders ahead of time (graphics done; compute at its first dispatch).

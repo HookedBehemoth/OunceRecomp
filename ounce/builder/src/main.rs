@@ -20,6 +20,7 @@ mod link;
 mod llvm;
 mod objeq;
 mod probe;
+mod shaders;
 mod profile;
 mod progress;
 mod smoke;
@@ -36,7 +37,9 @@ use std::time::Instant;
 const LLVM_MAJOR: u32 = 23;
 
 const HELP: &str = "ounce <command> ...
-  build <game> [-j N] [--gen-parts]      the game's build into work/<game>/ (game/, lift/, obj/, build.log)
+  build <game> [-j N] [--gen-parts] [--shaders]
+                                         the game's build into work/<game>/ (game/, lift/, obj/, build.log);
+                                         --shaders: its shader pack and caches too, as a player's folder has
   build <game> --out <dir> --dump <file.nup|folder> [--quality fast|high]
                                          a portable player's game folder made from a dump
   run <game> [--headless] [--seconds N] [--record R | --replay R] [--bench N] [--shots N] [--name N]
@@ -72,19 +75,26 @@ const TOOL_HELP: &str = "ounce tool <command> ...
                                        the lift and the compile of every partition and generated module, in memory
   build <out dir> --direct <ounce_renderer.so> --game <dir> --obj <dir> [-j N] [--cache <dir>] [--version <text>]
         [--check <obj dir>] [--gen <lift dir> [--gen-parts]] [--map <file>] [--progress] [--root <dir>] [--exefs <dir>]
-        [--dump <file.nup|folder> [--title <t>] [--dump-dir <dir>]] [--no-textures] [--quality fast|high]
+        [--dump <file.nup|folder> [--title <t>] [--dump-dir <dir>]] [--no-textures] [--quality fast|high] [--shaders]
                                        the lift, every compile and the link in this process (feature clang), then
                                        <out>/prepared, the texture store: without --dump kept while current, else copied
                                        from the main checkout's build or converted; --dump makes <out> a game folder: the
                                        exefs read in memory, romfs/ copied while the lift runs, then its own
                                        prepared/tex and the romfs's texture files with their texels zeroed, user/;
                                        --dump-dir also writes the dump there (exefs/, romfs/ whole) for the developer
-                                       tools; objects, rt64/ and the link order go to --obj
+                                       tools; objects, rt64/ and the link order go to --obj; a game folder (or
+                                       --shaders) also gets shaders.pack and its shader caches filled by the game's
+                                       --precompile
   dump <src> --check --game <dir>      `@@` lines: whether the dump is the game (the window's check)
   link <out> <objs.rsp> [--order <hot_order.bin>] [--map <file>] [--labels <file>] [--print] [-- <libs>...]
                                        the game's link (a list of objects), lld in this process
   textures <out dir> --game <dir> [--romfs <dir>] [--fast] [-j N] [--only <prefix>]...
                                        the prepared texture store from a romfs; --compare <a> <b> checks two stores
+  shaders <romfs> --out <pack> [--game <dir>] [--all]
+                                       the shader pack: the programs the models' materials reach and the other
+                                       shader archives' (--all: every program, the census's seed)
+  shaders --precompile <game folder> [--exe <name>]
+                                       the game's renderer fills the folder's shader caches from its shaders.pack
   objeq <a.o> <b.o>                    equal as linker input: allocated sections, symbols but FILE ones, relocations
   compile-c <out.o> -- <clang args>... a C file compiled in this process by clang's libraries (feature clang)
   version [<root>]                     the version text a build stamps (feature clang)
@@ -205,6 +215,7 @@ fn tool(argv: &[String]) {
         Some("lift-compile") => lift_compile(&argv[1..]),
         Some("dump") => dump::command(&argv[1..]),
         Some("textures") => textures::command(&argv[1..]),
+        Some("shaders") => shaders::command(&argv[1..]),
         #[cfg(feature = "clang")]
         Some("build") => build(&argv[1..]),
         Some("objeq") => {
@@ -423,7 +434,7 @@ fn build(args: &[String]) {
     let (mut gen, mut gen_parts, mut progress) = (None::<PathBuf>, false, false);
     let (mut dump_src, mut dump_dir, mut title) = (None::<PathBuf>, None::<PathBuf>, None::<String>);
     let mut settings = ounce_tex::convert::Settings::FAST;
-    let (mut obj_dir, mut no_textures, mut map_file) = (None::<PathBuf>, false, None::<PathBuf>);
+    let (mut obj_dir, mut no_textures, mut map_file, mut with_shaders) = (None::<PathBuf>, false, None::<PathBuf>, false);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut val = || it.next().cloned().unwrap_or_else(|| fail(format!("{a} wants a value")));
@@ -446,6 +457,7 @@ fn build(args: &[String]) {
             "--title" => title = Some(val()),
             "--quality" => settings = textures::quality(&val()),
             "--no-textures" => no_textures = true,
+            "--shaders" => with_shaders = true,
             "--obj" => obj_dir = Some(val().into()),
             _ if out.is_none() && !a.starts_with('-') => out = Some(PathBuf::from(a)),
             _ => fail(format!("build: what is {a}?")),
@@ -471,7 +483,7 @@ fn build(args: &[String]) {
     let game_folder = dump_src.is_some();
     if progress {
         let textures = !no_textures;
-        let keys = [(game_folder, "dump"), (true, "host"), (true, "lift"), (true, "link"), (game_folder, "romfs"), (textures, "textures")];
+        let keys = [(game_folder, "dump"), (true, "host"), (true, "lift"), (true, "link"), (game_folder, "romfs"), (textures, "textures"), (game_folder || with_shaders, "shaders")];
         println!("@@stages {}", keys.iter().filter(|k| k.0).map(|k| k.1).collect::<Vec<_>>().join(" "));
     }
     let hollowed_list = out.join("prepared").join(textures::HOLLOWED);
@@ -600,6 +612,12 @@ fn build(args: &[String]) {
         stage("textures", "preparing the textures");
         let romfs_dir = config.dump(&game.name).unwrap_or_else(|e| fail(e)).join("romfs");
         textures::dev_store(&root, &out, &romfs_dir, &game, settings, cjobs).unwrap_or_else(|e| fail(e));
+    }
+    // (shaders ahead of time: a player's game folder always, a developer's build with --shaders, shaders.rs)
+    if game_folder || with_shaders {
+        stage("shaders", "preparing the shaders");
+        let romfs_dir = if game_folder { out.join("romfs") } else { config.dump(&game.name).unwrap_or_else(|e| fail(e)).join("romfs") };
+        shaders::step(&romfs_dir, &game, &out).unwrap_or_else(|e| fail(e));
     }
     if game_folder {
         // (the saves: the host keeps them in user/ beside the executable when the folder has one)

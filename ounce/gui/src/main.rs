@@ -91,6 +91,8 @@ struct Build {
     files: usize,
     eta: Option<(f64, Instant)>,
     tex: Option<(f64, f64)>,
+    /// the shaders' step: (done, of) of its pack, then of its precompile
+    shaders: Option<(bool, f64, f64)>,
     current: String,
     error: Option<String>,
     log: VecDeque<String>,
@@ -109,6 +111,7 @@ impl Build {
             files: 0,
             eta: None,
             tex: None,
+            shaders: None,
             current: String::new(),
             error: None,
             log: VecDeque::new(),
@@ -146,6 +149,16 @@ impl Build {
                     self.current = path.to_string();
                 }
             }
+            Some(("shaders", r)) => {
+                // (`@@shaders pack <done> <of>` while the pack is made, `@@shaders <done> <of> <translated> <kept> <failed>`
+                // while the game's renderer makes its programs)
+                let f: Vec<&str> = r.split(' ').collect();
+                let (pre, nums) = if f.first() == Some(&"pack") { (false, &f[1..]) } else { (true, &f[..]) };
+                if let [d, of, ..] = nums {
+                    self.shaders = Some((pre, d.parse().unwrap_or(0.0), of.parse().unwrap_or(1.0)));
+                    self.current = if pre { format!("{d} of {of} programs compiled") } else { format!("{d} of {of} files read") };
+                }
+            }
             Some(("error", r)) => self.error = Some(r.to_string()),
             Some(_) => {}
             None => {
@@ -173,6 +186,17 @@ impl Build {
                 Some((b, of)) if b > 0.0 => {
                     let t = self.stage_started.elapsed().as_secs_f64();
                     (Some((b / of) as f32), Some(t * (of - b) / b))
+                }
+                _ => (None, None),
+            },
+            "shaders" => match self.shaders {
+                Some((true, _, of)) if of == 0.0 => (Some(1.0), None),
+                Some((pre, d, of)) if of > 0.0 => {
+                    let p = d / of;
+                    // (the pack takes a few seconds; the precompile the rest)
+                    let at = if pre { 0.1 + 0.9 * p } else { 0.1 * p };
+                    let t = self.stage_started.elapsed().as_secs_f64();
+                    (Some(at as f32), (pre && d > 0.0).then(|| t * (of - d) / d))
                 }
                 _ => (None, None),
             },
@@ -205,6 +229,7 @@ fn stage_name(key: &str) -> &str {
         "link" => "Link",
         "romfs" => "Copy the romfs",
         "textures" => "Convert the textures",
+        "shaders" => "Prepare the shaders for this GPU",
         k => k,
     }
 }
@@ -668,10 +693,10 @@ mod tests {
     #[test]
     fn reads_a_build() {
         let mut b = Build::new(None);
-        for l in ["@@stages dump host lift link romfs textures", "@@stage lift lifting", "@@plan 4 4", "@@file lift_h0 2.0 new", "@@eta 30", "build: 16 jobs"] {
+        for l in ["@@stages dump host lift link romfs textures shaders", "@@stage lift lifting", "@@plan 4 4", "@@file lift_h0 2.0 new", "@@eta 30", "build: 16 jobs"] {
             b.read(Line::Out(l.into()));
         }
-        assert_eq!(b.stages.len(), 6);
+        assert_eq!(b.stages.len(), 7);
         let (p, left) = b.progress();
         assert_eq!(p, Some(0.25));
         assert!(left.is_some_and(|s| s <= 30.0 && s > 29.0));
@@ -680,6 +705,12 @@ mod tests {
         b.read(Line::Out("@@tex 10 100 500 1000 Tex/a b.bntx.zs".into()));
         assert_eq!(b.progress().0, Some(0.5));
         assert_eq!(b.current, "Tex/a b.bntx.zs");
+        b.read(Line::Out("@@stage shaders preparing".into()));
+        b.read(Line::Out("@@shaders pack 50 100".into()));
+        assert!(b.progress().0.is_some_and(|p| (p - 0.05).abs() < 1e-6));
+        b.read(Line::Out("@@shaders 500 1000 400 100 0".into()));
+        assert!(b.progress().0.is_some_and(|p| (p - 0.55).abs() < 1e-6));
+        assert_eq!(b.current, "500 of 1000 programs compiled");
         b.read(Line::Out("@@error the link failed".into()));
         assert_eq!(b.error.as_deref(), Some("the link failed"));
     }

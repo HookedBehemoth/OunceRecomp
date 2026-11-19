@@ -315,7 +315,7 @@ static int game_main(int argc, char **argv) {
         }
     }
     if (!image) {
-        fprintf(stderr, "usage: %s [image.bin] [--romfs <dir>] [--user <dir>] [--trace]\n",
+        fprintf(stderr, "usage: %s [image.bin] [--romfs <dir>] [--user <dir>] [--trace] | --precompile\n",
                 argv[0]);
         return 2;
     }
@@ -480,6 +480,12 @@ int main(int argc, char **argv) {
     int hos_display_init(void);
     void hos_display_loop(void);
     load_ounce_env();
+    /* --precompile: the builder's last step, the shader pack beside the executable into its shader caches (rx_backend.c);
+       no window, nothing of the game runs */
+    if (argc == 2 && !strcmp(argv[1], "--precompile")) {
+        int rx_precompile(void);
+        return rx_precompile();
+    }
     game_argc = argc, game_argv = argv;
     const int window = hos_display_init();
     if (window < 0) {

@@ -303,6 +303,7 @@ void count(int k) { regs[k].fetch_add(1, std::memory_order_relaxed); }
 int start(void* hwnd) {
     if (!sync_init()) return 0;
     layer0_on();
+    shader_warm();
     return present_start(hwnd);
 }
 const char* describe() {

@@ -138,11 +138,9 @@ bool scan_code(const nvn_stage_data& sd, Code& c) {
     mesh_fields(ctl, c);
     return true;
 }
-/// The stage's native instructions up to the program's end, as the translator reads them
-bool parse_code(const nvn_stage_data& sd, Code& c) {
-    uint8_t ctl[kControlSize];
-    std::vector<uint8_t> area;
-    if (!read_package(sd, ctl, area)) return false;
+/// The stage's native instructions up to the program's end, as the translator reads them, from its control section
+/// and code area
+bool parse_bytes(const uint8_t* ctl, const std::vector<uint8_t>& area, Code& c) {
     uint32_t len, c1o;
     uint16_t st;
     std::memcpy(&len, ctl + 0x38, 4), std::memcpy(&c1o, ctl + 0x40, 4), std::memcpy(&st, ctl + 0x56, 2);
@@ -169,6 +167,11 @@ bool parse_code(const nvn_stage_data& sd, Code& c) {
     }
     c.c1.assign(area.begin() + c1o, area.end());
     return c.ok = true;
+}
+bool parse_code(const nvn_stage_data& sd, Code& c) {
+    uint8_t ctl[kControlSize];
+    std::vector<uint8_t> area;
+    return read_package(sd, ctl, area) && parse_bytes(ctl, area, c);
 }
 const Shader::ProgramHeader& header_of(const uint8_t* sph) { return *reinterpret_cast<const Shader::ProgramHeader*>(sph); }
 
@@ -665,6 +668,52 @@ std::string exe_dir() {
     return p.substr(0, p.find_last_of('/') + 1);
 }
 
+// ---- a cache file's index (<file>.idx): its records' {key, offset, size} up to an offset, so a start reads the index
+// and the heads of the records after it, not the head of every record of a file of gigabytes (a precompiled game's
+// program cache: 33,478 records, 4.2 GB; 9.6 s from a cold disk without it). For the header it was made under (stamp);
+// its last record's head is checked against the file's (the key: the program cache's is the pair, the record's first
+// field after its head) ----
+struct IndexEntry {
+    uint64_t key;
+    int64_t at;   // (the record's bytes, after its 16-byte head)
+    uint64_t size;
+};
+constexpr uint64_t kIndexMagic = 0x3158444950445348ull;   // ("HSDPIDX1")
+/// The index's entries when it is the file's (f, its size whole, made under stamp); the offset it covers, else 0
+int64_t index_load(const std::string& path, uint64_t stamp, os_file* f, int64_t whole, std::vector<IndexEntry>& out, bool key_after_head) {
+    os_file* x = os_file_open(path.c_str(), OS_READ, nullptr);
+    if (!x) return 0;
+    uint64_t head[4]{};
+    std::vector<IndexEntry> e;
+    const int64_t n = os_file_size(x);
+    bool ok = n >= 32 && os_file_read_at(x, head, 32, 0) == 32 && head[0] == kIndexMagic && head[1] == stamp && (int64_t)head[2] <= whole &&
+              (uint64_t)(n - 32) == head[3] * sizeof(IndexEntry);
+    if (ok) {
+        e.resize(head[3]);
+        ok = os_file_read_at(x, e.data(), e.size() * sizeof(IndexEntry), 32) == (int64_t)(e.size() * sizeof(IndexEntry));
+    }
+    os_file_close(x);
+    if (ok && !e.empty()) {   // (the last record where the index says, of the size and key it says)
+        uint64_t rec[3];
+        ok = os_file_read_at(f, rec, 24, (uint64_t)(e.back().at - 16)) == 24 && rec[key_after_head ? 2 : 0] == e.back().key && rec[1] == e.back().size &&
+             e.back().at + (int64_t)e.back().size == (int64_t)head[2];
+    }
+    if (!ok) return 0;
+    out = std::move(e);
+    return (int64_t)head[2];
+}
+void index_save(const std::string& path, uint64_t stamp, int64_t end, const std::vector<IndexEntry>& e) {
+    const std::string tmp = path + ".tmp";
+    FILE* f = fopen(tmp.c_str(), "wb");
+    if (!f) return;
+    const uint64_t head[4] = {kIndexMagic, stamp, (uint64_t)end, e.size()};
+    const bool ok = fwrite(head, 8, 4, f) == 4 && fwrite(e.data(), sizeof(IndexEntry), e.size(), f) == e.size();
+    if (fclose(f) == 0 && ok) os_rename(tmp.c_str(), path.c_str(), true);
+}
+std::vector<IndexEntry> disk_index;   // (the program cache's records in file order: key is the record's pair; under disk_mu)
+int64_t disk_end = 0;                 // (the file's end its records reach; under disk_mu)
+uint64_t disk_stamp_now = 0;
+
 void disk_init() {
     static std::once_flag once;
     std::call_once(once, [] {
@@ -678,26 +727,28 @@ void disk_init() {
         const uint64_t stamp = disk_stamp();
         int64_t good = 0, whole = 0;
         size_t records = 0;
-        if (FILE* f = fopen(path.c_str(), "rb")) {
-            fseeko(f, 0, SEEK_END);
-            whole = ftello(f);
-            fseeko(f, 0, SEEK_SET);
-            uint32_t head[2]{};
-            uint64_t kept = 0;
-            if (whole >= 16 && fread(head, 4, 2, f) == 2 && fread(&kept, 8, 1, f) == 1 && head[0] == kDiskMagic && kept == stamp) {
-                good = 16;
+        bool scanned = false;
+        if (os_file* f = os_file_open(path.c_str(), OS_READ, nullptr)) {   // (the index, then the heads after it: no read-ahead)
+            os_file_random(f);
+            whole = os_file_size(f);
+            uint64_t head[2]{};
+            if (whole >= 16 && os_file_read_at(f, head, 16, 0) == 16 && (uint32_t)head[0] == kDiskMagic && head[1] == stamp) {
+                good = std::max<int64_t>(16, index_load(path + ".idx", stamp, f, whole, disk_index, true));
                 while (good + 32 <= whole) {
-                    uint64_t rec[2], pair;
-                    fseeko(f, good, SEEK_SET);
-                    if (fread(rec, 8, 2, f) != 2 || fread(&pair, 8, 1, f) != 1) break;
+                    uint64_t rec[3];   // (key, size, then the record's first field: the pair)
+                    if (os_file_read_at(f, rec, 24, (uint64_t)good) != 24) break;
                     if (rec[1] < 8 || rec[1] > (uint64_t)(whole - good - 16)) break;
-                    disk_by_pair[pair].push_back({good + 16, (size_t)rec[1]});
+                    disk_index.push_back({rec[2], good + 16, rec[1]});
                     good += 16 + (int64_t)rec[1];
-                    records++;
+                    scanned = true;
                 }
+                for (const IndexEntry& e : disk_index) disk_by_pair[e.key].push_back({e.at, (size_t)e.size});
+                records = disk_index.size();
             }
-            fclose(f);
+            os_file_close(f);
         }
+        disk_stamp_now = stamp, disk_end = good;
+        if (scanned) index_save(path + ".idx", stamp, good, disk_index);
         if (good) {
             std::error_code ec;
             if (good != whole && (std::filesystem::resize_file(path, (uintmax_t)good, ec), ec)) good = 0;
@@ -705,8 +756,8 @@ void disk_init() {
         if (good) {
             disk_out = fopen(path.c_str(), "ab");
         } else {   // (none, or another stamp: made again)
-            disk_by_pair.clear();
-            records = 0;
+            disk_by_pair.clear(), disk_index.clear();
+            records = 0, disk_end = 16;
             disk_out = fopen(path.c_str(), "wb");
             if (disk_out) {
                 const uint32_t h[2] = {kDiskMagic, 0};
@@ -739,9 +790,13 @@ void disk_save(const Variant& v, uint64_t pair) {
     const uint64_t head[2] = {v.d.key, o.size()};
     std::lock_guard lk(disk_mu);
     fseeko(disk_out, 0, SEEK_END);
+    const int64_t at = ftello(disk_out);
     fwrite(head, 8, 2, disk_out);
     fwrite(o.data(), 1, o.size(), disk_out);
     fflush(disk_out);
+    disk_by_pair[pair].push_back({at + 16, o.size()});   // (a program set after this finds it: shader_warm's)
+    disk_index.push_back({pair, at + 16, o.size()});
+    disk_end = at + 16 + (int64_t)o.size();
 }
 
 bool disk_read(const DiskRecord& d, Variant& v) {
@@ -814,12 +869,15 @@ FILE* out = nullptr;
 std::unordered_map<uint64_t, std::pair<int64_t, uint32_t>> at;   // (key -> offset of the bytes, size)
 PFN_vkGetShaderBinaryDataEXT get_binary = nullptr;
 std::atomic<int64_t> st_hits{0}, st_saved{0}, st_refused{0};
+std::vector<IndexEntry> index;   // (the records in file order; under mu after init)
+int64_t end = 0;                 // (the file's end its records reach)
 
 struct Header {
     uint32_t magic, version;
     uint8_t uuid[VK_UUID_SIZE];
     uint32_t binary_version, pad;
 };
+Header header{};   // (the file's, from init)
 Header want() {
     VkPhysicalDeviceShaderObjectPropertiesEXT so{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_PROPERTIES_EXT};
     VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
@@ -842,30 +900,36 @@ void init() {
             return;
         }
         const Header h = want();
+        header = h;
         int64_t good = 0, whole = 0;
-        if (FILE* f = fopen(path.c_str(), "rb")) {
-            fseeko(f, 0, SEEK_END);
-            whole = ftello(f);
-            fseeko(f, 0, SEEK_SET);
+        bool scanned = false;
+        const uint64_t stamp = hash_bytes(&h, sizeof h);
+        if (os_file* f = os_file_open(path.c_str(), OS_READ, nullptr)) {   // (the index, then the heads after it: no read-ahead)
+            os_file_random(f);
+            whole = os_file_size(f);
             Header got{};
-            if (whole >= (int64_t)sizeof got && fread(&got, sizeof got, 1, f) == 1 && !std::memcmp(&got, &h, sizeof h)) {
-                good = sizeof h;
+            if (whole >= (int64_t)sizeof got && os_file_read_at(f, &got, sizeof got, 0) == (int64_t)sizeof got && !std::memcmp(&got, &h, sizeof h)) {
+                good = std::max<int64_t>(sizeof h, index_load(path + ".idx", stamp, f, whole, index, false));
                 while (good + 16 <= whole) {
                     uint64_t rec[2];
-                    fseeko(f, good, SEEK_SET);
-                    if (fread(rec, 8, 2, f) != 2 || !rec[1] || rec[1] > (uint64_t)(whole - good - 16) || rec[1] > 0xFFFFFFFFull) break;
-                    at[rec[0]] = {good + 16, (uint32_t)rec[1]};
+                    if (os_file_read_at(f, rec, 16, (uint64_t)good) != 16 || !rec[1] || rec[1] > (uint64_t)(whole - good - 16) || rec[1] > 0xFFFFFFFFull) break;
+                    index.push_back({rec[0], good + 16, rec[1]});
                     good += 16 + (int64_t)rec[1];
+                    scanned = true;
                 }
+                for (const IndexEntry& e : index) at[e.key] = {e.at, (uint32_t)e.size};
             }
-            fclose(f);
+            os_file_close(f);
         }
+        if (scanned) index_save(path + ".idx", stamp, good, index);
+        end = good;
         std::error_code ec;
         if (good && good != whole && (std::filesystem::resize_file(path, (uintmax_t)good, ec), ec)) good = 0;
         if (good) {
             out = fopen(path.c_str(), "ab");
         } else {   // (none, or another driver's: made again)
-            at.clear();
+            at.clear(), index.clear();
+            end = sizeof h;
             if ((out = fopen(path.c_str(), "wb"))) fwrite(&h, sizeof h, 1, out), fflush(out);
         }
         file = out ? os_file_open(path.c_str(), OS_READ, nullptr) : nullptr;
@@ -906,7 +970,14 @@ void save(uint64_t key, VkShaderEXT obj) {
     const int64_t pos = ftello(out);
     if (fwrite(h, 8, 2, out) != 2 || fwrite(data.data(), 1, n, out) != n || fflush(out) != 0) return;
     at[key] = {pos + 16, (uint32_t)n};
+    index.push_back({key, pos + 16, n});
+    end = pos + 16 + (int64_t)n;
     st_saved.fetch_add(1, std::memory_order_relaxed);
+}
+/// The index written for what the file holds now (the precompile's end)
+void index_now() {
+    std::lock_guard lk(mu);
+    if (out) index_save(exe_dir() + "ounce_renderer_shader_objects.bin.idx", hash_bytes(&header, sizeof header), end, index);
 }
 }  // namespace sobin
 
@@ -1584,6 +1655,87 @@ const DrawProg* shader_pick(const DState& s, const uint8_t color_types[8], Shade
         if (!ok) sl.fam->failed.insert(job->key);
     });
     return why = SM_TRANSLATING, nullptr;
+}
+
+// ---- ahead of the draws: a program from its stages' bytes (shader_warm, the game's --precompile) ----
+PreResult shader_precompile(const PreStage* st, int n) {
+    Code codes[6];
+    int vs = -1, fs = -1, mesh = -1, task = -1, prim = -1, gs = -1;
+    bool other = n > 6;
+    for (int i = 0; i < n && i < 6; i++) {
+        uint32_t end = 0;
+        std::vector<uint8_t> area(st[i].area, st[i].area + st[i].area_n);
+        if (!control_end(st[i].ctl, &end) || end != st[i].area_n || !parse_bytes(st[i].ctl, area, codes[i])) return PRE_FAILED;
+        const Code& c = codes[i];
+        if (c.stage == 5) return PRE_OTHER;   // (compute: its translation reads the dispatch's bank)
+        if (c.stage == 6) task = i;
+        else if (c.header_only) prim = i;
+        else if (c.stage == 0) vs = i;
+        else if (c.stage == 1) fs = i;
+        else if (c.stage == 7) mesh = i;
+        else if (c.stage == 2 && gs < 0) gs = i;
+        else other = true;
+    }
+    // (what scan_slot draws: a vertex program with a geometry stage only on a device with them, a mesh-only or task+mesh one)
+    if (gs >= 0 && (task >= 0 || mesh >= 0 || !dev.features.geometryShader)) other = true;
+    if (task >= 0 && (mesh < 0 || vs >= 0 || other || codes[task].header_only || codes[mesh].header_only)) return PRE_OTHER;
+    const bool is_mesh = mesh >= 0 && vs < 0 && !other;
+    if (!is_mesh && (vs < 0 || other || mesh >= 0)) return PRE_OTHER;
+    const uint8_t ct[8]{};   // (float targets: every pass the logs saw; another target type is its own variant, made at its draw)
+    const Code* fsc = fs >= 0 ? &codes[fs] : nullptr;
+    const Code* pc = prim >= 0 ? &codes[prim] : nullptr;
+    const Code* gsc = gs >= 0 ? &codes[gs] : nullptr;
+    const Code& first = is_mesh ? codes[mesh] : codes[vs];
+    const uint64_t key = task >= 0 ? task_mesh_key(codes[task].key, first.key, fsc ? fsc->key : 0, fsc ? fsc->sph : nullptr, pc ? pc->sph : nullptr, ct)
+                         : is_mesh ? mesh_key(first.key, fsc ? fsc->key : 0, fsc ? fsc->sph : nullptr, pc ? pc->sph : nullptr, ct)
+                                   : graphics_key(first.key, fsc ? fsc->key : 0, fsc ? fsc->sph : nullptr, ct) ^ (gsc ? hash_bytes("geom", 4, gsc->key) : 0);
+    const uint64_t pair = task >= 0 ? pair_key(hash_bytes("task", 4, codes[task].key) ^ hash_bytes("mesh", 4, first.key), fsc ? fsc->key : 0)
+                                    : pair_key_of(is_mesh, first.key ^ (gsc ? hash_bytes("geom", 4, gsc->key) : 0), fsc ? fsc->key : 0);
+    const size_t want = 1u + (fsc != nullptr) + (task >= 0) + (gsc != nullptr);
+    auto v = std::make_unique<Variant>();
+    bool kept = false;
+    disk_init();
+    std::vector<DiskRecord> recs;
+    {
+        std::lock_guard lk(disk_mu);
+        if (const auto it = disk_by_pair.find(pair); it != disk_by_pair.end()) recs = it->second;
+    }
+    for (const DiskRecord& d : recs) {
+        auto r = std::make_unique<Variant>();
+        if (disk_read(d, *r) && r->d.key == key && r->stages.size() == want) {
+            v = std::move(r), kept = true;
+            break;
+        }
+    }
+    if (!kept) {
+        v->d.key = key;
+        const bool made = task >= 0 ? translate_task_mesh_variant(*v, codes[task], codes[mesh], pc, fsc, ct)
+                          : is_mesh ? translate_mesh_variant(*v, codes[mesh], pc, fsc, ct)
+                                    : translate_variant(*v, codes[vs], gsc, fsc, ct);
+        if (!made) return PRE_FAILED;
+        disk_save(*v, pair);
+    }
+    v->d.codes[0] = first.key, v->d.codes[1] = fsc ? fsc->key : 0, v->d.codes[2] = pc ? pc->key : gsc ? gsc->key : 0;
+    v->d.task_code = task >= 0 ? codes[task].key : 0;
+    const bool ok = finish(*v);   // (its objects: made from SPIR-V once per driver, their binaries kept)
+    for (VkShaderEXT o : {v->d.vs, v->d.fs, v->d.gs, v->d.ms, v->d.ts})
+        if (o) vkDestroyShaderEXT(dev.device, o, nullptr);
+    return !ok ? PRE_FAILED : kept ? PRE_KEPT : PRE_MADE;
+}
+
+void shader_cache_index() {
+    {
+        std::lock_guard lk(disk_mu);
+        if (disk_on) index_save(exe_dir() + "ounce_renderer_programs.bin.idx", disk_stamp_now, disk_end, disk_index);
+    }
+    sobin::index_now();
+}
+
+uint64_t shader_cache_stamp() {
+    disk_init();
+    sobin::init();
+    const sobin::Header h = sobin::want();
+    return hash_bytes(&h, sizeof h, disk_stamp());
 }
 
 void shader_held_stats(char* out, size_t cap) {

@@ -207,6 +207,19 @@ int rx_start(void *hwnd) {
     flush_early();
     return 1;
 }
+/* The game's --precompile: the renderer makes the shader pack's programs into the caches beside the executable, with no
+   window and no game; "@@shaders <done> <of> <translated> <kept> <failed>" lines on standard output for the builder */
+static void precompile_progress(int done, int of, int made, int kept, int failed) {
+    printf("@@shaders %d %d %d %d %d\n", done, of, made, kept, failed);
+    fflush(stdout);
+}
+int rx_precompile(void) {
+    rx_direct();
+    int (*pre)(const MkwVkHost *, void (*)(int, int, int, int, int)) =
+        (int (*)(const MkwVkHost *, void (*)(int, int, int, int, int)))os_lib_sym(renderer_module, "mkwvk_precompile");
+    if (!pre) hos_fatal(NULL, "rx: %s has no mkwvk_precompile", kDirectLib);
+    return pre(&vk_host, precompile_progress);
+}
 /* (runtime) the window is being closed: a back end still preparing its shaders stops and keeps what it made first (a few
    seconds at most). One without the export (an older one) has nothing to keep */
 void rx_close_asked(void) {

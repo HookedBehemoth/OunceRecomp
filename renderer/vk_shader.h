@@ -100,6 +100,25 @@ void shader_task_mesh_log(double frames);
 /// (logs) the bound program's stages: kind and code keys
 void shader_describe(const DState& s, char* out, size_t cap);
 void shader_stats(char* out, size_t cap, double frames);
+/// A stage of a program made ahead of its draws: its control section (0xd8 bytes) and code area
+struct PreStage {
+    const uint8_t* ctl;
+    const uint8_t* area;
+    uint32_t area_n;
+};
+enum PreResult { PRE_MADE, PRE_KEPT, PRE_FAILED, PRE_OTHER };
+/// (any thread) A graphics program made from its stages' bytes as a draw into float targets makes it: translated into
+/// the program cache unless it holds it (KEPT), its shader objects made (their driver binaries kept) and destroyed
+/// again. OTHER: a compute program, or one the draws do not draw
+PreResult shader_precompile(const PreStage* st, int n);
+/// The stamp of the caches a precompile filled: the program cache's and the driver binaries' (another driver, another
+/// translator or another device: another stamp)
+uint64_t shader_cache_stamp();
+/// The caches' index files written for what they hold now (the precompile's end, so the next start reads no record head)
+void shader_cache_index();
+/// (the start, vk_precompile.cpp) the shader pack's programs made again on the background workers when the caches are
+/// not the ones its last complete precompile filled
+void shader_warm();
 /// The shader objects and variants alive, in counts (none is ever destroyed)
 void shader_held_stats(char* out, size_t cap);
 

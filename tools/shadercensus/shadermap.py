@@ -3,8 +3,6 @@
     work/venv/bin/python -I tools/shadercensus/shadermap.py map <romfs> --out work/shadermap/<game> [--jobs 8]
     work/venv/bin/python -I tools/shadercensus/shadermap.py stats work/shadermap/<game>
     work/venv/bin/python -I tools/shadercensus/shadermap.py check work/shadermap/<game> <log> [--models <list>]
-    work/venv/bin/python -I tools/shadercensus/shadermap.py list work/shadermap/<game> --scope all|shapes|material|none
-                                                         [--other <romfs>] [--models <models>] --to <list>
     work/venv/bin/python -I tools/shadercensus/shadermap.py scene <romfs> <banc files>... --to <models>
 
 map: every model (bfres) is read for its materials, every material resolved to the programs of its shader archive (bfsha)
@@ -19,12 +17,11 @@ vertex-format and texture-type sets; the shader objects a load would compile (di
 pipelines the files describe (program, state, pass, vertex layout, topology; the pass stands for its render targets, which
 no file gives).
 
-list: the programs of a scope (all: every program a material reaches; shapes: those of its shapes' skinning; material: of
-those, the material pass), a line each, its stages' code keys; --other adds the programs of the archives that are not a
-bfsha (seed.py's walk). censustool precompile takes it.
+The build's shader pack (ounce tool shaders, ounce/shaders) resolves the materials as map does (the "all" scope of stats:
+every program a material reaches) and adds every program of the other archives.
 
 scene: the models a scene's own files name (its placement files' actors, each actor's pack, its model components), a bfres
-basename a line, for list --models and check --models.
+basename a line, for check --models.
 
 check: the programs one frame of a run drew (HOS_DBG=drawlog:<present>: each draw's stages' code keys and its first colour
 target's format) against the programs the map predicts; --models limits the prediction to the bfres files named in a list
@@ -519,32 +516,6 @@ def compile_counts(ok, progs, dyn):
         len({tuple(stages.get(k[0]) or (k[0],)) + k[1:] for k in pipes})))
 
 
-def other_programs(romfs):
-    """The programs of the romfs's shader archives that are not a bfsha (seed.py's walk without them: agl, gsys, terrain,
-    Layout2Shader, effects, networks), each as its stages' "<stage>:<code key>" """
-    import zstandard as zs
-    dicts = seed.dictionaries(romfs, zs)
-    out, stats = set(), collections.Counter()
-    for path in seed.archives(romfs):
-        if ".bfsha" in os.path.basename(path):
-            continue
-        try:
-            for data in seed.blobs(seed.unpack(open(path, "rb").read(), dicts, zs), dicts, zs):
-                try:
-                    found = list(seed.programs_in(data, stats))
-                except Exception:
-                    continue
-                for stages in found:
-                    keys = set()
-                    for st, control, code in stages:
-                        end = struct.unpack_from("<I", control, 0x44)[0]
-                        keys.add("%d:%016x" % (st, fnv(code[:end] if end <= len(code) else code, fnv(control[:0xd8]))))
-                    out.add(tuple(sorted(keys)))
-        except Exception as e:
-            print("%s skipped: %s" % (os.path.relpath(path, romfs), e), file=sys.stderr)
-    return out
-
-
 def sarc_named(data):
     """A SARC's files by name"""
     start, count = struct.unpack_from("<I", data, 0x0c)[0], struct.unpack_from("<H", data, 0x1a)[0]
@@ -618,27 +589,6 @@ def cmd_scene(a):
         f.writelines(m + "\n" for m in sorted(models))
     print("%d actor kinds placed (%d placements); %d without a pack, %d whose pack names no model; %d models (%d named by the "
           "objects themselves) -> %s" % (len(actors), sum(actors.values()), len(no_pack), len(no_model), len(models), len(direct), a.to))
-
-
-def cmd_list(a):
-    """A scope's programs, a line each (its stages' "<stage>:<code key>"), for censustool precompile"""
-    progs = [json.loads(l) for l in open(os.path.join(a.out, "programs.jsonl"))]
-    dyn = {(p["archive"], p["shading_model"], p["program"]): p["dynamic"] for p in progs}
-    stages = {(p["archive"], p["shading_model"], p["program"]): p.get("stages") for p in progs}
-    lines = set()
-    if a.scope != "none":
-        files = {l.strip() for l in open(a.models) if l.strip()} if a.models else None
-        ok = (m for m in map(json.loads, open(os.path.join(a.out, "materials.jsonl")))
-              if "exact_programs" in m and (files is None or os.path.basename(m["file"]) in files))
-        sets, _, _ = scope_sets(ok, dyn)
-        lines = {tuple(sorted(stages[p])) for p in sets[a.scope] if stages.get(p)}
-    bfres = len(lines)
-    if a.other:
-        lines |= other_programs(a.other)
-    with open(a.to, "w") as f:
-        for ln in sorted(lines):
-            f.write(" ".join(ln) + "\n")
-    print("%s: %d programs (%d from bfres%s)" % (a.to, len(lines), bfres, ", the rest the other archives'" if a.other else ""))
 
 
 def cmd_stats(a):
@@ -756,18 +706,12 @@ def main():
     c.add_argument("out")
     c.add_argument("log")
     c.add_argument("--models")
-    li = sub.add_parser("list")
-    li.add_argument("out")
-    li.add_argument("--scope", choices=list(SCOPES) + ["none"], default="all")
-    li.add_argument("--other", metavar="ROMFS", help="also the programs of the romfs's other shader archives")
-    li.add_argument("--models", help="only the materials of these bfres files (a basename a line: scene's list)")
-    li.add_argument("--to", required=True)
     sc = sub.add_parser("scene")
     sc.add_argument("romfs")
     sc.add_argument("banc", nargs="+", help="the scene's placement files (OoT: Banc/<area>/*.bcett.byml.zs; DKB: StageData/<stage>.alsarc.zs)")
     sc.add_argument("--to", required=True)
     a = p.parse_args()
-    return {"map": cmd_map, "stats": cmd_stats, "check": cmd_check, "list": cmd_list, "scene": cmd_scene}[a.cmd](a)
+    return {"map": cmd_map, "stats": cmd_stats, "check": cmd_check, "scene": cmd_scene}[a.cmd](a)
 
 
 if __name__ == "__main__":

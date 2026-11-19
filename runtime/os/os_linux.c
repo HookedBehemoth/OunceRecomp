@@ -714,6 +714,7 @@ void os_file_close(os_file *f) {
     free(f);
 }
 bool os_file_trylock(os_file *f) { return flock(f->fd, LOCK_EX | LOCK_NB) == 0; }
+void os_file_random(os_file *f) { posix_fadvise(f->fd, 0, 0, POSIX_FADV_RANDOM); }
 const void *os_file_map_read(os_file *f, size_t *size) {
     struct stat st;
     *size = 0;

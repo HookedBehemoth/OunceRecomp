@@ -1,0 +1,11 @@
+[package]
+name = "ounce-shaders"
+version = "0.1.0"
+edition = "2021"
+description = "The shader pack: the programs a game's romfs draws with (its models' materials resolved to their bfsha programs, and the other shader archives'), each stage's bytes once"
+publish = false
+
+[dependencies]
+ounce-tex = { path = "../tex" }
+memchr = "2"
+rayon = "1"
