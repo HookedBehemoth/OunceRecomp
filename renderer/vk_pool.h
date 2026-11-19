@@ -56,7 +56,7 @@ struct DrawCaps {
     VkDriverId driver_id{};
     bool mesh = false;   // (M4b: VK_EXT_mesh_shader's mesh stage (never the task stage))
     bool maximal_reconvergence = false;   // (VK_KHR_shader_maximal_reconvergence, enabled when the device has it)
-    bool mesh_queries = false;   // (M6h: mesh shader invocations counted, for HOS_DBG=pstats only)
+    bool mesh_queries = false;   // (M6h: mesh shader invocations counted, for debug.pstats only)
 };
 extern DrawCaps caps;
 
@@ -89,7 +89,7 @@ uint8_t pool_answer(uint32_t id);
 void pool_describe(uint32_t id, char* out, size_t cap);
 /// (logs) what sampler id was registered with
 void pool_sampler_describe(uint32_t id, char* out, size_t cap);
-/// (HOS_DBG=phlog) 1: id is registered with the placeholder image, 2: registered with no image; 0 otherwise (locked)
+/// (debug.phlog) 1: id is registered with the placeholder image, 2: registered with no image; 0 otherwise (locked)
 int pool_placeholder(uint32_t id);
 
 /// (the transient pool) 1: id names an image in the pool that is not its range's owner (another target took its memory:

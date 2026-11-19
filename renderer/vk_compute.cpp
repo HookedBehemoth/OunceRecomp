@@ -776,10 +776,10 @@ void bank_fill(ListComp& c, const Layout& l, const uint32_t grid[3], uint8_t* d,
     }
 }
 
-/// HOS_DBG=skipcs:<key prefix>[+<prefix>...]: those programs' dispatches left out (a hang's diagnosis)
+/// debug.skipcs=<key prefix>[+<prefix>...]: those programs' dispatches left out (a hang's diagnosis)
 bool skipped_by_dbg(uint64_t key) {
     static const std::string list = [] {
-        const char* v = dbg_value("skipcs");
+        const char* v = dbg_value(SET_DBG_SKIPCS);
         return std::string(v ? v : "");
     }();
     if (list.empty()) return false;
@@ -818,7 +818,7 @@ void strict_dispatch(List* l, Reason r) {
 void tell_first(Variant& v, const List* l, const uint8_t* bank, uint32_t n, const uint32_t grid[3], bool indirect) {
     if (v.told) return;
     v.told = true;
-    static const bool log_compute = dbg_log("logcompute");
+    static const bool log_compute = dbg_log(SET_DBG_LOGCOMPUTE);
     if (!log_compute) return;
     char b[2000];
     int k = std::snprintf(b, sizeof b, "direct: compute %016llx first dispatched in a %s list (lr %#llx): %s %ux%ux%u, workgroup %ux%ux%u, "
@@ -845,7 +845,7 @@ void tell_first(Variant& v, const List* l, const uint8_t* bank, uint32_t n, cons
     logf("%s", b);
 }
 
-/// (HOS_DBG=drawlog:<present>, the per-draw trace's dispatch lines) every dispatch of that frame: program, grid or
+/// (debug.drawlog=<present>, the per-draw trace's dispatch lines) every dispatch of that frame: program, grid or
 /// arguments, the storage and uniform buffers, each texture and image as its handle names it (pool_describe)
 void trace_dispatch(const Variant& v, const List* l, const uint8_t* bank, uint32_t n, const uint32_t grid[3], uint64_t args) {
     static std::atomic<int> told{0};
@@ -1101,7 +1101,7 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
     pool_push(cb, push, sizeof push);
     const uint32_t mk = marks_on() ? mark_before(cb, indirect ? "dispatch indirect" : "dispatch", v->key, l->info.kind, l->info.lr, grid[0], grid[1]) : 0;   // 
     uint32_t ps = ~0u;
-    if (pstats_on()) {   // (M6h: HOS_DBG=pstats)
+    if (pstats_on()) {   // (M6h: debug.pstats)
         PstatWhat w;
         w.what = indirect ? "dispatch indirect" : "dispatch", w.key = v->key, w.codes[0] = v->key, w.kind = l->info.kind, w.lr = l->info.lr;
         w.count = grid[0], w.instances = grid[1], w.extra = grid[2];
@@ -1120,8 +1120,8 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
     draw_push_invalidate(l);   // (the push data is the command buffer's: the next draw pushes its own again)
     tell_first(*v, l, map, v->bank_bytes, grid, indirect);
     if (draw_log_frame()) trace_dispatch(*v, l, map, v->bank_bytes, grid, indirect ? args : 0);
-    else if (static const uint64_t watch = [] {   // (HOS_DBG=writer:<hex>: every dispatch whose storage buffers cover it)
-                 const char* w = dbg_value("writer");
+    else if (static const uint64_t watch = [] {   // (debug.writer=<hex>: every dispatch whose storage buffers cover it)
+                 const char* w = dbg_value(SET_DBG_WRITER);
                  return w ? strtoull(w, nullptr, 16) : 0ull;
              }(); watch) {
         bool hit = false;
@@ -1157,7 +1157,7 @@ void compute_buffer_op(List* l, uint32_t op, const void* data, uint32_t size, Cm
         std::memcpy(&p, data, std::min<size_t>(sizeof p, size));
         VkBuffer sb, db;
         VkDeviceSize so, dof;
-        if (const char* w = dbg_value("writer")) {   // (HOS_DBG=writer:<hex>: buffer copies over it)
+        if (const char* w = dbg_value(SET_DBG_WRITER)) {   // (debug.writer=<hex>: buffer copies over it)
             const uint64_t at = strtoull(w, nullptr, 16);
             if (p.dst <= at && at < p.dst + p.size)
                 logf("direct: writer: present %llu, copy %#llx -> %#llx (%#llx bytes) in a list of kind %u (lr %#llx)",
@@ -1231,7 +1231,7 @@ void compute_program_set(const nvn_prog* p) {
 int64_t compute_objects_made() { return st_cs_objects.load(std::memory_order_relaxed); }
 
 void compute_log(double frames) {
-    if (const char* pk = dbg_value("peek")) {   // (HOS_DBG=peek:<guest address>: 64 KB there, nonzero bytes and a checksum)
+    if (const char* pk = dbg_value(SET_DBG_PEEK)) {   // (debug.peek=<guest address>: 64 KB there, nonzero bytes and a checksum)
         const uint64_t at = strtoull(pk, nullptr, 16);
         static std::vector<uint8_t> b(64 << 10);
         const bool ok = host->gpu_read(at, b.data(), b.size()) != 0;

@@ -271,9 +271,9 @@ private:
 // <stamp shared>
 // ---- the profile (vk_shader.cpp make_profile with RX_VK_DESC_HEAP_BDA=2 on layer 0) ----
 Shader::Profile make_profile() {
-    // (HOS_DBG=loopcap:<n>, a diagnosis: the trips the translator's loop safety counter allows, 8192 without it; in the
+    // (debug.loopcap=<n>, a diagnosis: the trips the translator's loop safety counter allows, 8192 without it; in the
     // caches' stamps, device_stamp)
-    if (const char* v = dbg_value("loopcap"); v && std::atoi(v) > 0) {
+    if (const char* v = dbg_value(SET_DBG_LOOPCAP); v && std::atoi(v) > 0) {
         Settings::values.shader_loop_safety_count = (u32)std::atoi(v);
         logf("direct: loopcap: loops end after %u trips (a diagnosis)", Settings::values.shader_loop_safety_count);
     }
@@ -601,15 +601,15 @@ void get_info(Reader& r, Shader::Info& i) {
 
 // <stamp graphics>
 /// The register-pressure pass on mesh stages' SPIR-V (vk_spv_late.h; docs/direct/spv-late.md): on, unless
-/// HOS_DBG=nolate (a diagnosis: the translator's order as it is; the program cache is stamped by it, so the two do not mix)
+/// debug.nolate (a diagnosis: the translator's order as it is; the program cache is stamped by it, so the two do not mix)
 bool late_mesh() {
-    static const bool on = !dbg("nolate");
+    static const bool on = !dbg(SET_DBG_NOLATE);
     return on;
 }
-/// The same on vertex stages: off, unless HOS_DBG=latevertex (a trial: 21 vertex stages of the game spill as RADV compiles
+/// The same on vertex stages: off, unless debug.latevertex (a trial: 21 vertex stages of the game spill as RADV compiles
 /// them and 769 are at the register limit, none with the pass; but no harness holds a vertex stage's outputs against it yet)
 bool late_vertex() {
-    static const bool on = late_mesh() && dbg("latevertex");
+    static const bool on = late_mesh() && dbg(SET_DBG_LATEVERTEX);
     return on;
 }
 /// A stage's SPIR-V as the translator emitted it, through the pass
@@ -627,7 +627,7 @@ void schedule_late(std::vector<uint32_t>& spirv, bool on) {
 // </stamp graphics>
 
 /// What translated code depends on besides the translator's source: the device's subgroup answers, the loop cap
-/// (HOS_DBG=loopcap), maximal reconvergence, the compiler that built the translator, the record's in-memory layout
+/// (debug.loopcap), maximal reconvergence, the compiler that built the translator, the record's in-memory layout
 uint64_t device_stamp() {
     uint64_t h = 0xCBF29CE484222325ull;
     const auto add = [&h](const void* d, size_t n) { h = hash_bytes(d, n, h); };
@@ -1434,7 +1434,7 @@ void scan_slot(Slot* s) {
         if (made) it->second = new Family, st_families.fetch_add(1, std::memory_order_relaxed);
         s->fam = it->second, fresh = made;
     }
-    static const bool log_mesh = dbg_log("logmesh");
+    static const bool log_mesh = dbg_log(SET_DBG_LOGMESH);
     if (fresh && s->mesh && log_mesh)
         logf("direct: program serial %llu is %s: %s%s%smesh %016llx fragment %016llx (header-only stage %016llx)", (unsigned long long)s->serial,
              s->task ? "task+mesh" : "mesh-only", s->task ? "task " : "", s->task ? hex16(s->task_key).c_str() : "", s->task ? " (a compute step) " : "",

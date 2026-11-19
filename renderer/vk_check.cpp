@@ -122,7 +122,7 @@ VKAPI_ATTR VkBool32 VKAPI_CALL on_message(VkDebugUtilsMessageSeverityFlagBitsEXT
     return VK_FALSE;
 }
 
-/// the layer is in the instance: asked here (HOS_DBG=validation) or by the loader's variables
+/// the layer is in the instance: asked here (debug.validation) or by the loader's variables
 bool layer_enabled() { return layer_asked || loader_layer_enabled("validation"); }
 
 void summary_at_exit() {
@@ -147,7 +147,7 @@ thread_local const char* objects_for = nullptr;   // (ObjectsFor)
 
 uint64_t strict_from() {
     static const uint64_t f = [] {
-        const char* v = dbg_value("strict");
+        const char* v = dbg_value(SET_DBG_STRICT);
         return v && atoll(v) > 0 ? (uint64_t)atoll(v) : 1200ull;
     }();
     return f;
@@ -155,7 +155,7 @@ uint64_t strict_from() {
 
 }  // namespace
 
-bool strict_enabled = dbg("strict") || dbg_value("strict") != nullptr;
+bool strict_enabled;   // (set by mkwvk_init, once the host is known)
 
 void validation_instance_info(VkInstanceCreateInfo& ci, std::vector<const char*>& exts, const std::vector<VkExtensionProperties>& all) {
     auto enum_layers = (PFN_vkEnumerateInstanceLayerProperties)get_instance_proc(nullptr, "vkEnumerateInstanceLayerProperties");
@@ -166,7 +166,7 @@ void validation_instance_info(VkInstanceCreateInfo& ci, std::vector<const char*>
     for (const auto& l : layers) layer_available |= !std::strcmp(l.layerName, kLayer);
     bool has_utils = false;
     for (const auto& e : all) has_utils |= !std::strcmp(e.extensionName, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-    if (dbg("validation") && layer_available) {   // (HOS_DBG=validation: the layer and its synchronization validation, asked here)
+    if (dbg(SET_DBG_VALIDATION) && layer_available) {   // (debug.validation= the layer and its synchronization validation, asked here)
         static const char* names[1] = {kLayer};
         ci.enabledLayerCount = 1, ci.ppEnabledLayerNames = names;
         settings[0] = {kLayer, "validate_sync", VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &kTrue};
@@ -198,7 +198,7 @@ void validation_instance_made(VkInstance instance) {
     if (layer_mapped)
         logf("validation: the layer is on: %s (%s; installed: %s); messenger %s (VkResult %d), status "
              "message %s; warnings and errors counted%s",
-             layer_path.c_str(), layer_asked ? "asked by HOS_DBG=validation" : "enabled outside the back end (VK_LOADER_LAYERS_ENABLE)",
+             layer_path.c_str(), layer_asked ? "asked by debug.validation" : "enabled outside the back end (VK_LOADER_LAYERS_ENABLE)",
              layer_available ? "yes" : "no", messenger_made ? "made" : "NOT made", (int)messenger_result,
              status_heard.load() ? "heard" : "not heard", strict_on() ? ", strict: any warning or error ends the run" : "");
     else
@@ -254,7 +254,7 @@ void strict_event(const char* reason, const char* where, ...) {
         if (n < 3) logf("strict: known event at present %llu: %s: %s (known: %s)", p, reason, w, k->why);
         return;
     }
-    static const bool survey = dbg("strictall");   // (HOS_DBG=strict,strictall: a survey, every reason's first events logged, no stop)
+    static const bool survey = dbg(SET_DBG_STRICTALL);   // (debug.strict,strictall: a survey, every reason's first events logged, no stop)
     if (survey) {
         if (n < 3) logf("strict: event at present %llu (survey, not stopped): %s: %s", p, reason, w);
         return;

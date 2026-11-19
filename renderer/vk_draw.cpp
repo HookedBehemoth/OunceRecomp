@@ -29,7 +29,7 @@
 
 namespace hsd {
 struct List;
-bool cap_pass(const List* l);   // (vk_pass.cpp, HOS_DBG=capture)
+bool cap_pass(const List* l);   // (vk_pass.cpp, debug.capture)
 }
 
 namespace hsd {
@@ -50,6 +50,8 @@ struct Arena {
 void arena_reset(Arena* a) {
     if (a) a->cur = 0, a->used = 0;
 }
+
+bool deferred_check;   // (debug.deferredcheck: set by mkwvk_init, once the host is known)
 
 namespace {
 
@@ -188,11 +190,10 @@ void count_site(uint64_t lr, Reason r) {
 struct Fixup {
     uint8_t* dst;
     uint64_t src;
-    uint32_t bound;   // (HOS_DBG=deferredcheck: the word in the game's array when it was bound)
+    uint32_t bound;   // (debug.deferredcheck= the word in the game's array when it was bound)
 };
-// (HOS_DBG=deferredcheck: how many deferred words change between their bind and the submit, and since the last submit
+// (debug.deferredcheck= how many deferred words change between their bind and the submit, and since the last submit
 // that read the same word)
-const bool deferred_check = dbg("deferredcheck");
 std::mutex deferred_mu;
 std::unordered_map<uint64_t, uint32_t> deferred_last;
 std::atomic<int64_t> st_def_bind{0}, st_def_frame{0}, st_def_words{0};
@@ -677,8 +678,8 @@ Reason ubo_address(List* l, ListDraw& x, const DrawProg& p, const DrawProg::Ubo&
     // (a program that may read past the bound range reads the guest memory after it through the address, where Maxwell reads
     // zeros; counted. M4a settled it by evidence: of 316 such bindings in Kokiri 314 are dynamically indexed
     // arrays (Eden's 64 KB used size) and 2 a vertex stage's constant offsets to 688 B on 192 bound, and zeros there instead
-    // (HOS_DBG=uboclamp) change no pass beyond run noise: the translator's interface stays the address alone, no bound)
-    static const bool clamp = dbg("uboclamp");   // (a diagnosis: reads past the bound range give zeros, through a copy)
+    // (debug.uboclamp) change no pass beyond run noise: the translator's interface stays the address alone, no bound)
+    static const bool clamp = dbg(SET_DBG_UBOCLAMP);   // (a diagnosis: reads past the bound range give zeros, through a copy)
     if (u.bytes > size) {
         bump(me().past_range);
         // (M6b: a dynamically indexed array (Eden's used size, 64 KB) is not a read past the range: the bound is the translator's
@@ -694,7 +695,7 @@ Reason ubo_address(List* l, ListDraw& x, const DrawProg& p, const DrawProg::Ubo&
         if (told.load(std::memory_order_relaxed) < 12 && told++ < 12)
             logf("direct: program %016llx stage %u reads c%u up to %u bytes, %llu bound (%s)", (unsigned long long)p.key, u.stage,
                  u.index, u.bytes, (unsigned long long)b.size, u.bytes >= 0x10000 ? "indexed dynamically" : "past the bound range");
-        static const bool range_log = dbg("uborange");   // (a diagnosis: each binding read past its range once, what lies there)
+        static const bool range_log = dbg(SET_DBG_UBORANGE);   // (a diagnosis: each binding read past its range once, what lies there)
         if (range_log) {
             static std::mutex mu;
             static std::unordered_set<uint64_t> seen;
@@ -781,19 +782,19 @@ Reason bind_data(List* l, ListDraw& x, const DrawProg& p, uint8_t push[256]) {
     return R_DRAWN;
 }
 
-/// HOS_DBG=drawlog:<present>: the recording lists' draws of the frame after that present, each with what it was drawn with
+/// debug.drawlog=<present>: the recording lists' draws of the frame after that present, each with what it was drawn with
 bool drawlog_on() {
     static const int64_t at = [] {
-        const char* v = dbg_value("drawlog");
+        const char* v = dbg_value(SET_DBG_DRAWLOG);
         return v ? atoll(v) : -1;
     }();
     return at >= 0 && (int64_t)present_count() == at;
 }
-/// HOS_DBG=phlog: the first draw that samples each texture id holding the placeholder (or no image), named once: the
+/// debug.phlog= the first draw that samples each texture id holding the placeholder (or no image), named once: the
 /// texture, the list's kind and return address, the program
 void phlog(const List* l, const DrawProg* p) {
-    static const bool on = dbg("phlog");
-    const bool cap = p && cap_pass(l);   // (HOS_DBG=capture: what a draw into the 543x306 target samples)
+    static const bool on = dbg(SET_DBG_PHLOG);
+    const bool cap = p && cap_pass(l);   // (debug.capture= what a draw into the 543x306 target samples)
     if ((!on && !strict_on() && !cap) || !p) return;
     static std::mutex mu;
     static std::vector<uint8_t> seen(1u << 20);
@@ -843,7 +844,7 @@ void phlog(const List* l, const DrawProg* p) {
              (unsigned long long)l->info.lr, (unsigned long long)present_count(), (unsigned long long)p->key, e);
     }
 }
-/// HOS_DBG=pstats: what a draw is, for its query's line
+/// debug.pstats= what a draw is, for its query's line
 PstatWhat pstat_what(const List* l, const DrawProg& p, const char* what, uint32_t count, uint32_t instances, bool gated) {
     PstatWhat w;
     w.what = what, w.key = p.key, w.codes[0] = p.codes[0], w.codes[1] = p.codes[1], w.codes[2] = p.task ? p.task_code : p.codes[2];
@@ -960,12 +961,12 @@ void strict_draw(List* l, Reason r) {
 /// a share of the drawn, counted beside them
 void sub(List* l, Reason r) { bump(me().by_kind[l->info.kind][r]); }
 
-/// HOS_DBG=meshlog:<present>: the frame after that present's indirect and mesh draws and dispatches, with their program's
+/// debug.meshlog=<present>: the frame after that present's indirect and mesh draws and dispatches, with their program's
 /// stages, argument addresses and what the records hold when recorded (a guest read: a diagnosis only), and a dispatch's
 /// storage and uniform buffers: which dispatch writes which argument records
 int64_t meshlog_at() {
     static const int64_t at = [] {
-        const char* v = dbg_value("meshlog");
+        const char* v = dbg_value(SET_DBG_MESHLOG);
         return v ? atoll(v) : -1;
     }();
     return at;
@@ -1083,7 +1084,7 @@ void draw_state(List* l, uint32_t op, const void* data, uint32_t size) {
         state_emit(ctx(l).s, op, data, size);
         return;
     case NOP_DISPATCH: case NOP_DISPATCH_INDIRECT: dispatch_log(l, op, data, size); return;
-    case NOP_CLEAR_BUF: case NOP_COPY_B2B:   // (HOS_DBG=meshlog: who clears or copies argument records)
+    case NOP_CLEAR_BUF: case NOP_COPY_B2B:   // (debug.meshlog= who clears or copies argument records)
         if (meshlog_on() && size >= 24) {
             uint64_t w[3]{};
             std::memcpy(w, data, std::min<size_t>(sizeof w, size));
@@ -1345,7 +1346,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         x.push_n = prog->push_bytes, x.push_valid = true;
     }
     if (mesh) {
-        static const bool log_mesh = dbg_log("logmesh");
+        static const bool log_mesh = dbg_log(SET_DBG_LOGMESH);
         if (!prog->used.load(std::memory_order_relaxed) && !prog->used.exchange(true) && log_mesh)   // (each mesh program's first use)
             logf("direct: mesh program first use: key %016llx, stages mesh %016llx fragment %016llx header %016llx, no task stage "
                  "(the shader objects: mesh %p, fragment %p); a %s draw in a list of kind %u (lr %#llx) at present %llu",
@@ -1356,9 +1357,9 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
                          : (prog->task ? mesh_ind ? "drawn task+mesh indirect" : "drawn task+mesh" : mesh_ind ? "drawn mesh indirect" : "drawn mesh"), prog, &x.dyn,
                 mesh_ind ? nargs : (uint32_t)dm.y);
         const uint32_t mk = marks_on() ? mark_before(cb, prog->task ? "task+mesh draw" : mesh_ind ? "mesh draw indirect" : "mesh draw", prog->key,
-                                                     l->info.kind, l->info.lr, mesh_ind ? nargs : (uint32_t)dm.y, 0) : 0;   // (M6c: HOS_DBG=marks)
+                                                     l->info.kind, l->info.lr, mesh_ind ? nargs : (uint32_t)dm.y, 0) : 0;   // (M6c: debug.marks)
         if (marks_on() && prog->task) mark_header(mk, task_last_header);
-        // (HOS_DBG=tmwait: a framebuffer-local barrier before every task+mesh draw, so that no two task+mesh draws' mesh stages
+        // (debug.tmwait= a framebuffer-local barrier before every task+mesh draw, so that no two task+mesh draws' mesh stages
         // overlap; a lever for a mesh stage that hangs the device, which the translator's late scheduling is meant to prevent)
         const auto apart = [cb] {
             const VkPipelineStageFlags2 fb = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
@@ -1372,7 +1373,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
             d.memoryBarrierCount = 1, d.pMemoryBarriers = &b;
             vkCmdPipelineBarrier2(cb, &d);
         };
-        static const bool tm_wait = dbg("tmwait");
+        static const bool tm_wait = dbg(SET_DBG_TMWAIT);
         if (prog->task && tm_wait) apart(), sub(l, R_TASK_APART);
         const uint32_t ps = pstats_on() ? pstat_before(cb, pstat_what(l, *prog, prog->task ? "task+mesh draw" : mesh_ind ? "mesh draw indirect" : "mesh draw",
                                                                       mesh_ind ? nargs : (uint32_t)std::max(dm.y, 0), 1, gated)) : ~0u;   // 
@@ -1405,7 +1406,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     const uint32_t ps = pstats_on() ? pstat_before(cb, pstat_what(l, *prog, ind ? "draw indirect" : indexed ? "draw indexed" : "draw",
                                                                   ind ? nargs : op == NOP_DRAW_IDX ? (uint32_t)di.count : (uint32_t)dr.count,
                                                                   ind ? 0 : (uint32_t)std::max(1, op == NOP_DRAW_IDX ? di.instances : dr.instances), gated))
-                                    : ~0u;   // (M6h: HOS_DBG=pstats)
+                                    : ~0u;   // (M6h: debug.pstats)
     if (ind) {   // (the game's records are VkDrawIndirectCommand / VkDrawIndexedIndirectCommand: fallbacks.md 2a)
         if (indexed) {
             if (cntb) vkCmdDrawIndexedIndirectCount(cb, ab, ao, cntb, cnto, nargs, stride);
@@ -1526,7 +1527,7 @@ void draw_log(double frames) {
     logf("direct: %s; inline uniform updates %.1f a frame, buffer copies with them %.1f (%.1f KB), guest reads for their rest %.1f",
          out, st_ub_updates.take(0) / frames, take(&TStats::ub_copies, T_UB_COPIES) / frames,
          take(&TStats::ub_bytes, T_UB_BYTES) / 1024.0 / frames, take(&TStats::ub_reads, T_UB_READS) / frames);
-    static const bool log_draw = dbg_log("logdraw"), log_mesh = dbg_log("logmesh");
+    static const bool log_draw = dbg_log(SET_DBG_LOGDRAW), log_mesh = dbg_log(SET_DBG_LOGMESH);
     if (log_draw) {
         logf("direct: uniform buffers a program may read past their bound range: %.1f a frame (of the address tables made)",
              take(&TStats::past_range, T_PAST) / frames);
@@ -1590,7 +1591,7 @@ bool draw_arena_buffer(CmdSlot* slot, uint32_t bytes, uint8_t*& map, VkDeviceAdd
 }
 VkDeviceAddress draw_window_table() { return window_table_address; }
 VkDeviceAddress draw_zero_address() { return zero_address; }
-/// (HOS_DBG=meshlog) at the present after that frame: the GPU idle, its indirect mesh records as the GPU left them
+/// (debug.meshlog) at the present after that frame: the GPU idle, its indirect mesh records as the GPU left them
 void draw_meshlog_after() {
     if (meshlog_at() < 0 || (int64_t)present_count() != meshlog_at() + 1) return;
     std::vector<std::pair<uint64_t, uint64_t>> recs;

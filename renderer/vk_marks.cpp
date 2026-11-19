@@ -35,7 +35,7 @@ PFN_vkCmdWriteBufferMarker2AMD pMarker = nullptr;
 }  // namespace
 
 void marks_device_extensions(const std::vector<VkExtensionProperties>& exts, std::vector<const char*>& want) {
-    if (!(asked = dbg("marks"))) return;
+    if (!(asked = dbg(SET_DBG_MARKS))) return;
     for (const auto& e : exts)
         if (!std::strcmp(e.extensionName, VK_AMD_BUFFER_MARKER_EXTENSION_NAME)) {
             want.push_back(VK_AMD_BUFFER_MARKER_EXTENSION_NAME);
@@ -80,7 +80,7 @@ void marks_init() {
     words = (volatile uint32_t*)map;
     entries = new Entry[kEntries];
     marks_enabled = true;
-    logf("direct: marks (HOS_DBG=marks): every draw and dispatch bracketed by top- and bottom-of-pipe markers (%u entries); "
+    logf("direct: marks (debug.marks): every draw and dispatch bracketed by top- and bottom-of-pipe markers (%u entries); "
          "a lost device logs the commands started and not finished", kEntries);
 }
 

@@ -1,4 +1,4 @@
-// What each draw and dispatch of one frame made the GPU run (HOS_DBG=pstats:<present>, a debug aid: the shader census,
+// What each draw and dispatch of one frame made the GPU run (debug.pstats=<present>, a debug aid: the shader census,
 // docs/direct/shader-costs.md).
 //
 // Every draw, mesh draw, task step and dispatch recorded while the present count is <present> is bracketed by a pipeline
@@ -17,7 +17,7 @@
 
 namespace hsd {
 
-extern bool pstats_enabled;   // (HOS_DBG=pstats:<present>, or pstats:bench: the present after HOS_BENCH's measured frames begin)
+extern bool pstats_enabled;   // (debug.pstats=<present>, or pstats:bench: the present after bench's measured frames begin)
 inline bool pstats_on() { return pstats_enabled; }
 /// Before vkCreateDevice (after the mesh shader features are read): whether mesh shader queries are wanted
 bool pstats_wants_mesh_queries();
@@ -40,7 +40,7 @@ struct PstatWhat {
 uint32_t pstat_before(VkCommandBuffer cb, const PstatWhat& w);
 /// After it
 void pstat_after(VkCommandBuffer cb, uint32_t index);
-/// HOS_DBG=pstats:bench: the present measured, named now (gpu_measure)
+/// debug.pstats=bench: the present measured, named now (gpu_measure)
 void pstats_arm(uint64_t present);
 /// At each present: the results written ten presents after the measured one
 void pstats_present(uint64_t present);

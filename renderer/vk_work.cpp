@@ -77,11 +77,11 @@ void worker(void* arg) {
 
 void start() {
     std::call_once(once, [] {
-        // (half the machine's threads: the game's main, module and executor threads keep the other half; HOS_DBG=workers:<n>
+        // (half the machine's threads: the game's main, module and executor threads keep the other half; debug.workers=<n>
         // sets the count, for measuring)
         const unsigned hw = (unsigned)std::max(2, os_cpu_count());
         n_workers = (int)std::clamp(hw / 2, 2u, 12u);
-        if (const char* v = dbg_value("workers"); v && std::atoi(v) > 0) n_workers = std::clamp(std::atoi(v), 1, 64);
+        if (const char* v = dbg_value(SET_DBG_WORKERS); v && std::atoi(v) > 0) n_workers = std::clamp(std::atoi(v), 1, 64);
         bg_cap = std::max(1, n_workers / 2);
         for (int i = 0; i < n_workers; i++)
             os_thread_release(os_thread_start(worker, i < bg_cap ? (void*)1 : nullptr, 0, i < bg_cap ? "shader bg" : "shader worker"));

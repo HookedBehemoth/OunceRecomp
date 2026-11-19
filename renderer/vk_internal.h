@@ -11,6 +11,7 @@
 #include <vulkan/vulkan.h>
 
 #include "vk_api.h"   // (the table the host calls)
+#include "settings.h"   // (the settings, through the host: vk_main.cpp)
 
 #define GPU_VK_GLOBAL(X) X(vkCreateInstance) X(vkEnumerateInstanceExtensionProperties) X(vkEnumerateInstanceVersion)
 #define GPU_VK_INSTANCE(X)                                                                                             \
@@ -51,12 +52,13 @@ void logf(const char* fmt, ...);
 void logf_changed(const char* key, const char* text);
 /// A line longer than logf's buffer, in pieces: the first as it is, the rest each "<prefix>+ ..."
 void log_long(const char* line, const char* prefix);
-/// HOS_DBG=<name>,<name>...: a debug aid named there is on (the back end's only switch, read once)
-bool dbg(const char* name);
-/// A log switch (docs/switches.md, "Turn on debug aids with HOS_DBG"): <name> or logall is in HOS_DBG. Read it once into a static
-bool dbg_log(const char* name);
-/// HOS_DBG=...,<name>:<value>,...: the value (null: not named)
-const char* dbg_value(const char* name);
+/// A debug aid (a debug.* setting, renderer/api/settings.h) is on: a bool set, or a string given
+bool dbg(setting_id id);
+extern bool deferred_check;   // (debug.deferredcheck, vk_draw.cpp; set by mkwvk_init)
+/// A debug log: its setting or debug.logall. Read it once into a static
+bool dbg_log(setting_id id);
+/// A debug aid's value (null: not given)
+const char* dbg_value(setting_id id);
 /// The Vulkan loader's own variables (VK_LOADER_LAYERS_ENABLE, VK_INSTANCE_LAYERS) enable a layer whose name has part
 bool loader_layer_enabled(const char* part);
 

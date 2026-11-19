@@ -1,7 +1,7 @@
 // Prepared assets (vk_assets.h). The store is the builder's (FORMAT_VERSION 1; ounce/tex/src/store.rs describes the
 // format): index.bin and the packs are mapped read-only once; a texture's frames are standard zstd frames (third_party/zstd,
 // linked into this library) decompressed straight into the upload's staging, mip by mip, by the thread that initializes
-// the texture. Debug aids (HOS_DBG): assetcheck:<n> reads back n prepared images and the sampled terrain and glyph uploads
+// the texture. Debug aids: debug.assetcheck=<n> reads back n prepared images and the sampled terrain and glyph uploads
 // after the load and compares them with the store's bytes and the bytes given; assetdump writes a font atlas, terrain
 // tiles, a UI texture and normal maps as PNGs into <dumpdir or the run's folder>/assets.
 
@@ -197,7 +197,7 @@ void name_once(const char* fmt, ...) {
     logf("direct: assets: %s", b);
 }
 
-// ---- debug checks and dumps (HOS_DBG=assetcheck:<n>, assetdump) ----
+// ---- debug checks and dumps (debug.assetcheck=<n>, assetdump) ----
 struct Check {
     Image* im = nullptr;
     uint32_t rec = 0;   // (a prepared image: compared with the store)
@@ -218,9 +218,9 @@ int64_t checked_regions[S_N] = {};
 void dbg_read() {
     static std::once_flag once;
     std::call_once(once, [] {
-        const char* v = dbg_value("assetcheck");
+        const char* v = dbg_value(SET_DBG_ASSETCHECK);
         check_n = v ? std::max(1, atoi(v)) : 0;
-        dump_on = dbg("assetdump");
+        dump_on = dbg(SET_DBG_ASSETDUMP);
     });
 }
 
@@ -900,7 +900,7 @@ void run_dumps() {
         std::lock_guard lk(check_mu);
         todo.swap(dumps);
     }
-    const char* dd = dbg_value("dumpdir");
+    const char* dd = dbg_value(SET_DBG_DUMPDIR);
     const std::string dir = std::string(dd ? dd : ".") + "/assets";
     os_mkdir(dir.c_str());
     int written = 0;

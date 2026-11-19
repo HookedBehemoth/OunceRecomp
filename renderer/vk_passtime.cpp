@@ -132,7 +132,7 @@ void passtime_present(uint64_t present) {
 
 }  // namespace hsd
 
-/// The next `presents` presents measured by pass (the host's HOS_BENCH, at its measured frames' start); HOS_DBG=pstats:bench
+/// The next `presents` presents measured by pass (the host's bench, at its measured frames' start); debug.pstats=bench
 /// measures the next present's draws
 extern "C" __attribute__((visibility("default"))) void gpu_measure(uint32_t presents) {
     using namespace hsd;

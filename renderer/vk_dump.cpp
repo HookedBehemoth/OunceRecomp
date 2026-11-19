@@ -16,10 +16,10 @@
 namespace hsd {
 namespace {
 
-// (the dumped pictures' width, at most: 320; HOS_DBG=dumpw:<w> another (M4g: patterns finer than a thumbnail holds))
+// (the dumped pictures' width, at most: 320; debug.dumpw=<w> another (M4g: patterns finer than a thumbnail holds))
 uint32_t dump_width() {
     static const uint32_t w = [] {
-        const char* v = dbg_value("dumpw");
+        const char* v = dbg_value(SET_DBG_DUMPW);
         const int n = v ? atoi(v) : 0;
         return n >= 16 ? (uint32_t)n : 320u;
     }();
@@ -34,17 +34,17 @@ bool written = false;
 std::string dir;
 std::atomic<int64_t> st_recorded{0}, st_claims{0};
 
-// (HOS_DBG=dump:<present>[+<count>]: that many frames from there, in one folder, steps numbered on)
+// (debug.dump=<present>[+<count>]: that many frames from there, in one folder, steps numbered on)
 int64_t target() {
     static const int64_t t = [] {
-        const char* v = dbg_value("dump");
+        const char* v = dbg_value(SET_DBG_DUMP);
         return v ? atoll(v) : -1;
     }();
     return t;
 }
 int64_t frames() {
     static const int64_t n = [] {
-        const char* v = dbg_value("dump");
+        const char* v = dbg_value(SET_DBG_DUMP);
         const char* plus = v ? strchr(v, '+') : nullptr;
         return plus ? std::max(1, atoi(plus + 1)) : 1;
     }();
@@ -281,9 +281,9 @@ void write_item(DumpItem& it, int n_seq) {
     for (char* c = path + dir.size() + 1; *c; c++)
         if (*c == ' ' || *c == ':' || *c == '/') *c = '_';
     write_png(path, rgba.data(), it.w, it.h);
-    // (HOS_DBG=dumpraw: a float item's values beside its PNG, <name>.f32: u32 width, u32 height, then RGBA32F rows; the
+    // (debug.dumpraw= a float item's values beside its PNG, <name>.f32: u32 width, u32 height, then RGBA32F rows; the
     // dark values of HDR targets that the PNG rounds to 0. With dumpw:4096, the full-resolution dump tools/direct_picture_check.py packs)
-    static const bool raw = dbg("dumpraw");
+    static const bool raw = dbg(SET_DBG_DUMPRAW);
     if (raw && it.kind == 0) {   // (M6b: depth too, as the frozen back end's RX_VK_DUMP_RAW writes it: its value in R, G and B)
         std::snprintf(path + std::strlen(path) - 4, 5, ".f32");
         if (FILE* f = fopen(path, "wb")) {
@@ -358,7 +358,7 @@ void dump_present(uint64_t present) {
         items.swap(claimed);
     }
     sync_wait_value(v, UINT64_MAX);
-    const char* d = dbg_value("dumpdir");
+    const char* d = dbg_value(SET_DBG_DUMPDIR);
     dir = std::string(d ? d : ".") + "/dump_" + std::to_string(t);
     os_mkdir(dir.c_str());
     logf("vk: dumping the frame after present %lld to %s (direct: %lld frames, %zu items; %lld recorded, %lld submissions "

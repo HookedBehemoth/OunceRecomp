@@ -1,4 +1,4 @@
-// GPU breadcrumbs for a lost device (HOS_DBG=marks, a debug aid: docs/direct-backend-plan.md, "Checks").
+// GPU breadcrumbs for a lost device (debug.marks, a debug aid: docs/direct-backend-plan.md, "Checks").
 //
 // Every draw and dispatch the back end records is bracketed by two VK_AMD_buffer_marker writes into host memory: one at the
 // top of the pipe (the command processor reached it) and one at the bottom (it and everything before it finished). Each
@@ -15,9 +15,9 @@
 
 namespace hsd {
 
-extern bool marks_enabled;   // (HOS_DBG=marks and the device has VK_AMD_buffer_marker)
+extern bool marks_enabled;   // (debug.marks and the device has VK_AMD_buffer_marker)
 inline bool marks_on() { return marks_enabled; }
-/// Before vkCreateDevice: VK_AMD_buffer_marker enabled when HOS_DBG=marks asks and the device has it
+/// Before vkCreateDevice: VK_AMD_buffer_marker enabled when debug.marks asks and the device has it
 void marks_device_extensions(const std::vector<VkExtensionProperties>& exts, std::vector<const char*>& want);
 /// After vkCreateDevice: the marker buffer
 void marks_init();

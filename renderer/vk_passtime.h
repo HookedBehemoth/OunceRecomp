@@ -1,4 +1,4 @@
-// The GPU's time by pass over a window of presents, for `ounce profile` (gpu_measure: HOS_BENCH asks for it when its
+// The GPU's time by pass over a window of presents, for `ounce profile` (gpu_measure: bench asks for it when its
 // measured frames begin; measurement only).
 //
 // While the window is open, every primary command buffer gets a timestamp at its start (top of pipe) and every unit of

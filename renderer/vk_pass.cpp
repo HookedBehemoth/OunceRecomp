@@ -291,9 +291,9 @@ void suspend(List* l) {
     p.last_prog = 0;
     query_flush(l, &cmd);   // (M5: its reports written, after it and before what follows)
 }
-static bool cap_target(const PassRec& p) {   // (HOS_DBG=capture: a pass whose first colour target is 543x306)
-    static const bool cap = dbg("capture");
-    static const uint32_t also = [] { const char* v = dbg_value("capid"); return v ? (uint32_t)atoi(v) : 0u; }();   // (capid:<image id>)
+static bool cap_target(const PassRec& p) {   // (debug.capture= a pass whose first colour target is 543x306)
+    static const bool cap = dbg(SET_DBG_CAPTURE);
+    static const uint32_t also = [] { const char* v = dbg_value(SET_DBG_CAPID); return v ? (uint32_t)atoi(v) : 0u; }();   // (capid:<image id>)
     return cap && p.noted && p.n && p.color[0].im &&
            ((p.color[0].im->width == 543 && p.color[0].im->height == 306) || (also && p.color[0].im->id == also));
 }
@@ -339,7 +339,7 @@ void set_rt(List* l, const nvn_p_set_rt& r) {
     };
     for (int i = 0; i < p.n; i++) target(r.color[i], r.has_cview[i] ? &r.cview[i] : nullptr, p.color[i]);
     target(r.depth, r.has_dview ? &r.dview : nullptr, p.depth);
-    static const bool log_rt = dbg("rtlog");   // (HOS_DBG=rtlog: 200 SetRenderTargets from present 1500 on, named)
+    static const bool log_rt = dbg(SET_DBG_RTLOG);   // (debug.rtlog= 200 SetRenderTargets from present 1500 on, named)
     static std::atomic<int> logged{0};
     if (log_rt && present_count() >= 1500 && logged++ < 200) {
         char b[1024];
@@ -416,7 +416,7 @@ void barrier(List* l, int32_t bits) {
 void copy_bt(List* l, const nvn_p_copy_bt& p, bool to_image) {
     Sub s;
     const bool ok = image_sub(p.tex, p.has_view ? &p.view : nullptr, p.r, s);
-    static const bool cap = dbg("capture");   // (HOS_DBG=capture, diagnosis: each copy to a buffer, its source image)
+    static const bool cap = dbg(SET_DBG_CAPTURE);   // (debug.capture, diagnosis: each copy to a buffer, its source image)
     if (cap && !to_image) {
         const Image* im = s.im;
         logf("capture: T2B list kind %u lr %#llx at present %llu: tex %#llx -> buf %#llx (%dx%d): %s; image %u %ux%u pooled %d owner %d "
@@ -553,7 +553,7 @@ bool payload(const void* p, uint32_t size, T& out) {
 }
 
 }  // namespace
-bool cap_pass(const List* l) { return cap_target(l->pass); }   // (HOS_DBG=capture)
+bool cap_pass(const List* l) { return cap_target(l->pass); }   // (debug.capture)
 
 void pass_emit(List* l, uint32_t op, const void* data, uint32_t size) {
     PassRec& p = l->pass;
@@ -865,7 +865,7 @@ void jobs_stats(char* out, size_t cap, double frames) {
                        seen, known, nsets);
     for (KeySlot& s : keys)
         if (const int64_t n = s.inl.exchange(0)) k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " %#llx %lld", (unsigned long long)s.key.load(), (long long)n);
-    static const bool log_pass = dbg_log("logpass");
+    static const bool log_pass = dbg_log(SET_DBG_LOGPASS);
     for (KeySlot& s : keys)   // (one line each: the line's length is bounded)
         if (const int64_t e = log_pass ? s.executed.exchange(0) : 0)
             logf("direct: pass key %#llx (target %#llx): a frame %.2f jobs executed, their draws: drawn %.1f, mesh %.1f, step A %.1f",

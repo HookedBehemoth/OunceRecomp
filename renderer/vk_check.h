@@ -3,17 +3,17 @@
 //
 // Validation. When the Khronos validation layer is in the process (the existing way of turning it on for a run: the loader's
 // VK_LOADER_LAYERS_ENABLE=*validation, with VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true for synchronization validation; or
-// HOS_DBG=validation, which enables it and its synchronization validation itself), a VK_EXT_debug_utils messenger counts every
+// debug.validation, which enables it and its synchronization validation itself), a VK_EXT_debug_utils messenger counts every
 // message by severity and by message id and logs each distinct id once with its first text. The start line proves the layer
 // is loaded (its library mapped in the process, and its own status message heard by the instance's messenger); the
-// summary line is in every 600-present block and at a clean exit. With HOS_DBG=strict any warning or error ends the run
+// summary line is in every 600-present block and at a clean exit. With debug.strict any warning or error ends the run
 // (exit code 87) unless its id is on the known list below.
 //
-// Strict (HOS_DBG=strict[:<present>]). Armed at the first present that is at least <present> (default 1200) and at least
+// Strict (debug.strict[:<present>]). Armed at the first present that is at least <present> (default 1200) and at least
 // kStrictQuiet presents after the last program miss (a draw or dispatch skipped because its program was not read or its
 // variant was being translated). Once armed, the first event of any reason not on the known list is logged with what and
 // where and ends the run (exit code 86). Events of a known reason are logged (the first few of each, with the entry's
-// reason) and counted, and the run goes on. HOS_DBG=strict,strictall: a survey, every reason's first events after arming logged
+// reason) and counted, and the run goes on. debug.strict,strictall: a survey, every reason's first events after arming logged
 // and the run not stopped. Without strict every event is only counted, as before; strict_stats gives the
 // events by reason, before and after arming, in the 600-present block.
 #pragma once
@@ -28,7 +28,7 @@ namespace hsd {
 
 // ---- validation ----
 /// Before vkCreateInstance: VK_EXT_debug_utils enabled if the loader has it, the instance's own messenger (and, with
-/// HOS_DBG=validation, the layer and its settings) chained into ci. The storage stays valid until validation_instance_made.
+/// debug.validation, the layer and its settings) chained into ci. The storage stays valid until validation_instance_made.
 void validation_instance_info(VkInstanceCreateInfo& ci, std::vector<const char*>& exts, const std::vector<VkExtensionProperties>& all);
 /// After vkCreateInstance: whether the layer is in the process (logged), and if so the messenger for the instance's life
 void validation_instance_made(VkInstance instance);
@@ -36,7 +36,7 @@ void validation_instance_made(VkInstance instance);
 void validation_stats(char* out, size_t cap);
 
 // ---- strict ----
-extern bool strict_enabled;   // (HOS_DBG=strict: read once at the start)
+extern bool strict_enabled;   // (debug.strict: set by mkwvk_init)
 inline bool strict_on() { return strict_enabled; }
 /// A rule-2 event. reason: a fixed string, the event's kind (the known list matches it); where: what and where, as printf.
 /// Cheap when strict is off: one test (the callers count the event themselves, as before).

@@ -91,7 +91,7 @@ struct List {
     PassRec pass;
     uint64_t set_rts = 0;
     uint32_t last_op = 0, last_op2 = 0;   // (the ops before the one being handled, for logs)
-    std::vector<DumpItem*> dumps;   // (HOS_DBG=dump: its passes' copies, in order)
+    std::vector<DumpItem*> dumps;   // (debug.dump= its passes' copies, in order)
     ListDraw* dctx = nullptr;   // (M2b: made at its first state op)
     // 
     bool rec = false;         // (it records Vulkan commands: layer, gate, compute, head lists, and jobs with their pass's formats)
@@ -102,7 +102,7 @@ struct List {
     std::vector<uint8_t> pkt; // (the packet: per op {op, size} then the payload, 8-byte aligned; callees in place)
     uint32_t pkt_ops = 0;
     std::atomic<List*> submitted{nullptr};   // (a packet the game submits itself: the immediate list of its ops, list_for_submit)
-    bool cap_drawn = false;   // (HOS_DBG=capture: it renders into a 543x306 target)
+    bool cap_drawn = false;   // (debug.capture= it renders into a 543x306 target)
     uint64_t counted = 0;     // (its bytes as counted to MO_M_LISTS)
     std::vector<const List*> executed;   // (secondaries executed in its renderings: their slots go with its submissions)
     uint32_t sec_draws = 0;   // (a secondary's draw ops so far: its first is timed apart)

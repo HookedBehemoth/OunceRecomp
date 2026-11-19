@@ -10,7 +10,7 @@
 // the record buffer belong to the thread's command slot (vk_cmd.h) and are reset with it, on the host.
 //
 // SetRenderEnableConditional(mode, addr) renders when the counters at addr and addr + 16 are equal (0) or differ (1).
-// The second word is written by the CPU only, and is 0 in every case seen (HOS_DBG=condcheck counts the others), so
+// The second word is written by the CPU only, and is 0 in every case seen (debug.condcheck counts the others), so
 // the condition is conditional rendering on the low word of the first counter: non-zero renders (mode 1), or the
 // inverse (mode 0). A condition is begun inside the rendering before a gated draw or clear and ended at the rendering's
 // end, at a job's execution (RADV has no inherited conditional rendering) and at the next condition or render enable.

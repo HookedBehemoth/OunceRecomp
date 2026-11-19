@@ -164,7 +164,7 @@ bool task_step(List* l, const DrawProg& p, bool indirect, uint64_t rec, uint32_t
     uint8_t* map;
     VkDeviceAddress ha;
     if (!draw_arena_buffer(l->slot, (uint32_t)bytes, map, ha, hb, ho)) return why = "no arena room", false;
-    task_last_header = map;   // (M6c: HOS_DBG=marks dumps it with its draw)
+    task_last_header = map;   // (M6c: debug.marks dumps it with its draw)
     uint32_t h[16]{};
     h[1] = h[2] = 1;
     if (!indirect) {
@@ -215,7 +215,7 @@ bool task_step(List* l, const DrawProg& p, bool indirect, uint64_t rec, uint32_t
     pool_push(task, push, p.push_bytes);
     const uint32_t mk = marks_on() ? mark_before(task, indirect ? "task step indirect" : "task step", p.key, l->info.kind, l->info.lr, tasks, threads) : 0;
     uint32_t ps = ~0u;
-    if (pstats_on()) {   // (M6h: HOS_DBG=pstats)
+    if (pstats_on()) {   // (M6h: debug.pstats)
         PstatWhat w;
         w.what = indirect ? "task step indirect" : "task step", w.key = p.key, w.codes[0] = p.codes[0], w.codes[1] = p.codes[1];
         w.codes[2] = p.task_code, w.kind = l->info.kind, w.lr = l->info.lr, w.count = tasks, w.instances = threads;

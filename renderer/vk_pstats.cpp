@@ -37,12 +37,12 @@ PFN_vkGetQueryPoolResults pResults = nullptr;
 }  // namespace
 
 bool pstats_wants_mesh_queries() {
-    const char* v = dbg_value("pstats");
+    const char* v = dbg_value(SET_DBG_PSTATS);
     return v != nullptr;
 }
 
 void pstats_init(bool mesh_queries) {
-    const char* v = dbg_value("pstats");
+    const char* v = dbg_value(SET_DBG_PSTATS);
     if (!v) return;
     at = std::strcmp(v, "bench") ? std::atoll(v) : -1;   // (bench: the present gpu_measure arms)
     mesh = mesh_queries;
@@ -80,7 +80,7 @@ void pstats_init(bool mesh_queries) {
     what.resize(kQueries);
     present_of.resize(kQueries);
     pstats_enabled = true;
-    logf("direct: pstats (HOS_DBG=pstats:%lld): every draw and dispatch recorded at present %lld bracketed by a pipeline statistics "
+    logf("direct: pstats (debug.pstats=%lld): every draw and dispatch recorded at present %lld bracketed by a pipeline statistics "
          "query (%u statistics, mesh %d); pstats.csv written %u presents later", (long long)at, (long long)at, values, (int)mesh, kAfter);
 }
 

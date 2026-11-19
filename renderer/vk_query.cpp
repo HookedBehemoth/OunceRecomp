@@ -150,7 +150,7 @@ void stretch_end(ListQuery& x, VkCommandBuffer cb, bool keep) {
     x.open = -1, x.open_q = nullptr;
 }
 
-// ---- (HOS_DBG=replog) a frame's reports and conditions every 600 presents (at 300 past), read back 4 presents later ----
+// ---- (debug.replog) a frame's reports and conditions every 600 presents (at 300 past), read back 4 presents later ----
 struct Seen {
     uint64_t addr;
     uint32_t kind;   // (a counter type, or 100 + a condition's mode)
@@ -160,7 +160,7 @@ std::vector<Seen> log_seen;
 std::atomic<uint64_t> log_frame{0};
 std::atomic<bool> log_due{false};
 void log_note(uint64_t addr, uint32_t kind) {
-    static const bool on = dbg("replog");
+    static const bool on = dbg(SET_DBG_REPLOG);
     if (!on) return;
     const uint64_t f = present_count();
     if (f % 600 == 300 && f > 300) {
@@ -357,7 +357,7 @@ void query_op(List* l, uint32_t op, const void* data, uint32_t size, bool render
                 count(Q_COND_PENDING);
                 break;
             }
-        static const bool check = dbg("condcheck");
+        static const bool check = dbg(SET_DBG_CONDCHECK);
         if (check) {
             uint64_t a[3]{};
             host->gpu_read(r.addr, a, 24);
@@ -387,7 +387,7 @@ void query_draw(List* l, VkCommandBuffer cb) {
             count(Q_NO_ROOM);
         }
     }
-    static const bool nocond = dbg("qnocond");   // (A/B aid: conditions not evaluated, their draws drawn)
+    static const bool nocond = dbg(SET_DBG_QNOCOND);   // (A/B aid: conditions not evaluated, their draws drawn)
     if (x.cond_want && !x.cond_on && !nocond) {
         VkBuffer b;
         VkDeviceSize off;
@@ -461,7 +461,7 @@ void query_flush(List* l, CmdOf cmd) {
     push.windows = draw_window_table();
     push.dev0 = cal_dev.load(std::memory_order_acquire), push.host0 = cal_host.load(std::memory_order_relaxed);
     push.scale = cal_scale.load(std::memory_order_relaxed);
-    static const bool cpu_ts = dbg("qcputs"), fixed = dbg("qfixed");   // (A/B aids: timestamps of the recording time; samples 4096)
+    static const bool cpu_ts = dbg(SET_DBG_QCPUTS), fixed = dbg(SET_DBG_QFIXED);   // (A/B aids: timestamps of the recording time; samples 4096)
     if (cpu_ts) push.scale = 0, push.host0 = (double)(host->ticks() * 32 * 12 / 625);
     push.pad = fixed ? 4096 : 0;
     for (size_t i = 0; i < x.pend.size();) {
@@ -519,7 +519,7 @@ void query_list_free(List* l) {
 
 void query_stats(char* out, size_t cap, double frames) {
     calibrate();
-    if (const char* v = dbg_value("poolof")) {   // (HOS_DBG=poolof:<hex>+<hex>...: the pools of those guest addresses, at each line)
+    if (const char* v = dbg_value(SET_DBG_POOLOF)) {   // (debug.poolof=<hex>+<hex>...: the pools of those guest addresses, at each line)
         for (const char* s = v; *s;) {
             char* e;
             const uint64_t a = strtoull(s, &e, 16);
@@ -538,7 +538,7 @@ void query_stats(char* out, size_t cap, double frames) {
         if (i == Q_CONDS) logf("direct: %s", out), k = std::snprintf(out, cap, "conditions a frame:");
         k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "%s %s %.1f", i == 0 || i == Q_CONDS ? "" : ",", kNames[i], st.take(i) / frames);
     }
-    static const bool log_pass = dbg_log("logpass");   // (the caller prints nothing for an empty text)
+    static const bool log_pass = dbg_log(SET_DBG_LOGPASS);   // (the caller prints nothing for an empty text)
     if (!log_pass) out[0] = 0;
 }
 

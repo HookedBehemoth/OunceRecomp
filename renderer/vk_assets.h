@@ -49,7 +49,7 @@ const char* assets_name(uint32_t rec, uint32_t* len);
 
 /// An upload was sent (vk_image: the region uploads; source W_* bit), for the counters a frame and by thread
 void assets_note_upload(uint8_t source, uint64_t bytes, int64_t ns);
-/// (HOS_DBG=assetcheck / assetdump) a region upload's bytes, sampled for a read back after the load
+/// (debug.assetcheck / assetdump) a region upload's bytes, sampled for a read back after the load
 void assets_check_region(Image* im, uint8_t source, uint32_t level, uint32_t layer, uint32_t layers, int32_t x, int32_t y, uint32_t w,
                          uint32_t h, const uint8_t* bytes, uint64_t n, const uint8_t* src, uint64_t row);
 /// A placeholder named (vk_image: why)

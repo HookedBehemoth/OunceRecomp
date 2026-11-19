@@ -111,7 +111,7 @@ typedef struct gpu_upscale_args {
 void gpu_upscale(void *list, const gpu_upscale_args *a);
 
 /* Shots of the presented frame: every `every` presents a 1280x720 PNG of what is shown, <dir>/vk_<present>.png (the
-   host's RX_VK_SHOTS / RX_VK_SHOT_EVERY, the frozen back end's names). Called once, before the renderer starts */
+   host's shots / shot_every, the frozen back end's names). Called once, before the renderer starts */
 void gpu_shots(const char *dir, int every);
 
 #ifdef __cplusplus

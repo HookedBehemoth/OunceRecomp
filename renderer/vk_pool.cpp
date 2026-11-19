@@ -64,7 +64,7 @@ uint32_t mapped_type(const VkMemoryRequirements& mr) {
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
     uint32_t type = UINT32_MAX;
     for (VkMemoryPropertyFlags w : want) {
-        if (marks_on() && (w & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) continue;   // (M6c: HOS_DBG=marks reads the arena after a reset, which loses VRAM)
+        if (marks_on() && (w & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) continue;   // (M6c: debug.marks reads the arena after a reset, which loses VRAM)
         for (uint32_t i = 0; i < dev.memory.memoryTypeCount && type == UINT32_MAX; i++)
             if ((mr.memoryTypeBits >> i & 1) && (dev.memory.memoryTypes[i].propertyFlags & w) == w) type = i;
         if (type != UINT32_MAX) break;
@@ -214,7 +214,7 @@ bool sampled_view(const Image* im, const nvn_tex* t, const nvn_view* v, VkImageV
         vi.components = VkComponentMapping{};
     } else {
         const VkComponentMapping game{component(sw[0]), component(sw[1]), component(sw[2]), component(sw[3])};
-        static const bool unmapped = dbg("nochanmap");   // (a diagnosis: the game's swizzle alone, as before M4h)
+        static const bool unmapped = dbg(SET_DBG_NOCHANMAP);   // (a diagnosis: the game's swizzle alone, as before M4h)
         vi.components = unmapped ? game : image_swizzle(im, game);
         if (std::memcmp(&vi.components, &game, sizeof game)) st_remapped.fetch_add(1, std::memory_order_relaxed);
     }
@@ -486,7 +486,7 @@ void draw_device_extensions(const std::vector<VkExtensionProperties>& exts, std:
 void draw_features_resolved(const VkPhysicalDeviceFeatures& f10, VkPhysicalDeviceVulkan12Features& f12,
                             const VkPhysicalDeviceVulkan14Features* f14) {
     mesh_feat.taskShader = VK_FALSE;   // (never: see mesh_feat)
-    // (M6h: HOS_DBG=pstats counts mesh invocations too, when the device can)
+    // (M6h: debug.pstats counts mesh invocations too, when the device can)
     const VkBool32 mesh_queries = mesh_feat.meshShaderQueries && pstats_wants_mesh_queries();
     mesh_feat.multiviewMeshShader = mesh_feat.primitiveFragmentShadingRateMeshShader = mesh_feat.meshShaderQueries = VK_FALSE;
     mesh_feat.meshShaderQueries = mesh_queries;

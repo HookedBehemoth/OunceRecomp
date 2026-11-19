@@ -223,10 +223,10 @@ void sender_drain_at_exit() {
     }
 }
 
-// (HOS_DBG=gputime: measurement) The GPU's own time: each vkQueueSubmit2 of the batch and each present's command
+// (debug.gputime= measurement) The GPU's own time: each vkQueueSubmit2 of the batch and each present's command
 // buffer is bracketed by two timestamps (top of pipe before its first command, all commands after its last). In the
 // queue's order these give the time the queue had work (the union of the brackets) and its idle gaps: the GPU waiting
-// for the CPU. Read once available, at the presents; every 600 presents a line, and with HOS_DBG=frames each present's
+// for the CPU. Read once available, at the presents; every 600 presents a line, and with debug.frames each present's
 // row in frames.csv (vk_present.cpp)
 struct GpuTime {
     bool on = false;
@@ -250,7 +250,7 @@ struct GpuTime {
 };
 GpuTime gt;
 void gputime_init() {
-    gt.on = dbg("gputime");
+    gt.on = dbg(SET_DBG_GPUTIME);
     if (!gt.on) return;
     gt.write = (PFN_vkCmdWriteTimestamp2)vkGetDeviceProcAddr(dev.device, "vkCmdWriteTimestamp2");
     gt.reset = (PFN_vkCmdResetQueryPool)vkGetDeviceProcAddr(dev.device, "vkCmdResetQueryPool");
@@ -281,7 +281,7 @@ void gputime_init() {
         gt.write(gt.end[i], VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, gt.pool, 2 * i + 1);
         vkEndCommandBuffer(gt.end[i]);
     }
-    logf("direct: gputime: every submit and present bracketed by timestamps (HOS_DBG=gputime/frames, measurement)");
+    logf("direct: gputime: every submit and present bracketed by timestamps (debug.gputime/frames, measurement)");
 }
 /// a slot for the next submit (taken at the hand-over, order_mu held, or by the present after it, mu held: in queue order)
 uint32_t gputime_slot(int kind) {
@@ -391,9 +391,9 @@ void send_chunk(Queue& q, Sub& s, bool last) {
         const uint64_t up = upload_value();
         if (up > waited) wait_value = std::max(wait_value, up), waited = up, st_upload_waits_gpu++;
     }
-    {   // (HOS_DBG=sublog:<present>: the chunks sent while that present is the newest, in their order)
+    {   // (debug.sublog=<present>: the chunks sent while that present is the newest, in their order)
         static const int64_t at = [] {
-            const char* v = dbg_value("sublog");
+            const char* v = dbg_value(SET_DBG_SUBLOG);
             return v ? atoll(v) : -1;
         }();
         if (at >= 0 && (int64_t)present_count() == at) {
@@ -509,7 +509,7 @@ void progress() {
 // ---- the table's sync entries ----
 void nvn_submit(const uint64_t*, int) {   // (the host's held submits: never in direct mode)
     static int told;
-    if (!told++) logf("direct: nvn_submit called: the host holds submits (HOS_NVN_HOLD?), which direct mode does not use");
+    if (!told++) logf("direct: nvn_submit called, which direct mode does not use");
 }
 void nvn_submit_q(const uint64_t*, int, uint64_t) {
     static int told;
@@ -709,7 +709,7 @@ extern "C" __attribute__((visibility("default"))) void gpu_submit(uint64_t queue
     {
         auto lk = lock_mu();
         Queue* q = queue_of(queue);
-        static const bool cap = dbg("capture");   // (HOS_DBG=capture: an immediate list's submit, and what the queues hold)
+        static const bool cap = dbg(SET_DBG_CAPTURE);   // (debug.capture= an immediate list's submit, and what the queues hold)
         bool imm = false, drawn = false;
         struct R { static bool any(const List* l, int d) {
             if (l->cap_drawn) return true;

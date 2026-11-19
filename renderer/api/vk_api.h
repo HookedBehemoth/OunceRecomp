@@ -13,17 +13,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 15
-/* (renderer) the Motion page's rows (runtime/media/pad_sdl.c reads them, vk_replay.cpp's option answers them): Motion controls on
-   or off, the horizontal's and the vertical's sensitivity in percent, each turned around, and the deadzone (0 to 2) */
-enum { HOS_OPT_GYRO = 18, HOS_OPT_GYRO_SENS_X, HOS_OPT_GYRO_INV_X, HOS_OPT_GYRO_INV_Y, HOS_OPT_GYRO_SENS_Y, HOS_OPT_GYRO_DEADZONE };
-/* (renderer) NVIDIA DLSS's camera jitter (runtime/rx_backend.c, gpu/legacy/vk/vk_dlss.cpp): the scene's width and height while DLSS
-   draws, 0 when there is to be no jitter, and the jitter sequence's length. 24 on: 18 to 23 are the motion rows' */
-enum { HOS_OPT_DLSS_JITTER_W = 24, HOS_OPT_DLSS_JITTER_H, HOS_OPT_DLSS_JITTER_PHASES };
-/* (renderer) the Insert menu's HDR set to Native (runtime/nn_vi.c QueryDisplayHdrStatus and QueryDisplayHdrPaperWhite): whether
-   the game is told its display is HDR10 (the swapchain is one), and the peak and paper white it is told, in nits */
-enum { HOS_OPT_HDR_NATIVE = 40, HOS_OPT_HDR_PEAK, HOS_OPT_HDR_WHITE };
-
+#define MKWVK_API_VERSION 16
 /* (renderer) the controls' names (runtime/nn_hid.c, runtime/media/pad_sdl.c, the pad_ and key_ lines of ounce_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position, SDL's order (the bottom face
    button first: A on an Xbox pad, cross on a DualSense) */
@@ -121,6 +111,11 @@ typedef struct MkwVkHost {
     /* (renderer) the game's romfs folder (--romfs, or romfs beside the executable): the overlays read the game's own menu font
        from it (gpu/legacy/vk/vk_imgui.cpp), in memory only */
     const char *(*romfs_dir)(void);
+    /* (version 16) the settings (renderer/api/settings.h: setting_id), for renderer/vk_settings.cpp's accessors */
+    int64_t (*setting_int)(int id);
+    double (*setting_float)(int id);
+    const char *(*setting_str)(int id);
+    int (*setting_given)(int id);
 } MkwVkHost;
 
 /* what the back end gives the executable: the rx_* functions (renderer/api/rx_nvn.h, rx_core) */
@@ -158,17 +153,10 @@ typedef struct MkwVkRenderer {
     void (*nvn_texture_created)(const nvn_tex *t);
     /* the CPU set an event's value: in order with the submits (the GPU's waits on it) */
     void (*nvn_event_signal)(uint64_t gpu, uint32_t value);
-    int (*option)(int id);   /* (renderer, the Insert menu) 0: game time follows the clock, 1: the menu is open, 2: dynamic resolution, 3: its fixed scale in percent, 4: the controllers count behind other windows, 5: text speed (0 normal to 3 instant), 6: native mouse look (games/oot/patches/mouse_native.c),
-                                7: the mouse's sensitivity in percent, 8: its up and down swapped (runtime/nn_hid.c),
-                                18 to 23: the Motion page (HOS_OPT_GYRO*: motion controls from a pad's gyroscope, runtime/media/pad_sdl.c;
-                                the horizontal and vertical sensitivity in percent, each turned around, the deadzone) */
     /* a submit with its queue */
     void (*nvn_submit_q)(const uint64_t *handles, int n, uint64_t queue);
     /* (renderer) a fence of one queue: the value its own last submission signals (nvnQueueFenceSync) */
     uint64_t (*nvn_fence_q)(uint64_t queue);
-    /* (renderer, the Insert menu) a setting changed from the game's side, kept in the options file: 7 the mouse's sensitivity
-       in percent (the - and = keys, runtime/nn_hid.c) */
-    void (*option_set)(int id, int value);
     /* (native-vk, version 13) a program's stages set (nvnProgramSetShaders[Ext], InitializeFromBuilder), on the game's thread:
        queued for the shader objects' prefetch (vk_shader_object.cpp), nothing done here */
     void (*nvn_program_set)(const nvn_prog *p);

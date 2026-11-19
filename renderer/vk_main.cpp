@@ -69,15 +69,11 @@ void log_long(const char* line, const char* prefix) {
     }
 }
 
-bool dbg(const char* name) {
-    static const std::string list = [] {
-        const char* e = getenv("HOS_DBG");
-        return "," + std::string(e ? e : "") + ",";
-    }();
-    return list.find("," + std::string(name) + ",") != std::string::npos;
-}
+bool dbg(setting_id id) { return host->setting_int(id) != 0; }
 
-bool dbg_log(const char* name) { return dbg(name) || dbg("logall"); }
+bool dbg_log(setting_id id) { return dbg(id) || dbg(SET_DBG_LOGALL); }
+
+const char* dbg_value(setting_id id) { return host->setting_given(id) ? host->setting_str(id) : nullptr; }
 
 bool loader_layer_enabled(const char* part) {
     for (const char* v : {"VK_LOADER_LAYERS_ENABLE", "VK_INSTANCE_LAYERS"})
@@ -87,21 +83,6 @@ bool loader_layer_enabled(const char* part) {
 
 PFN_vkGetInstanceProcAddr get_instance_proc;
 
-const char* dbg_value(const char* name) {
-    static const std::string list = [] {
-        const char* e = getenv("HOS_DBG");
-        return "," + std::string(e ? e : "") + ",";
-    }();
-    static std::mutex mu;
-    static std::vector<std::string> kept;   // (the values handed out: their strings stay)
-    const std::string key = "," + std::string(name) + ":";
-    const size_t at = list.find(key);
-    if (at == std::string::npos) return nullptr;
-    const size_t from = at + key.size(), to = list.find(',', from);
-    std::lock_guard lk(mu);
-    kept.push_back(list.substr(from, to - from));
-    return kept.back().c_str();
-}
 
 namespace {
 
@@ -254,7 +235,7 @@ bool create_device() {
     void** tail = dev.props.apiVersion >= VK_API_VERSION_1_4 ? &f14.pNext : &f13.pNext;
     draw_device_extensions(exts, want, tail);   // (M2b: shader objects, null descriptors, dynamic state 3)
     query_device_extensions(exts, want, tail);   // (M5: conditional rendering, calibrated timestamps)
-    marks_device_extensions(exts, want);   // (M6c: HOS_DBG=marks, breadcrumbs for a lost device)
+    marks_device_extensions(exts, want);   // (M6c: debug.marks, breadcrumbs for a lost device)
     // (M3a: a job is a rendering secondary executed among its caller's inline commands in one rendering)
     VkPhysicalDeviceMaintenance7FeaturesKHR m7{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_7_FEATURES_KHR};
     const bool has_m7 = has_extension(exts, VK_KHR_MAINTENANCE_7_EXTENSION_NAME);
@@ -312,7 +293,7 @@ const char* describe() {
     d = std::string(dev.props.deviceName) + " (Vulkan, direct)";
     return d.c_str();
 }
-// (the host's HOS_BENCH: draws recorded since the start, draws skipped since the start for a program not ready, shader jobs
+// (the host's bench: draws recorded since the start, draws skipped since the start for a program not ready, shader jobs
 // queued or running now)
 void stats(int64_t* draws, int64_t* skipped, int64_t* pipelines) {
     draw_totals(draws, skipped);
@@ -399,10 +380,23 @@ void regs_stats(char* out, size_t cap) {
 
 }  // namespace hsd
 
+/* the settings' accessors (renderer/api/settings.h), the host's */
+extern "C" {
+int setting_bool(setting_id id) { return hsd::host->setting_int(id) != 0; }
+int64_t setting_int(setting_id id) { return hsd::host->setting_int(id); }
+double setting_float(setting_id id) { return hsd::host->setting_float(id); }
+const char* setting_str(setting_id id) { return hsd::host->setting_str(id); }
+int setting_given(setting_id id) { return hsd::host->setting_given(id); }
+}
+
 extern "C" __attribute__((visibility("default"))) const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
     using namespace hsd;
     if (!h || h->version != MKWVK_API_VERSION) return nullptr;
     host = h;
+    {   // (the settings read once: the host's accessors are there from now on, not at the library's load)
+        strict_enabled = dbg(SET_DBG_STRICT);
+        deferred_check = dbg(SET_DBG_DEFERREDCHECK);
+    }
     if (!load_global()) {
         logf("direct: libvulkan.so.1 not found");
         return nullptr;
@@ -415,8 +409,8 @@ extern "C" __attribute__((visibility("default"))) const MkwVkRenderer* mkwvk_ini
     draw_device_created();   // (M2b: the pools' set, the draws' functions)
     query_device_created();  // (M5: queries, conditions, the resolve step)
     upscale_device_created();
-    marks_init();            // (M6c: HOS_DBG=marks; after the draws' functions are loaded)
-    pstats_init(caps.mesh_queries);   // (M6h: HOS_DBG=pstats:<present>)
+    marks_init();            // (M6c: debug.marks; after the draws' functions are loaded)
+    pstats_init(caps.mesh_queries);   // (M6h: debug.pstats=<present>)
     passtime_init();
     logf("direct: %s, Vulkan %u.%u, driver %#x: the direct back end (M2b: targets, passes, present, vertex and fragment draws)", dev.props.deviceName,
          VK_VERSION_MAJOR(dev.props.apiVersion), VK_VERSION_MINOR(dev.props.apiVersion), dev.props.driverVersion);
@@ -442,5 +436,5 @@ extern "C" __attribute__((visibility("default"))) const MkwVkRenderer* mkwvk_ini
     table.nvn_program_set = program_set;
     table.nvn_pool_native = pool_native;
     sync_fill_table(table);   // (nvn_submit, _q, fence, fence_q, pushed, replayed, wait, finish, event_signal)
-    return &table;   // (option, option_set: none, the host's defaults)
+    return &table;
 }

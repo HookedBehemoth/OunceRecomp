@@ -1,6 +1,6 @@
-// HOS_DBG=dump:<present>[+<frames>]: every pass's targets of the frame after that present
+// debug.dump=<present>[+<frames>]: every pass's targets of the frame after that present
 // (the submissions handed in between it and the next present), each as its rendering ends, scaled to at most 320 wide and
-// written as dump_<present>/NNN_<what>_<gpu>.png in the run's folder (HOS_DBG=dumpdir:<dir>: there), with one log line
+// written as dump_<present>/NNN_<what>_<gpu>.png in the run's folder (debug.dumpdir=<dir>: there), with one log line
 // each.
 // Lists are recorded before their frame's submit, so passes are copied from two presents before it on; only the copies
 // of the submissions of that frame are numbered (in submission order) and written.

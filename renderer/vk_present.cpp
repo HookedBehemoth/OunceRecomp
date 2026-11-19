@@ -1,5 +1,5 @@
 // The window : each present blits the NVN window texture, with the host's crop, into the swapchain's next image
-// (letterboxed by renderer/api/vk_present_rect.h); with no window (HOS_HEADLESS) into an image of its own. The host's call is
+// (letterboxed by renderer/api/vk_present_rect.h); with no window (headless) into an image of its own. The host's call is
 // noted and its GPU work runs in its queue's order (vk_sync.cpp): after every submission handed to that queue
 // before it. The swapchain as gpu/legacy/vk/vk_main.cpp makes it, without HDR, the
 // overlays' views or Reflex. Every 600 presents: the frame time and the counts of the other parts, one log line each.
@@ -32,7 +32,7 @@
 #include "vk_present_rect.h"
 
 namespace hsd {
-// (vk_sync.cpp: HOS_DBG=gputime / frames, measurement)
+// (vk_sync.cpp: debug.gputime / frames, measurement)
 bool gputime_on();
 void gputime_present_begin(VkCommandBuffer cb, uint32_t& slot);
 void gputime_present_end(VkCommandBuffer cb, uint32_t slot);
@@ -74,7 +74,7 @@ struct Frame {
     uint32_t shot_w = 0, shot_h = 0;   // (the waiting shot's size: the presented image's shape, its long side kShotMax)
 };
 
-// Shots of the presented frame (gpu_shots: the host's RX_VK_SHOTS / RX_VK_SHOT_EVERY, as the frozen back end reads
+// Shots of the presented frame (gpu_shots: the host's shots / shot_every, as the frozen back end reads
 // them): every Nth present the image presented (the swapchain's or the offscreen one, after the blit with the crop) is
 // scaled into a 1280x720 RGBA8 image and copied into the frame slot's buffer; once that slot's fence has passed (three
 // presents later, where the present waits for it anyway) the pixels go to <dir>/vk_<present>.png on a thread of its own.
@@ -94,6 +94,11 @@ int64_t presents = 0;
 clk::time_point last_present{};
 std::vector<float> intervals_ms;
 
+/// The frame_rate setting is vsync: presented in step with the display (FIFO); otherwise mailbox where there is one (the
+/// game paces itself, runtime/nn_vi.c)
+bool vsync_wanted() { return setting_int(SET_FRAME_RATE) == 3; }
+bool swap_vsync = false;   // (what the swapchain was made with)
+
 bool create_swapchain(uint32_t width, uint32_t height) {
     VkSurfaceCapabilitiesKHR caps;
     if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(dev.physical, dev.surface, &caps) != VK_SUCCESS) return false;
@@ -111,9 +116,10 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     vkGetPhysicalDeviceSurfacePresentModesKHR(dev.physical, dev.surface, &n, nullptr);
     std::vector<VkPresentModeKHR> modes(n);
     vkGetPhysicalDeviceSurfacePresentModesKHR(dev.physical, dev.surface, &n, modes.data());
-    VkPresentModeKHR mode = VK_PRESENT_MODE_FIFO_KHR;   // (mailbox where there is one: the game paces itself, nn_vi.c)
+    VkPresentModeKHR mode = VK_PRESENT_MODE_FIFO_KHR;
+    swap_vsync = vsync_wanted();
     for (auto m : modes)
-        if (m == VK_PRESENT_MODE_MAILBOX_KHR) mode = m;
+        if (m == VK_PRESENT_MODE_MAILBOX_KHR && !swap_vsync) mode = m;
     VkSwapchainCreateInfoKHR ci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
     ci.surface = dev.surface;
     ci.minImageCount = std::max(caps.minImageCount, 3u);
@@ -339,7 +345,7 @@ void log_line() {
     if (own) logf("direct: images' memory: %s", own + 2);
     image_pool_stats(b, sizeof b);
     logf("direct: %s", b);
-    static const bool log_pass = dbg_log("logpass"), log_lists = dbg_log("loglists");
+    static const bool log_pass = dbg_log(SET_DBG_LOGPASS), log_lists = dbg_log(SET_DBG_LOGLISTS);
     pool_stale_census(b, sizeof b);
     char text[8192 + 32];
     std::snprintf(text, sizeof text, "direct: transient pool: %s", b);
@@ -386,7 +392,7 @@ int present_start(void* hwnd) {
             vkCreateSemaphore(dev.device, &si, nullptr, &f.acquired) != VK_SUCCESS)
             return 0;
     }
-    if (!hwnd) {   // (HOS_HEADLESS: an image of the size a resize before the start asked for, else 1920x1080)
+    if (!hwnd) {   // (headless: an image of the size a resize before the start asked for, else 1920x1080)
         dev.offscreen = true;
         if (const uint64_t want = resize_to.exchange(0, std::memory_order_acquire)) extent = {(uint32_t)(want >> 32), (uint32_t)want};
         logf("direct: no window: presents clear an image of their own (%ux%u)", extent.width, extent.height);
@@ -419,9 +425,9 @@ uint64_t present_count() { return asked.load(std::memory_order_acquire); }
 void present(const nvn_tex* t, const int* crop) {   // (the guest's Presentation Thread)
     const auto now = clk::now();
     if (presents) intervals_ms.push_back(std::chrono::duration<float, std::milli>(now - last_present).count());
-    {   // (HOS_DBG=frames: each present's interval in frames.csv; with gputime also the GPU's frame time, busy and idle as the
+    {   // (debug.frames= each present's interval in frames.csv; with gputime also the GPU's frame time, busy and idle as the
         // timestamps of an earlier frame came in, a row late; measurement)
-        static FILE* frames_file = dbg("frames") ? std::fopen("frames.csv", "w") : nullptr;
+        static FILE* frames_file = dbg(SET_DBG_FRAMES) ? std::fopen("frames.csv", "w") : nullptr;
         if (frames_file && presents) {
             double g[3] = {0, 0, 0};
             const bool have = gputime_row(g);
@@ -441,15 +447,17 @@ void present(const nvn_tex* t, const int* crop) {   // (the guest's Presentation
     mem_budget_sample(image_dying_bytes());   // 
     assets_present(n);
     dump_present(n);
-    pstats_present(n);   // (M6h: HOS_DBG=pstats)
+    pstats_present(n);   // (M6h: debug.pstats)
     passtime_present(n);
     sync_present(t, crop);
 }
 
 void present_run(const nvn_tex& t, const int crop[4]) {   // (vk_sync.cpp's mu held: one at a time)
-    draw_meshlog_after();   // (M4a: HOS_DBG=meshlog's GPU-side records)
+    draw_meshlog_after();   // (M4a: debug.meshlog's GPU-side records)
     if (const uint64_t want = dev.offscreen ? resize_to.exchange(0, std::memory_order_acquire) : 0; want)
         if (!resize_offscreen((uint32_t)(want >> 32), (uint32_t)want)) return;
+    // (a new present mode, the frame_rate setting changed while the game runs: the swapchain made again at its size)
+    if (!dev.offscreen && swapchain && vsync_wanted() != swap_vsync) resize_to.store((uint64_t)extent.width << 32 | extent.height);
     if (const uint64_t want = dev.offscreen ? 0 : resize_to.exchange(0, std::memory_order_acquire); want || (!dev.offscreen && !swapchain))
         if (!create_swapchain(want ? (uint32_t)(want >> 32) : extent.width, want ? (uint32_t)want : extent.height)) return;
     Frame& f = frames[frame_index];
