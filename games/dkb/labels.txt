@@ -142,8 +142,12 @@
 8049a170 dynres_min_scale_get             # system survey: [x0+0x540]+0x64: FrameBufferMinScale
 80499f5c dynres_setup                     # system survey: copies MaintainGpuPercentage and FrameBufferMinScale into the GPU-load controller's profile (+0x24, +0x2c) # ?
 8055a8fc agl_resource_init                # games/dkb/patches/ndsr.c: agl's resource archive set-up; the NDSR network holder at +0x78, then ndsr_network_load into it
-8055ab00 ndsr_network_load                # games/dkb/patches/ndsr.c: builds agl_ndsr.pck's network into the holder (+0x28) and its ratio table (+0x24 entries at +4)
-804c4258 scene_stages_init                # games/dkb/patches/ndsr.c: a model scene's render stages; CreateNdsr (resolved config +0xe10) makes the NDSR stage (+0x2b0)
+8055ab00 ndsr_network_load                # games/dkb/patches/ndsr.c: builds agl_ndsr.pck's network into the holder (+0x28) and its ratio table (1.0, then the network's ratios; count +0x24; patched to 1.0 alone)
+804c4258 scene_stages_init                # games/dkb/patches/ndsr.c: a model scene's render stages; CreateNdsr (resolved config +0xe10) makes the NDSR stage (+0x2b0: 0x20 bytes, ratio index +0x10, scale +0x14, the holder +0x18)
+80442ccc ndsr_render_scale                # games/dkb/patches/ndsr.c: a view's render scale; with the config's +0x930 set, reads the model scene's NDSR stage (+0x2b0) with no check that it exists
+80345a80 ndsr_stage_pass                  # games/dkb/patches/ndsr.c: the stage's frame pass: ratio index 0, SMAA straight into the output (f_81625678); above it "ndsr::smaa_output" and the network (f_80345f30); scale not 1.0: "ndsr::two_step_upscale_input"
+80345f30 ndsr_network_run                 # games/dkb/patches/ndsr.c: the network's evaluation of smaa_output into the output (replaced by the host's upscaler)
+81625678 pass_smaa_direct                 # games/dkb/patches/ndsr.c: SMAA edge, blend weights and resolve into the output, the stage's path without the network # ?
 806bf9d4 scene_stages_dtor                # games/dkb/patches/ndsr.c: the stages' destructor (CreateNdsr +0xe10: the NDSR stage's teardown)
 803adb98 dynres_ratio_pick_a              # games/dkb/patches/ndsr.c: the dynamic resolution controller: picks from the NDSR holder's ratio table (none: its other path) and NdsrUpscaleMaxRate # ?
 803ae0f0 dynres_ratio_pick_b              # games/dkb/patches/ndsr.c: the same over NdsrUpscaleMinRate/MaxRate # ?

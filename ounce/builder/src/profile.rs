@@ -380,11 +380,13 @@ fn run_scene(layout: &Layout, game: &Game, name: &str, s: &Scene, dir: &Path, si
     } else {
         set.push(("HOS_BENCH".into(), format!("{frames},60,{}{play}", frames.saturating_sub(8).min(300))));
     }
-    // (the per-draw run keeps a picture of the scene, its last screenshot, beside the overlay: what was measured)
-    let shot_every = if shaders { Some(300) } else { None };
+    // (the benchmark run keeps a picture of the scene beside the overlay, taken while it measured: every `frames - 8`
+    // presents puts one shot in any `frames` presents in a row, at least 8 before the run's end, past the shot's
+    // three-present write; the newest is the measured one)
+    let shot_every = if shaders { None } else { Some(frames.saturating_sub(8).max(1)) };
     let o = ounce_core::run::Options { headless: true, seconds: Some(s.seconds), name: Some(run_name), set, shot_every, ..Default::default() };
     let r = ounce_core::run::run(layout, &config, game, &o).unwrap_or_else(|e| fail(e));
-    if shaders {
+    if !shaders {
         let mut shots: Vec<PathBuf> = std::fs::read_dir(r.dir.join("shots")).into_iter().flatten().flatten().map(|e| e.path()).collect();
         shots.sort();
         if let Some(last) = shots.last() {
