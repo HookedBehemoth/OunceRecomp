@@ -82,9 +82,10 @@ To test a change, see [Test OunceRecomp](testing.md). To work on the lifter, see
 | `~/.local/share/ounce/` | Your saves, and per game the smoke tests' golden data and the input recordings |
 
 A worktree needs no setup: `git worktree add` and `ounce build` are enough, because the config, the cache and the data
-live outside the checkout. A worktree's first build copies the texture store from the main checkout's build of the
-game when that one is current, which takes seconds and, on btrfs, almost no disk; it converts only when no current
-store exists.
+live outside the checkout. A worktree's first build copies the texture store from another checkout's build of the
+game when one is current (the main checkout first, then the other worktrees), which takes seconds and, on btrfs, no
+disk; it converts only when no current store exists. Keep the main checkout's build current so every worktree can
+share it.
 
 ## Profile scenes
 

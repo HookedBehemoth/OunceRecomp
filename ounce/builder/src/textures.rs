@@ -1,6 +1,6 @@
 //! The prepared texture store (ounce-tex) as a build step. Every build puts one in its game folder's `prepared/`: a
-//! developer's build keeps it while its inputs are unchanged, a worktree's copies the main checkout's when that one
-//! matches, and only otherwise converts; a player's game folder (`--dump`) also gets its romfs copy's texture files
+//! developer's build keeps it while its inputs are unchanged, copies another checkout's (main first, then the other
+//! worktrees) when one matches, and only otherwise converts; a player's game folder (`--dump`) also gets its romfs copy's texture files
 //! zeroed.
 //! `ounce tool textures` makes one by hand.
 
@@ -39,6 +39,18 @@ pub fn main_checkout(root: &Path) -> Option<PathBuf> {
     (o.status.success() && main.canonicalize().ok()? != root.canonicalize().ok()?).then_some(main)
 }
 
+/// The repository's other checkouts: the main one first, then its other worktrees (`git worktree list`).
+pub fn other_checkouts(root: &Path) -> Vec<PathBuf> {
+    let here = root.canonicalize().ok();
+    let Ok(o) = std::process::Command::new("git").arg("-C").arg(root).args(["worktree", "list", "--porcelain"]).output() else { return Vec::new() };
+    String::from_utf8_lossy(&o.stdout)
+        .lines()
+        .filter_map(|l| l.strip_prefix("worktree "))
+        .map(PathBuf::from)
+        .filter(|p| p.canonicalize().ok() != here)
+        .collect()
+}
+
 /// Copies the files of `from` into `to` (a new folder). std's copy uses copy_file_range, which the kernel makes a
 /// reflink where the file system can (btrfs): the copy shares the data and costs no disk.
 fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
@@ -55,7 +67,8 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
 }
 
 /// A developer's build's store, `folder`/prepared (tex/ and inputs.key): kept when its key (inputs_key) is current;
-/// else copied from the main checkout's build of the game when that one's key matches (a worktree's build); else
+/// else copied (a reflink) from the first other checkout's build of the game whose key matches (the main checkout
+/// first, then the other worktrees); else
 /// converted from `romfs`. Made beside and renamed over the old one, so a game that maps the old one keeps it.
 pub fn dev_store(root: &Path, folder: &Path, romfs: &Path, game: &ounce_lift::game::Game, settings: Settings, jobs: usize) -> Result<(), String> {
     let at = folder.join("prepared");
@@ -73,8 +86,8 @@ pub fn dev_store(root: &Path, folder: &Path, romfs: &Path, game: &ounce_lift::ga
             std::fs::remove_dir_all(d).map_err(|e| io(d, e))?;
         }
     }
-    let main = main_checkout(root).map(|m| m.join("work").join(&game.name).join("game/prepared")).filter(|d| current(d));
-    if let Some(m) = main {
+    let found = other_checkouts(root).into_iter().map(|c| c.join("work").join(&game.name).join("game/prepared")).find(|d| current(d));
+    if let Some(m) = found {
         let t = Instant::now();
         copy_tree(&m, &new)?;
         // (and its renderer caches, warm, where this folder has none)
@@ -84,7 +97,7 @@ pub fn dev_store(root: &Path, folder: &Path, romfs: &Path, game: &ounce_lift::ga
                 std::fs::copy(e.path(), folder.join(&n)).map_err(|e| format!("{n}: {e}"))?;
             }
         }
-        println!("textures: the store (and the renderer caches) copied from the main checkout's build, {} ({:.1} s)", m.display(), t.elapsed().as_secs_f64());
+        println!("textures: the store (and the renderer caches) copied from {} ({:.1} s)", m.display(), t.elapsed().as_secs_f64());
     } else {
         make(romfs, &new.join("tex"), game, settings, jobs, Vec::new(), None)?;
         std::fs::write(new.join("inputs.key"), &key).map_err(|e| io(&new, e))?;
