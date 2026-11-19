@@ -21,6 +21,7 @@
 #include "vk_pool.h"
 #include "vk_shader.h"
 #include "vk_query.h"
+#include "vk_upscale.h"
 #include "vk_check.h"
 #include "vk_draw.h"
 #include "vk_work.h"
@@ -413,6 +414,7 @@ extern "C" __attribute__((visibility("default"))) const MkwVkRenderer* mkwvk_ini
     }
     draw_device_created();   // (M2b: the pools' set, the draws' functions)
     query_device_created();  // (M5: queries, conditions, the resolve step)
+    upscale_device_created();
     marks_init();            // (M6c: HOS_DBG=marks; after the draws' functions are loaded)
     pstats_init(caps.mesh_queries);   // (M6h: HOS_DBG=pstats:<present>)
     passtime_init();

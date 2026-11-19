@@ -15,6 +15,9 @@ void pass_cut(List* l);
 void pass_list_end(List* l);
 /// The list's command buffer outside any rendering: a begun rendering of its own ended (its targets stay noted)
 VkCommandBuffer pass_outside(List* l);
+/// The list's command buffer for a host dispatch (vk_upscale.cpp), outside its rendering: before and the waiting
+/// dependencies recorded first, a dispatch's own left waiting
+VkCommandBuffer pass_dispatch(List* l, const Dep& before);
 /// Its rendering begun again (loading) after pass_outside, with the draw's query and condition
 void pass_resume(List* l);
 void pass_stats(char* out, size_t cap, double frames);

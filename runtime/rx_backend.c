@@ -167,6 +167,7 @@ const gpu_fns *rx_direct(void) {
         DIRECT_FN(texels, "gpu_texels")
         DIRECT_FN(pass_known, "gpu_pass_known")
         DIRECT_FN(pass_inline, "gpu_pass_inline")
+        DIRECT_FN(upscale, "gpu_upscale")
         DIRECT_FN(shots, "gpu_shots")
         DIRECT_FN(transient_pool, "gpu_transient_pool")
         DIRECT_FN(image_need, "gpu_image_need")

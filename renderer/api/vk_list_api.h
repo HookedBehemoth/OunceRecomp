@@ -96,6 +96,20 @@ int64_t gpu_vram_free(void);   /* free VRAM in bytes as the driver sees it (budg
 void gpu_texture_cached(const void *tex, int cached);   /* agl released tex to its LRU cache (1: still registered,
                                                           its texels kept) or took it back (0); counted, nothing evicted */
 
+/* The host's upscale (runtime/upscale.h): a spatial upscale recorded into the list where the game's own upscaler would run,
+   outside a rendering. src_id names a 2D texture of the texture pool (sampled at src_w x src_h, its top left), dst_id a 2D
+   image of the same pool (written at dst_w x dst_h). Ordered after the work before it (the colour's rendering) and before
+   the work after it, as the list's dispatches are. One filter a call; a filter the back end does not have is counted and
+   records nothing (strict: an event) */
+enum { GPU_UPSCALE_BILINEAR = 1, GPU_UPSCALE_CATMULL_ROM = 2 };
+typedef struct gpu_upscale_args {
+    uint32_t filter;                   /* GPU_UPSCALE_* */
+    uint32_t src_id, src_w, src_h;
+    uint32_t dst_id, dst_w, dst_h;
+    float sharpness;                   /* (the game's parameter: no filter of these reads it) */
+} gpu_upscale_args;
+void gpu_upscale(void *list, const gpu_upscale_args *a);
+
 /* Shots of the presented frame: every `every` presents a 1280x720 PNG of what is shown, <dir>/vk_<present>.png (the
    host's RX_VK_SHOTS / RX_VK_SHOT_EVERY, the frozen back end's names). Called once, before the renderer starts */
 void gpu_shots(const char *dir, int every);

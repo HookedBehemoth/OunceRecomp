@@ -27,6 +27,8 @@ typedef struct {
     /* the format table by pass key: the job recorder's question, the game's inline path */
     int (*pass_known)(uint64_t key);
     void (*pass_inline)(void *list, uint64_t key);
+    /* the host's upscale (runtime/upscale.c) */
+    void (*upscale)(void *list, const gpu_upscale_args *a);
     /* shots of the presented frame */
     void (*shots)(const char *dir, int every);
     /* the transient pool (rt_slots.c; renderer/api/vk_list_api.h) */

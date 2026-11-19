@@ -37,6 +37,9 @@ void game_frame_size(uint32_t width, uint32_t height, int start);   /* the windo
 void game_bench_report(void);                                 /* the end of a benchmark run (bench.c): the patches' lines */
 int game_textures_settled(void);                              /* 1: the game streams no textures now (a benchmark's ready test) */
 
+/* the bytes of memory the game gets beyond the console's, at boot (the render targets' pool its patches grew) */
+uint64_t game_memory_extra(void);
+
 /* ---- input ---- */
 /* the mouse turning the game's camera itself: 1 captured, 0 not; -1: no such camera now (the mouse is the right stick) */
 int game_mouse_camera(void);

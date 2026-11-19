@@ -433,6 +433,7 @@ static int game_main(int argc, char **argv) {
             hos_log("boot: widescreen: a %.4f screen is 16:9: the game's own picture", (double)want);
         }
     }
+    hos_total_memory += game_memory_extra();   /* (game_hooks.h) */
     hos_log("boot: image %zu MB at %#llx, %llu MB of memory for the game", n >> 20, IMAGE_BASE,
             (unsigned long long)(hos_total_memory >> 20));
 #ifndef A64_MEM_ZERO

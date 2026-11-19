@@ -797,6 +797,11 @@ VkCommandBuffer pass_outside(List* l) {
     if (l->pass.begun) suspend(l), count(S_TASK_INLINE_SPLITS);
     return cmd(l);
 }
+VkCommandBuffer pass_dispatch(List* l, const Dep& before) {
+    suspend(l);
+    l->wait |= before;
+    return cmd_dispatch(l);
+}
 void pass_resume(List* l) {
     PassRec& p = l->pass;
     if (!records(l) || !p.noted || p.begun || p.inherited) return;

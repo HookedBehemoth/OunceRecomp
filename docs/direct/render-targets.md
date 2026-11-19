@@ -25,7 +25,7 @@ swapchain, so a window resize only remakes the swapchain.
 |---|---|
 | `HOS_OUTPUT_RES=<n>` or `output_res=<n>` in `ounce_options.ini` | `O`: 0 the game's 2048 x 1152 frame, 1 2560 x 1440, 2 3840 x 2160, 3 1920 x 1080, 4 5120 x 1440 |
 | `HOS_SCENE_NATIVE=1` | the scene's base scale 1.0 instead of the game's 0.8 |
-| `HOS_RES_SCALE=<s>` | the fixed 3D scale (up to 2.0) |
+| `HOS_RES_SCALE=<s>` | the fixed 3D scale, up to 2.0; above 1.0 the frame is rendered larger and taken down (Upscaling) |
 | `HOS_DYNRES=1` | the game's own dynamic resolution, driven by GPU time |
 | `HOS_RT_POOL_MB=<MB>` | the game's render-target pool; by default it scales with `O`'s pixels and is at least 512 MB |
 
@@ -81,30 +81,39 @@ Shadow filter widths are in texels, so a larger map gives a narrower penumbra un
 
 ## Upscaling
 
-The game's NDSR upscaler keeps its stage and renders at ratio 1.0 (`games/oot/patches/ndsr.c`). After the scene,
-lighting, fog and post effects:
+Both games keep agl's NDSR stage with its ratio tables (`games/oot/patches/ndsr.c`, `games/dkb/patches/ndsr.c`). Each
+of OoT's networks lists the output-to-input ratios it supports (1.0 and 1.2 up to 3.0), and the stage picks the ratio
+nearest the 3D scale. After the scene, lighting, fog and post effects:
 
-1. The lit color is copied for anti-aliasing (`color(AA)`), at the frame's size.
-2. SMAA resolves it straight into the frame (R11G11B10F), the game's own path when no network runs.
-3. The UI is composed over the frame into the window texture.
+1. The lit colour is copied for anti-aliasing (`color(AA)`) at the render size.
+2. When the render size is the output's, SMAA resolves straight into the frame, and no upscaler runs.
+3. Otherwise SMAA resolves into `ndsr::smaa_output` (RGB9E5F) at the render size, holding the square root of the colour,
+   and the chosen upscaler takes it to the frame.
+4. The UI is composed over the frame into the window texture.
 
-The game picks the internal size from its networks' ratio tables: each network lists the output-to-input ratios of
-its layer configurations, and the stage picks the one nearest the dynamic resolution's request. The patch cuts every
-table to 1.0. At a ratio above 1.0, SMAA would resolve into `ndsr::smaa_output` (RGB9E5F) at the smaller size, and a
-network of matrix multiplies, which this GPU runs in software, would take it to the frame. Two of the three networks also run at
-1.0. The patch keeps them from running, and their evaluation calls go to the host's upscaler
-(`runtime/upscale.h`), which is not written yet.
+The upscaler is a choice that can change while the game runs (`runtime/upscale.h`):
 
-Donkey Kong Bananza's patch (`games/dkb/patches/ndsr.c`) does the same: it cuts its network's ratio table to 1.0, so
-SMAA writes the output directly, and its network evaluation goes to the same interface.
+| Choice | What runs | 3D scales |
+|---|---|---|
+| game | the game's network, a few layers of matrix multiplies | up to 1.0 |
+| bilinear | the host's resample with a tent filter | up to 2.0 |
+| Catmull-Rom | the host's resample with a Catmull-Rom filter, clamped against ringing | up to 2.0 |
 
-The upscaler gets the SMAA-resolved color, the frame image, their sizes and one parameter of the stage. The game
-writes no motion-vector target and no target carries color across frames, so a spatial upscaler fits as it is. A
-temporal one also needs:
+The game's network cannot take a frame down, so the settings offer it only at scales up to 1.0. A kind 2 or 3 network
+also runs at ratio 1.0 as the game ships it, a 1:1 pass over SMAA's output; the patch skips it, because it costs about
+1.3 ms a frame at 2560 x 1440.
 
-- depth (`RawDepth(Full)`, D32F, 0 at the near plane);
-- a jittered projection and motion vectors, which the game does not provide: camera motion can be derived from depth
-  and the two frames' view-projection matrices.
+Above 1.0, the scene renders at the output size times the 3D scale, and the host's filter takes it down with a kernel
+widened by the ratio, so every rendered pixel counts. The render target pool and the game's memory grow with the
+square of the scale at boot, so a scale above the boot scale needs a restart.
+
+The host's filters are one back-end op that records a compute pass into the game's command buffer, in the network's
+place. The game provides no motion-vector target and no target that carries colour across frames, so a temporal
+upscaler (FSR3, XeSS, DLSS) also needs:
+
+- depth (`RawDepth(Full)`, D32F, 0 at the near plane), which exists at the render size;
+- motion vectors, which can be derived from depth and the two frames' view-projection matrices;
+- a jittered projection, which the game does not apply.
 
 ## Things to keep consistent
 

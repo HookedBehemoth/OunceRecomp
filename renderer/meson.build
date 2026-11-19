@@ -38,6 +38,7 @@ vk_sources = files(
   'vk_state.cpp',
   'vk_sync.cpp',
   'vk_task.cpp',
+  'vk_upscale.cpp',
   'vk_vma.cpp',
   'vk_work.cpp',
 )

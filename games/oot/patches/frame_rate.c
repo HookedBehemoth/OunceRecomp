@@ -106,6 +106,17 @@ static int realtime_rate(double ratio, int maximum, double *carry) {
     if (*carry < -4.0) *carry = -4.0;
     return fps;
 }
+/* HOS_RES_SCALE, read once into the fixed path's scale: the scale at boot (the render targets' pool is sized for it,
+   games/oot/patches/oot_probes.c), 1.0 without it */
+float hos_res_scale_at_boot(void) {
+    static int read_scale;
+    static float v = 1.0f;
+    if (!read_scale) {
+        read_scale = 1;
+        if (getenv("HOS_RES_SCALE")) v = (float)atof(getenv("HOS_RES_SCALE")), memcpy((void *)&hos_fixed_scale_bits, &v, 4);
+    }
+    return v;
+}
 void game_frame_timing(int64_t now) {
     int rx_option(int id, int otherwise);
     /* The game's dynamic resolution steps the 3D's scale with the GPU time, and each new scale makes a new set of render
@@ -130,13 +141,7 @@ void game_frame_timing(int64_t now) {
             memcpy((void *)&hos_fixed_scale_bits, &v, 4);
         }
     }
-    {
-        static int read_scale;
-        if (!read_scale) {
-            read_scale = 1;
-            if (getenv("HOS_RES_SCALE")) { float v = (float)atof(getenv("HOS_RES_SCALE")); memcpy((void *)&hos_fixed_scale_bits, &v, 4); }
-        }
-    }
+    (void)hos_res_scale_at_boot();
     {   /* every change of the 3D's scale (+0xe5c), with the sizes it is taken against */
         static uint32_t last;
         static long long presents;

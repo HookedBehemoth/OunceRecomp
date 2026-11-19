@@ -1,0 +1,66 @@
+// (vk_upscale.cpp) The host's resample of the game's frame, up or down: one invocation per output pixel, the source read
+// texel by texel (the pools' set has the game's samplers only), the result stored into the output image. Filters (push
+// constant `kind`), each a separable kernel:
+//   1 bilinear: the tent, |d| < 1;
+//   2 Catmull-Rom: |d| < 2, clamped to the range of the texels it weighs positively, so its negative lobes sharpen edges
+//     without ringing.
+// Downscaling (a source larger than the output), the kernel is widened by the ratio, so every source texel is weighed
+// (at 2.0 the tent is a 4 x 4 footprint, Catmull-Rom 8 x 8). The source holds the square root of the colour (the game's
+// SMAA writes it so for its network, which squares its result): an upscale filters it as it is, a perceptual space, a
+// downscale the colour itself (squared first), so the average keeps the light; the result is the colour.
+// The texture and image are the pools' 2D entries (bindings kPoolSampledBinding + 1 and kPoolStorageBinding + 1).
+// Regenerate the header: glslangValidator -V --target-env vulkan1.3 --vn upscale_spv -o upscale_spv.h upscale.comp
+#version 460
+#extension GL_EXT_samplerless_texture_functions : require
+#extension GL_EXT_nonuniform_qualifier : require
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 1) uniform texture2D textures[];
+layout(set = 0, binding = 8) uniform writeonly image2D images[];
+
+layout(push_constant) uniform P {
+    uint src, dst;
+    uvec2 src_size, dst_size;
+    uint kind;
+} p;
+
+const int kMaxTaps = 9;   // (Catmull-Rom at a ratio of 2: 2 x 2 x 2 texels and one)
+
+float kernel(float d) {
+    d = abs(d);
+    if (p.kind == 2u) return d < 1.0 ? (1.5 * d - 2.5) * d * d + 1.0 : d < 2.0 ? ((-0.5 * d + 2.5) * d - 4.0) * d + 2.0 : 0.0;
+    return max(1.0 - d, 0.0);
+}
+
+void main() {
+    const uvec2 o = gl_GlobalInvocationID.xy;
+    if (any(greaterThanEqual(o, p.dst_size))) return;
+    const vec2 ratio = vec2(p.src_size) / vec2(p.dst_size);
+    const vec2 k = max(ratio, vec2(1.0));   // (the kernel's widening)
+    const bool down = ratio.x > 1.0 || ratio.y > 1.0;
+    const float radius = p.kind == 2u ? 2.0 : 1.0;
+    const vec2 s = (vec2(o) + 0.5) * ratio - 0.5;   // (the sample point in texel centres)
+    const ivec2 first = ivec2(floor(s - radius * k)) + 1;
+    const ivec2 n = min(ivec2(floor(s + radius * k)) - first + 1, ivec2(kMaxTaps));
+    float wx[kMaxTaps], wy[kMaxTaps];
+    float sx = 0.0, sy = 0.0;
+    for (int i = 0; i < kMaxTaps; i++) {
+        wx[i] = i < n.x ? kernel((float(first.x + i) - s.x) / k.x) : 0.0, sx += wx[i];
+        wy[i] = i < n.y ? kernel((float(first.y + i) - s.y) / k.y) : 0.0, sy += wy[i];
+    }
+    vec3 r = vec3(0.0), lo = vec3(1e30), hi = vec3(0.0);
+    for (int y = 0; y < n.y; y++) {
+        vec3 row = vec3(0.0);
+        for (int x = 0; x < n.x; x++) {
+            const ivec2 c = clamp(first + ivec2(x, y), ivec2(0), ivec2(p.src_size) - 1);
+            vec3 t = texelFetch(textures[p.src], c, 0).rgb;
+            if (down) t *= t;
+            row += wx[x] * t;
+            if (wx[x] > 0.0 && wy[y] > 0.0) lo = min(lo, t), hi = max(hi, t);
+        }
+        r += wy[y] * row;
+    }
+    r = clamp(r / (sx * sy), lo, hi);
+    if (!down) r *= r;
+    imageStore(images[p.dst], ivec2(o), vec4(r, 1.0));
+}

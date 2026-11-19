@@ -240,12 +240,23 @@ PATCH_AT_SITE(0x80ea3044, word(0x52a890e8), after, w8, hos_oot_base_size_bits, k
 
 /* ---- the render targets' pool */
 
-static uint64_t pool_growth(void) { return hos_rt_pool_size(0x13100000ULL) - 0x13100000ULL; }
+/* the pool as shipped, for the scene's pixels at a 3D scale above 1.0 at boot (games/oot/patches/ndsr.c renders larger
+   than the output then): a 3D scale of 2.0 at 2560 x 1440 left the game's allocator out of room in Kokiri Forest */
+float hos_res_scale_at_boot(void);
+static uint64_t pool_shipped(void) {
+    const float s = hos_res_scale_at_boot();
+    return s > 1.0f ? ((uint64_t)(0x13100000ULL * s * s) + 0xfffff) & ~0xfffffULL : 0x13100000ULL;
+}
+static uint64_t pool_growth(void) { return hos_rt_pool_size(pool_shipped()) - 0x13100000ULL; }
+
+/* (game_hooks.h) the console's memory holds the pool as the output scales it; the part a 3D scale above 1.0 adds
+   comes on top (a 3D scale of 2.0 at a 2560 x 1440 frame: the Graphics heap did not fit the game's memory) */
+uint64_t game_memory_extra(void) { return hos_rt_pool_size(pool_shipped()) - hos_rt_pool_size(0x13100000ULL); }
 
 /* f_836ce9d0 (config: x19): the pool's size as shipped, scaled */
 PATCH_AT(0x836cea54, word(0x39587668), after, none, hos_oot_rt_pool_config, as(x19, config)) {   /* ldrb w8, [x19, #1565] */
     OotGraphicsConfig *c = GUEST(OotGraphicsConfig, config);
-    if (c->rt_pool_size == 0x13100000ULL) c->rt_pool_size = hos_rt_pool_size(0x13100000ULL);
+    if (c->rt_pool_size == 0x13100000ULL) c->rt_pool_size = hos_rt_pool_size(pool_shipped());
 }
 
 /* f_83b7b340: the Graphics heap's size (x0 before its BL) grown by the pool's growth */
