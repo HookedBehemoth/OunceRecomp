@@ -1095,3 +1095,71 @@
 80674e70 ndsr_view_render_size            # games/oot/patches/ndsr.c: a view's render size from its 3D scale (+0x5328/+0x532c of its 0x53d8 entry); with the NDSR stage on, ndsr_stage_ratio_update gives it (patched: above 1.0 the full size times the scale)
 80674ca0 view_render_size_update          # games/oot/patches/ndsr.c: calls ndsr_view_render_size for a view # ?
 81503720 smaa_ndsr_blend_dispatch         # games/oot/patches/ndsr.c: SMAA_For_NDSR's blending pass: sizes, a quantization mask by the output's format, binds, the program; its output holds the colour's square root for the network # ?
+
+# --- the Options screen (UISystemOptionScreen): its option table, rows, texts and values; games/oot/patches/settings.c adds rows of ours
+834211c0 ui_option_screen_build_rows      # games/oot/patches/settings.c (hooked): vtable 0x84c0f108 +0x2f0: a row per shown table entry, template parts cloned by ButtonType
+83422960 ui_option_screen_place_rows      # agent/gameui game-ui.md, not re-read: vtable +0x2e8: binds the rows' animations, the slide area, the scroll bar, the rows' spacing
+83422f20 ui_option_screen_load_values     # games/oot/patches/settings.c: vtable +0x310: every row set up from the table and OptionData, the first focus, the help line
+834231d0 ui_option_screen_set_caption     # games/oot/patches/settings.c (hooked): (screen, OptionType): T_Caption_00 from <name>_Caption
+83423390 ui_option_screen_set_guide_icon  # agent/gameui game-ui.md, not re-read: (screen, index, key): a footer prompt's icon
+83423420 ui_option_screen_refocus         # agent/gameui game-ui.md, not re-read: vtable +0x320: the focus back on the kept row # ?
+83423570 ui_option_screen_apply_on_close  # agent/gameui game-ui.md, not re-read: vtable +0x330: amiibo off and DisplayMode applied from OptionData # ?
+834236a0 ui_option_screen_input           # agent/gameui game-ui.md, not re-read: vtable +0x300: left/right on the focused choice or toggle row, then the list's scroll
+83423f00 ui_option_screen_on_focus        # agent/gameui game-ui.md, not re-read: vtable +0x170: (screen, button): rows' focus animations, the help line
+83424190 ui_option_screen_on_decide       # games/oot/patches/settings.c: vtable +0x190: (screen, button): the row's own decide, the selected OptionType at +0x370
+834243c0 ui_option_screen_clip_rect       # agent/gameui game-ui.md, not re-read: vtable +0x40: a rectangle kept inside the slide area # ?
+834210e0 ui_option_screen_dtor            # agent/gameui game-ui.md, not re-read
+83424720 ui_option_screen_class_name      # agent/gameui game-ui.md, not re-read: "UISystemOptionScreen"
+83422880 ui_option_screen_sync_amiibo     # agent/gameui game-ui.md, not re-read: OptionData flags before the rows are read # ?
+833bc5a0 ui_option_table_shown_count      # games/oot/patches/settings.c: rows whose CheckGameData is unset or true
+833bc630 ui_option_table_shown_row        # games/oot/patches/settings.c: (table, n): the n-th shown row (0x28 bytes)
+833bc790 ui_option_table_row_of_type      # games/oot/patches/settings.c: (table, OptionType)
+833b98f0 ui_option_set_read_members       # games/oot/patches/settings.c: the OptionSet reader: OptionType, ButtonType, IsCheckDisplayGameData, CheckGameData
+833eed10 ui_option_button_row_setup       # agent/gameui game-ui.md, not re-read: (row, table entry, flag)
+833ef080 ui_option_button_row_refresh     # agent/gameui game-ui.md, not re-read: the state text again
+833ef2a0 ui_option_button_row_decide      # agent/gameui game-ui.md, not re-read: A on a Button row
+833ef050 ui_option_button_row_focus       # agent/gameui game-ui.md, not re-read: (row, focused)
+833eec50 ui_option_button_row_bind        # agent/gameui game-ui.md, not re-read: its animations IsChanged, Type, CursorLoop
+833eef10 ui_option_amiibo_usable          # agent/gameui game-ui.md, not re-read # ?
+833ef590 ui_option_choice_row_setup       # games/oot/patches/settings.c (hooked): (row, table entry, flag): title, the stored choice's index, arrows
+833ef7f0 ui_option_choice_row_set_text    # games/oot/patches/settings.c (hooked): T_Text_00 from <name>_<index>
+833efbd0 ui_option_choice_row_step        # games/oot/patches/settings.c: (row, left): the index moved, the choice's hash written to OptionData
+833ef950 ui_option_choice_row_focus       # agent/gameui game-ui.md, not re-read
+833ef990 ui_option_choice_row_decide      # games/oot/patches/settings.c
+833ef430 ui_option_choice_row_bind        # agent/gameui game-ui.md, not re-read
+833eff50 ui_option_toggle_row_setup       # agent/gameui game-ui.md, not re-read: (row, table entry, flag, first)
+833eff40 ui_option_toggle_row_button      # agent/gameui game-ui.md, not re-read: the row's button object
+833f02d0 ui_option_toggle_row_decide      # agent/gameui game-ui.md, not re-read: (row, button): the bool written to OptionData
+833f0290 ui_option_toggle_row_focus       # agent/gameui game-ui.md, not re-read
+833efe40 ui_option_toggle_row_bind        # agent/gameui game-ui.md, not re-read
+80a86f70 ui_msg_ref_clear                 # agent/gameui game-ui.md, not re-read: a message reference {text, bytes, attribute} emptied
+80a8afe0 ui_msg_ref_from_label            # agent/gameui game-ui.md, not re-read: (ref, &file name, &label, 1)
+80a8b060 ui_msg_find_label                # agent/gameui game-ui.md, not re-read: the archives' file by name + ".msbt", then the label
+80a8b250 ui_msg_file_text_of_label        # agent/gameui game-ui.md, not re-read
+80a8ae50 ui_msg_ref_guide_key_icon        # agent/gameui game-ui.md, not re-read: a button icon's text from StaticMsg/GuideKeyIcon
+80459950 ui_msg_find_layout_file          # agent/gameui game-ui.md, not re-read: "LayoutMsg/" + a layout's name + ".msbt"
+80a87d30 ui_layout_set_bound_text         # agent/gameui game-ui.md, not re-read: (layout, name, ref, 1, 0)
+8045b970 ui_layout_set_bound_text_panes   # agent/gameui game-ui.md, not re-read: every text pane whose user string is "@name"
+80459520 ui_text_pane_set_message         # agent/gameui game-ui.md, not re-read: (text pane, ref)
+80459680 ui_text_box_set_string           # agent/gameui game-ui.md, not re-read: keeps the pointer and the length, no copy
+8045e1e0 ui_layout_find_pane_path         # agent/gameui game-ui.md, not re-read: (layout, "Part/Pane") -> pane
+8045c3e0 ui_layout_find_part              # agent/gameui game-ui.md, not re-read: (layout, "Part") -> the part's layout
+8045c4a0 ui_layout_resolve_path           # agent/gameui game-ui.md, not re-read: walks the parts of a "A/B/pane" path
+80df5410 ui_screen_button_of_layout       # agent/gameui game-ui.md, not re-read: the button object whose part layout is this one
+80f99810 ui_part_controller_init          # agent/gameui game-ui.md, not re-read: a row object's base: its screen layout at +0x18, its part layout at +0x20
+80791f70 ui_part_layout_clone             # agent/gameui game-ui.md, not re-read: (new 0x98, parent, template name, 0, 0) # ?
+83794810 ui_button_set_enabled            # agent/gameui game-ui.md, not re-read: button +0x89 and its animation # ?
+802f0f00 ui_anim_handle_play              # agent/gameui game-ui.md, not re-read # ?
+802f0fe0 ui_anim_handle_reset             # agent/gameui game-ui.md, not re-read # ?
+81195080 ui_engine_module_init            # agent/gameui game-ui.md, not re-read: engine::ui::UIModule: the message archive of the language, the archive categories
+810bff70 ui_arc_resource_open             # agent/gameui game-ui.md, not re-read: eui::ArcResourceMgr: UI/Layout2Archive/<category>.<version>...blarc and its bntx
+809e2670 ui_game_module_init              # agent/gameui game-ui.md, not re-read: game::ui::UIModule
+8045a0e0 ui_layout_open_files             # agent/gameui game-ui.md, not re-read: <name>.buil and <name>.bfsha of an archive
+809d3eb0 gamedata_struct_handle           # agent/gameui game-ui.md, not re-read: (mgr, &handle, hash of the struct's name)
+80199f70 gamedata_struct_get_bool         # agent/gameui game-ui.md, not re-read: (mgr, &out, &handle, member hash)
+8019bf90 gamedata_struct_get_enum         # agent/gameui game-ui.md, not re-read: the enum value's name hash
+80628a10 gamedata_struct_set_bool         # agent/gameui game-ui.md, not re-read
+809d3ba0 gamedata_struct_set_enum         # games/oot/patches/settings.c: (mgr, value hash, &handle, member hash): refuses member 0
+802eec30 gamedata_get_bool_c              # agent/gameui game-ui.md, not re-read: (mgr, &out, hash of the full name)
+80424760 gamedata_struct_get_enum_b       # games/oot/patches/settings.c: (mgr, &out hash, &handle, member hash): refuses member 0 # ?
+833195c0 seq_query_selected_option_type # games/oot/patches/settings.c: SeqQueryGetSelectedOptionType: the Options screen's +0x370 (through f_802f1340) as a float
