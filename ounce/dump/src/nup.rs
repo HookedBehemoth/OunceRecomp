@@ -20,7 +20,10 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Write};
+#[cfg(unix)]
 use std::os::unix::fs::FileExt;
+#[cfg(windows)]
+use std::os::windows::fs::FileExt;
 use std::path::{Path, PathBuf};
 
 pub const NONE: u32 = 0xffff_ffff;
@@ -464,11 +467,22 @@ impl From<String> for Stop {
     }
 }
 
+#[cfg(unix)]
+fn read_at(f: &File, buf: &mut [u8], pos: u64) -> io::Result<usize> {
+    f.read_at(buf, pos)
+}
+
+/// (Windows: seek_read moves the file's position, which no reader here relies on)
+#[cfg(windows)]
+fn read_at(f: &File, buf: &mut [u8], pos: u64) -> io::Result<usize> {
+    f.seek_read(buf, pos)
+}
+
 /// Reads up to `buf.len()` bytes at `pos`; fewer only at the end of the file.
 pub fn read_full(f: &File, mut pos: u64, buf: &mut [u8]) -> io::Result<usize> {
     let mut n = 0;
     while n < buf.len() {
-        match f.read_at(&mut buf[n..], pos) {
+        match read_at(f, &mut buf[n..], pos) {
             Ok(0) => break,
             Ok(k) => {
                 n += k;

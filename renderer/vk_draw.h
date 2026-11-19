@@ -30,6 +30,9 @@ void draw_list_free(List* l);
 void draw_list_submitted(const List* l);
 /// (vk_pools.cpp) layer 0's window k made at device address a: the BDA window table's entry
 void draw_window_made(uint32_t k, uint64_t a);
+/// (vk_pools.cpp, Windows) a layer-0 region: guest [lo, hi) at device address a on, contiguously: the table's entries
+void draw_table_set(uint32_t index, uint64_t value);   // (a granule's entry, or a split granule's page entry: bda_emit.h)
+uint64_t draw_table_null(uint64_t guest);   // (the distance that puts guest's granule in the null window)
 
 /// The frame arena of a command slot (vk_cmd.h): bump allocations in mapped device memory, reset with the slot
 struct Arena;

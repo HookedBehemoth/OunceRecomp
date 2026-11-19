@@ -49,7 +49,7 @@ def main_root():
     return ROOT
 
 
-WORK = os.path.join(main_root(), "work")
+WORK = os.environ.get("OUNCE_WORK") or os.path.join(main_root(), "work")   # (OUNCE_WORK: as ounce's layout.rs)
 
 
 class Out:
@@ -86,8 +86,12 @@ def find_exefs(game, override=None):
 
 
 def lifter():
-    for r in (ROOT, main_root()):
-        p = os.path.join(r, "ounce", "target", "release", "ounce-lift")
+    exe = "ounce-lift.exe" if os.name == "nt" else "ounce-lift"
+    dirs = [os.path.join(r, "ounce", "target") for r in (ROOT, main_root())]
+    if os.environ.get("CARGO_TARGET_DIR"):
+        dirs.insert(0, os.environ["CARGO_TARGET_DIR"])
+    for d in dirs:
+        p = os.path.join(d, "release", exe)
         if os.path.exists(p):
             return p
     sys.exit("re: no ounce-lift (cargo build --release --manifest-path ounce/Cargo.toml -p ounce-lift)")

@@ -13,13 +13,20 @@ foreach lang : ['c', 'cpp']
 endforeach
 
 fs = import('fs')
-python = find_program('python3')
+windows = host_machine.system() == 'windows'
+python = find_program('python3', 'python')
 glslang = find_program('glslangValidator')
-nm = find_program('nm', 'llvm-nm')
+nm = find_program('nm', 'llvm-nm', required: not windows)
 
 root = meson.project_source_root()
 # (-U_FILE_OFFSET_BITS: Meson defines it as 64 on every compile, which renames the stdio calls (fopen64))
 target_args = ['-U_FILE_OFFSET_BITS', '-march=' + get_option('march'), '-ffp-contract=off']
+if windows
+  # (Windows: clang for the MSVC target, against the static C runtime as the game executable is; the CRT's POSIX
+  # names without its deprecation, and <windows.h> without min/max macros)
+  target_args += ['-fms-runtime-lib=static', '-D_CRT_SECURE_NO_WARNINGS', '-D_CRT_NONSTDC_NO_DEPRECATE', '-DNOMINMAX',
+                  '-D_USE_MATH_DEFINES']
+endif
 if get_option('sysroot') != ''
   target_args = ['--sysroot=' + get_option('sysroot')] + target_args
 endif
@@ -37,6 +44,8 @@ libcxx = get_option('libcxx')
 if libcxx != ''
   renderer_cpp_args = ['-nostdinc++', '-isystem', libcxx / 'include/c++/v1'] + renderer_cpp_args
   cxx_link_args = ['-nostdlib++', libcxx / 'lib/libc++.a', libcxx / 'lib/libc++abi.a', '-Wl,--exclude-libs,ALL', '-static-libgcc']
+elif windows
+  cxx_link_args = []   # (the static C++ library comes with -fms-runtime-lib=static)
 else
   cxx_link_args = ['-static-libstdc++', '-static-libgcc']
 endif

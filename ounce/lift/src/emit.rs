@@ -10,12 +10,13 @@
 
 use crate::export::Names;
 use crate::ir::*;
-use crate::ty::{Lane, Ty, I1, I64};
+use crate::ty::{Lane, Ty, I1, I128, I64};
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
 pub const HOST_BASE: u64 = 0x100000000000;
-pub const TRIPLE: &str = "x86_64-pc-linux-gnu";
+/// the host the game is built for: the one ounce runs on (the game is built where it is played)
+pub const TRIPLE: &str = if cfg!(windows) { "x86_64-pc-windows-msvc" } else { "x86_64-pc-linux-gnu" };
 /// the verification build's poison: 0xDEAF, the register, the call's guest address (build_ir.SITE_POISON)
 pub const SITE_POISON: u64 = 0xDEAF;
 
@@ -1156,12 +1157,18 @@ fn emit_op(e: &mut Em, v: ValueId) {
             }
             let mut params = Params::of(f, c.ctx, &a[..n]);
             params.push(P::Ptr);
-            e.m.declare(Decl::Call { callee: c.callee, ret: x.ty, params, pure: false });
+            // (Windows: C returns an __int128 in xmm0, an IR i128 comes back in rax:rdx; the call is made as <2 x i64>,
+            // which Win64 returns in xmm0 too, and cast: an SVC's x0 | x1 << 64)
+            let wide = cfg!(windows) && x.ty == I128;
+            let ret = if wide { Ty::V128 } else { x.ty };
+            e.m.declare(Decl::Call { callee: c.callee, ret, params, pure: false });
             e.l();
-            if x.ty != Ty::Void {
+            if wide {
+                e.s("%w").n(id).s(" = ");
+            } else if x.ty != Ty::Void {
                 e.v(v).s(" = ");
             }
-            e.s("call ").ll(x.ty).s(" @").callee(c.callee).s("(");
+            e.s("call ").ll(ret).s(" @").callee(c.callee).s("(");
             if c.ctx {
                 e.s("ptr %ctx, ");
             }
@@ -1169,6 +1176,9 @@ fn emit_op(e: &mut Em, v: ValueId) {
                 e.t(q).s(", ");
             }
             e.s("ptr %io").n(id).s(")").call_nl();
+            if wide {
+                e.l().v(v).s(" = bitcast <2 x i64> %w").n(id).s(" to i128").nl();
+            }
         }
         Op::RowOut(k) => {
             let src = a[0].n() as u64;

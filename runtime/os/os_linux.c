@@ -1,4 +1,5 @@
 /* os.h on Linux (glibc). Depends on nothing of the runtime's: libc, the kernel's futexes, and libdl. */
+#if defined(__linux__)   /* (sources.txt lists both systems' files: each compiles on its own) */
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
@@ -6,6 +7,7 @@
 
 #include <dirent.h>
 #include <dlfcn.h>
+#include <execinfo.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -642,6 +644,7 @@ uintptr_t os_exe_base(void) {
     Dl_info di;
     return dladdr((void *)&os_exe_base, &di) ? (uintptr_t)di.dli_fbase : 0;
 }
+int os_backtrace(void **pcs, int cap) { return cap > 0 ? backtrace(pcs, cap) : 0; }
 uintptr_t os_module_of(const void *addr, char *out, size_t cap) {
     Dl_info di;
     if (cap) out[0] = 0;
@@ -793,6 +796,23 @@ void os_dir_close(os_dir *d) {
     closedir(d->d);
     free(d);
 }
+char **os_args(int *argc, char **argv) { (void)argc; return argv; }
+int os_data_home(char *out, size_t cap) {
+    const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
+    if (!cap) return 0;
+    out[0] = 0;
+    if (xdg && xdg[0] == '/') {
+        snprintf(out, cap, "%s", xdg);
+    } else if (home && home[0] == '/') {
+        char p[PATH_MAX];
+        snprintf(p, sizeof p, "%s/.local", home), mkdir(p, 0755);
+        snprintf(out, cap, "%s/.local/share", home);
+    } else {
+        return 0;
+    }
+    mkdir(out, 0755);
+    return (int)strlen(out);
+}
 bool os_stderr_shown(void) {
     struct stat st;
     if (fstat(2, &st)) return false;
@@ -800,4 +820,4 @@ bool os_stderr_shown(void) {
     /* (a terminal is; /dev/null and the journal's socket, where a desktop launcher sends it, are not) */
     return S_ISCHR(st.st_mode) && isatty(2);
 }
-
+#endif

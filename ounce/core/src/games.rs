@@ -153,7 +153,8 @@ impl Game {
             title: raw.title.unwrap_or_else(|| raw.name.clone()),
             name: raw.name,
             dir,
-            exe: raw.exe,
+            // (the executable's file name on this system: Windows runs only a name ending in .exe)
+            exe: if cfg!(windows) { format!("{}.exe", raw.exe) } else { raw.exe },
             tests: tests.tests,
             default_test: tests.default,
             scenes,

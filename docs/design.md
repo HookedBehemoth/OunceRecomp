@@ -45,9 +45,9 @@ ounce_renderer.so  the direct back end (renderer), loaded by the host at start
   the console, nothing is mapped below the system region (16 MB), so a null guest pointer faults. The GPU reads the
   window in place ([guest memory on the GPU](direct/architecture.md#guest-memory-on-the-gpu)).
 - **Threads.** Every guest thread runs on its own host thread, with no scheduler between them.
-- **Platform.** The host is built for Linux only. It reaches the operating system through `runtime/os/os.h` alone (threads,
-  futex-based locks and events, time, memory, faults, files, modules), implemented in `runtime/os/os_linux.c`; another
-  system is another implementation of that header. The window, sound and controllers are SDL's (`runtime/media/hos_sdl.h`).
+- **Platform.** The host is built for Linux and Windows. It reaches the operating system through `runtime/os/os.h` alone
+  (threads, futex-based locks and events, time, memory, faults, files, modules), implemented in `runtime/os/os_linux.c`
+  and `runtime/os/os_windows.c` ([Windows](windows.md)). The window, sound and controllers are SDL's (`runtime/media/hos_sdl.h`).
   Paths are UTF-8.
 
 `runtime/PROVENANCE.md` records where the runtime came from.

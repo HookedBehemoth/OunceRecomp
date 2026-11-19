@@ -1,4 +1,5 @@
-//! The user's config file, `~/.config/ounce/config.toml` (`$XDG_CONFIG_HOME/ounce/config.toml` when that is set):
+//! The user's config file, `~/.config/ounce/config.toml` (`$XDG_CONFIG_HOME/ounce/config.toml` when that is set; on Windows
+//! `%APPDATA%\ounce\config.toml`; the folders are `dirs`'):
 //! each game's dump, the shared cache and data folders, and the limits of builds and runs. Every key is optional; only a
 //! game's `dump` is needed before that game can be built or run.
 //!
@@ -26,7 +27,7 @@ pub struct Config {
 const SECTIONS: [&str; 3] = ["games", "paths", "limits"];
 
 fn home() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
+    crate::dirs::home()
 }
 
 /// `~/x` as a path under the home folder
@@ -48,8 +49,7 @@ fn full_key(key: &str) -> String {
 impl Config {
     /// Where the config file is (it need not exist).
     pub fn default_path() -> PathBuf {
-        let base = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| home().join(".config"));
-        base.join("ounce").join("config.toml")
+        crate::dirs::config().join("config.toml")
     }
 
     /// The user's config; a missing file is an empty config.
@@ -143,17 +143,13 @@ impl Config {
 
     /// The object cache's folder (`paths.cache`, default ~/.cache/ounce).
     pub fn cache_dir(&self) -> PathBuf {
-        self.get_str("paths.cache").map(expand).unwrap_or_else(|| {
-            std::env::var_os("XDG_CACHE_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| home().join(".cache")).join("ounce")
-        })
+        self.get_str("paths.cache").map(expand).unwrap_or_else(crate::dirs::cache)
     }
 
     /// The data folder (`paths.data`, default ~/.local/share/ounce): the saves, and per game its smoke goldens and
     /// recordings.
     pub fn data_dir(&self) -> PathBuf {
-        self.get_str("paths.data").map(expand).unwrap_or_else(|| {
-            std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| home().join(".local/share")).join("ounce")
-        })
+        self.get_str("paths.data").map(expand).unwrap_or_else(crate::dirs::data)
     }
 
     /// Compile jobs (`limits.jobs`; 0 or unset: every CPU).

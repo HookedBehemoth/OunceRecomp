@@ -6,6 +6,8 @@ import tomllib
 
 
 def path():
+    if os.name == "nt":   # (Windows: ounce's core/src/dirs.rs, %APPDATA%\ounce)
+        return os.path.join(os.environ["APPDATA"], "ounce", "config.toml")
     base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
     return os.path.join(base, "ounce", "config.toml")
 
@@ -34,5 +36,7 @@ def data_dir():
     d = load().get("paths", {}).get("data")
     if d:
         return os.path.expanduser(d)
+    if os.name == "nt":   # (%LOCALAPPDATA%\ounce\data, as core/src/dirs.rs)
+        return os.path.join(os.environ["LOCALAPPDATA"], "ounce", "data")
     base = os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
     return os.path.join(base, "ounce")

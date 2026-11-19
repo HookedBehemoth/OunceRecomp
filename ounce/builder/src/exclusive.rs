@@ -9,7 +9,8 @@
 //! - a waiter prints the holder (its pid and command, written beside the lock) every 30 s.
 //!
 //! `--mem <size>` runs ounce again, once, in a systemd user scope with that memory cap and no swap (Linux); where no
-//! scope can be made it warns and goes on without a cap.
+//! scope can be made it warns and goes on without a cap. On Windows ounce puts itself in a job object whose processes
+//! together may commit at most that much.
 
 use crate::fail;
 use std::fs::File;
@@ -176,5 +177,37 @@ pub fn in_scope(size: &str) {
             fail(format!("systemd-run: {err}"));
         }
     }
+    #[cfg(windows)]
+    {
+        // (a job object whose processes together may commit at most `size`: this ounce and every process it starts,
+        // which a job's children join by themselves)
+        use windows_sys::Win32::System::JobObjects::*;
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        let (n, unit) = size.split_at(size.trim_end_matches(['K', 'M', 'G', 'T']).len());
+        let shift = match unit {
+            "K" => 10,
+            "M" => 20,
+            "G" => 30,
+            "T" => 40,
+            _ => 0,
+        };
+        let bytes = n.parse::<u64>().unwrap_or(0) << shift;
+        // SAFETY: a job made here and kept for the process's life, its limits struct, this process's pseudo-handle
+        let ok = unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            let mut l: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            l.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_JOB_MEMORY;
+            l.JobMemoryLimit = bytes as usize;
+            !job.is_null()
+                && SetInformationJobObject(job, JobObjectExtendedLimitInformation, &l as *const _ as *const _, std::mem::size_of_val(&l) as u32) != 0
+                && AssignProcessToJobObject(job, GetCurrentProcess()) != 0
+        };
+        if ok {
+            std::env::set_var(SCOPE_ENV, size);
+            return;
+        }
+        eprintln!("ounce: warning: no job object could be made: running without the {size} memory cap");
+    }
+    #[cfg(not(windows))]
     eprintln!("ounce: warning: no systemd user scope here: running without the {size} memory cap");
 }

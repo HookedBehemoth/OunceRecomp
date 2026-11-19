@@ -128,14 +128,13 @@ static void delete_tree(const char *p) {
     os_dir_close(d);
     os_rmdir(p);
 }
-/* (linux) Saves live in the game folder's user/ when it has one (the builder makes it), so the folder holds the whole
-   game; else in $XDG_DATA_HOME/ounce (~/.local/share/ounce). --user still wins. Either folder holds every title's saves
+/* Saves live in the game folder's user/ when it has one (the builder makes it), so the folder holds the whole
+   game; else in the data folder's ounce/ (os_data_home: ~/.local/share/ounce, %LOCALAPPDATA%\ounce). --user still wins. Either folder holds every title's saves
    apart, in save/<program id>/ (nn_fs.c). */
 static const char *saves_dir(const char *beside) {
     static char dir[OS_PATH_MAX];
-    const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
-    if (xdg && xdg[0] == '/') snprintf(dir, sizeof dir, "%s/ounce", xdg);
-    else if (home && home[0] == '/') snprintf(dir, sizeof dir, "%s/.local/share/ounce", home);
+    char home[OS_PATH_MAX];
+    if (os_data_home(home, sizeof home)) snprintf(dir, sizeof dir, "%s/ounce", home);
     else dir[0] = 0;
     if (is_dir(beside)) {
         char old[OS_PATH_MAX + 32], mine[OS_PATH_MAX + 32];
@@ -145,12 +144,6 @@ static const char *saves_dir(const char *beside) {
         return beside;
     }
     if (!dir[0]) return beside;
-    if (xdg && xdg[0] == '/') os_mkdir(xdg);
-    else {
-        char p[OS_PATH_MAX];
-        snprintf(p, sizeof p, "%s/.local", home), os_mkdir(p);
-        snprintf(p, sizeof p, "%s/.local/share", home), os_mkdir(p);
-    }
     os_mkdir(dir);
     return os_path_kind(dir) == OS_PATH_NONE ? beside : dir;
 }
@@ -408,6 +401,7 @@ static void game_thread(void *p) {
 int main(int argc, char **argv) {
     int hos_display_init(void);
     void hos_display_loop(void);
+    argv = os_args(&argc, argv);
     game_argc = settings_init(argc, argv), game_argv = argv;   /* (the settings first: --options and --set taken out) */
     /* --precompile: the builder's last step, the shader pack beside the executable into its shader caches (rx_backend.c);
        no window, nothing of the game runs */

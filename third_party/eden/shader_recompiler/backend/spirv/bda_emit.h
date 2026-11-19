@@ -2,8 +2,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 // (fork, native-vk, RX_VK_DESC_HEAP_BDA=1 with layer 0) Storage buffers read through device addresses. Layer 0 shows guest
-// memory to the GPU through 4 GB window buffers, one every 2 GB of guest space (gpu/vk/layer0_windows.h), so guest address g
-// is at window[g >> 31] + (g & 0x7fffffff) whatever pool it is in. A stage's storage buffer is then its guest address, read
+// memory to the GPU through 4 GB window buffers, one every 2 GB of guest space (gpu/vk/layer0_windows.h), or (Windows) through
+// one buffer per pool (renderer/vk_pools.cpp's regions), so guest address g is at table[g >> 16] + g whatever pool it is in:
+// an entry per 64 KB granule of the 512 GB guest window, the distance from its guest addresses to their device addresses,
+// which run on contiguously through the granule's window or region. A granule that regions share (pools a page apart) is
+// split: its entry is (i << 1) | 1, and table[i + (g >> 12 & 15)] holds the distance for g's 4 KB page. A stage's storage
+// buffer is then its guest address, read
 // from the constant buffer word Eden's storage buffer pass found for it, translated through a table of the windows' device
 // addresses (gpu/vk/vk_bda.cpp; its address pushed at WINDOW_TABLE_PUSH_OFFSET), plus the offset the pass computed, which
 // is relative to the address rounded down to min_ssbo_alignment (StorageOffset). Windows not made yet, and addresses from
@@ -23,9 +27,12 @@ namespace Shader::Backend::SPIRV::Bda {
 
 using Sirit::Id;
 
-constexpr std::uint32_t kWindows = 512;                 // (the table's window entries: 1 TB of guest space)
-constexpr std::uint32_t kNullEntry = kWindows;          // (the null window, for addresses from 1 TB on)
-constexpr std::uint32_t kCheckOffset = 8 * 520;         // (bytes: the check words, after the table)
+constexpr std::uint32_t kTableShift = 16;               // (an entry per 64 KB granule of guest space)
+constexpr std::uint32_t kEntries = 1u << (39 - kTableShift);   // (the table's granule entries: the 512 GB guest window)
+constexpr std::uint32_t kNullEntry = kEntries;          // (the null window, for addresses from 512 GB on)
+constexpr std::uint32_t kSplitFirst = kEntries + 8;     // (the split granules' page entries, 16 each, from here)
+constexpr std::uint32_t kSplits = 1u << 16;             // (at most this many split granules)
+constexpr std::uint32_t kCheckOffset = 8 * (kSplitFirst + 16 * kSplits);   // (bytes: the check words, after the table)
 constexpr std::uint32_t kCheckCount = 0;                // (u32 words there: out-of-range accesses,
 constexpr std::uint32_t kCheckFirst = 1;                //  the first program's id (compare-exchange from 0),
 constexpr std::uint32_t kCheckLast = 2;                 //  the last one's,
@@ -109,17 +116,27 @@ struct Pushed {
     Id table{}, lo{}, hi{}, delta{};
 };
 
-/// Guest address `guest` (u64) as a device address: the window table's entry plus the offset in the window, rounded down to
-/// `alignment` (Eden's storage offsets are from the address so rounded: StorageOffset); in the draw's virtual range, the
-/// address plus its distance; from 1 TB otherwise the null window
+/// Guest address `guest` (u64) as a device address: its granule's (or split granule's page's) distance plus the address,
+/// rounded down to `alignment` (Eden's storage offsets are from the address so rounded: StorageOffset); in the draw's
+/// virtual range, the address plus its distance; from 512 GB otherwise the null window (its entry is the null window's
+/// address, and the offset the address's in a granule)
 inline Id Translate(Sirit::Module& m, const Types& t, PtrCache& ptrs, const Pushed& p, Id guest, std::uint64_t alignment) {
-    const Id k{m.OpShiftRightLogical(t.u64, guest, m.Constant(t.u32, 31U))};
-    const Id in_table{m.OpULessThan(t.u1, k, m.Constant(t.u64, std::uint64_t{kWindows}))};
+    const Id k{m.OpShiftRightLogical(t.u64, guest, m.Constant(t.u32, kTableShift))};
+    const Id in_table{m.OpULessThan(t.u1, k, m.Constant(t.u64, std::uint64_t{kEntries}))};
     const Id entry_index{m.OpSelect(t.u64, in_table, k, m.Constant(t.u64, std::uint64_t{kNullEntry}))};
-    const Id slot{m.OpIAdd(t.u64, p.table, m.OpShiftLeftLogical(t.u64, entry_index, m.Constant(t.u32, 3U)))};
-    const Id window{m.OpLoad(t.u64, PointerAt(m, t, ptrs.Get(m, t.u64), slot), spv::MemoryAccessMask::Aligned, 8U)};
-    const std::uint64_t mask{0x7fffffffULL & ~(alignment - 1)};
-    const Id in_window{m.OpIAdd(t.u64, window, m.OpBitwiseAnd(t.u64, guest, m.Constant(t.u64, mask)))};
+    const auto entry_at = [&](Id index) {
+        const Id slot{m.OpIAdd(t.u64, p.table, m.OpShiftLeftLogical(t.u64, index, m.Constant(t.u32, 3U)))};
+        return m.OpLoad(t.u64, PointerAt(m, t, ptrs.Get(m, t.u64), slot), spv::MemoryAccessMask::Aligned, 8U);
+    };
+    const Id first{entry_at(entry_index)};
+    // (a split granule: the page's entry; else the same entry again, from the same cache line)
+    const Id split{m.OpINotEqual(t.u1, m.OpBitwiseAnd(t.u64, first, m.Constant(t.u64, std::uint64_t{1})), m.Constant(t.u64, std::uint64_t{0}))};
+    const Id page{m.OpBitwiseAnd(t.u64, m.OpShiftRightLogical(t.u64, guest, m.Constant(t.u32, 12U)), m.Constant(t.u64, std::uint64_t{15}))};
+    const Id page_index{m.OpIAdd(t.u64, m.OpShiftRightLogical(t.u64, first, m.Constant(t.u32, 1U)), page)};
+    const Id distance{entry_at(m.OpSelect(t.u64, split, page_index, entry_index))};
+    const Id offset{m.OpSelect(t.u64, in_table, m.OpBitwiseAnd(t.u64, guest, m.Constant(t.u64, ~(alignment - 1))),
+                               m.OpBitwiseAnd(t.u64, guest, m.Constant(t.u64, ((1ULL << kTableShift) - 1) & ~(alignment - 1))))};
+    const Id in_window{m.OpIAdd(t.u64, distance, offset)};
     if (!Sirit::ValidId(p.delta)) {
         return in_window;
     }

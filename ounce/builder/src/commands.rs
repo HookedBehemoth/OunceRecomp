@@ -57,10 +57,13 @@ fn logged(mut cmd: Command, what: &str, log: &Path) {
 }
 
 /// A release's renderer, built with it (the AppImage's): used instead of the checkout's Meson build when it is there
-pub const PREBUILT_RENDERER: &str = "prebuilt/ounce_renderer.so";
+pub const PREBUILT_RENDERER: &str = if cfg!(windows) { "prebuilt/ounce_renderer.dll" } else { "prebuilt/ounce_renderer.so" };
+/// the renderer's file name in its build folder and in the game folder
+pub const RENDERER: &str = if cfg!(windows) { "ounce_renderer.dll" } else { "ounce_renderer.so" };
 
 /// The renderer: a release's prebuilt one, else Meson and Ninja in the checkout's work/renderer: the same build for every game). `meson setup`
-/// runs when the folder has no build.ninja yet. Returns ounce_renderer.so.
+/// runs when the folder has no build.ninja yet; on Windows with the Vulkan SDK's headers (VULKAN_SDK). Returns
+/// ounce_renderer.so (.dll).
 fn renderer(layout: &Layout, log: &Path) -> PathBuf {
     // (a release ships it built: no Meson, Ninja or C++ compiler on a player's PC)
     let prebuilt = layout.root.join(PREBUILT_RENDERER);
@@ -77,12 +80,18 @@ fn renderer(layout: &Layout, log: &Path) -> PathBuf {
     if !dir.join("build.ninja").is_file() {
         let mut c = Command::new("meson");
         c.current_dir(&layout.root).arg("setup").arg("--native-file").arg("renderer/meson/clang.ini").arg(&dir);
+        if cfg!(windows) {
+            // (no system include folder holds the Vulkan headers on Windows: the Vulkan SDK's)
+            let sdk = std::env::var_os("VULKAN_SDK").map(PathBuf::from).filter(|d| d.join("Include/vulkan/vulkan.h").is_file());
+            let sdk = sdk.unwrap_or_else(|| fail("the Vulkan SDK is not installed (VULKAN_SDK names no Include/vulkan/vulkan.h): the renderer's build needs its headers"));
+            c.arg(format!("-Dvulkan_headers={}", sdk.display()));
+        }
         logged(c, "meson setup", log);
     }
     let mut c = Command::new("ninja");
     c.arg("-C").arg(&dir);
     logged(c, "the renderer's build", log);
-    dir.join("renderer/ounce_renderer.so")
+    dir.join("renderer").join(RENDERER)
 }
 
 /// `ounce build <game> [-j N] [--gen-parts]`, or `ounce build <game> --out <dir> --dump <src> [--quality q]`: the
@@ -113,8 +122,13 @@ pub fn build(args: &[String]) {
     let log = layout.build_log();
     std::fs::write(&log, "").unwrap_or_else(|e| fail(format!("{}: {e}", log.display())));
     let so = renderer(&layout, &log);
-    let sysroot = crate::sysroot::find(&layout.root, &config.cache_dir());
-    let ffmpeg = crate::ffmpeg::find(&layout.root, &config.cache_dir(), jobs.unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get())), &sysroot);
+    // (Linux: the sysroot, and FFmpeg built against it; Windows: MSVC's, and the pinned FFmpeg and SDL, windows.rs)
+    #[cfg(windows)]
+    let (sysroot, ffmpeg) = (None::<PathBuf>, crate::windows::ffmpeg(&config.cache_dir()));
+    #[cfg(not(windows))]
+    let sysroot = Some(crate::sysroot::find(&layout.root, &config.cache_dir()));
+    #[cfg(not(windows))]
+    let ffmpeg = crate::ffmpeg::find(&layout.root, &config.cache_dir(), jobs.unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get())), sysroot.as_ref().unwrap());
     let s = |p: &Path| p.to_string_lossy().into_owned();
     let mut a: Vec<String> = vec!["tool".into(), "build".into()];
     match (&out, &dump) {
@@ -126,8 +140,15 @@ pub fn build(args: &[String]) {
         }
     }
     a.extend(["--direct".into(), s(&so), "--ffmpeg".into(), s(&ffmpeg), "--game".into(), s(&game.dir), "--root".into(), s(&layout.root)]);
-    a.extend(["--obj".into(), s(&layout.obj_dir()), "--sysroot".into(), s(&sysroot)]);
-    if let Some(l) = crate::sdl::prebuilt(&layout.root) {
+    a.extend(["--obj".into(), s(&layout.obj_dir())]);
+    if let Some(r) = &sysroot {
+        a.extend(["--sysroot".into(), s(r)]);
+    }
+    #[cfg(windows)]
+    let sdl = Some(crate::windows::sdl(&config.cache_dir()));
+    #[cfg(not(windows))]
+    let sdl = crate::sdl::prebuilt(&layout.root);
+    if let Some(l) = sdl {
         a.extend(["--sdl".into(), s(&l)]);
     }
     if let Some(j) = jobs {

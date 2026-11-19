@@ -12,6 +12,13 @@
 extern "C" {
 #endif
 
+/* (Windows: the library's exports are marked where they are first declared, here, when it is built) */
+#if defined(_WIN32) && defined(MKWVK_BUILDING)
+#define GPU_LIST_EXPORT __declspec(dllexport)
+#else
+#define GPU_LIST_EXPORT
+#endif
+
 enum { GPU_LIST_PACKET, GPU_LIST_LOAD, GPU_LIST_JOB, GPU_LIST_LAYER, GPU_LIST_GATE, GPU_LIST_COMPUTE, GPU_LIST_HEAD,
        GPU_LIST_IMMEDIATE, GPU_LIST_KINDS };   /* IMMEDIATE: a one-shot list the game submits itself and waits for */
 typedef struct gpu_list_info {
@@ -24,14 +31,14 @@ typedef struct gpu_list_info {
 } gpu_list_info;
 
 /* op and payload are renderer/api/rx_nvn.h's records (NOP_*, the payload after the 8-byte header) */
-void *gpu_list_begin(const gpu_list_info *info);                         /* recording thread */
-void  gpu_emit(void *list, uint32_t op, const void *payload, uint32_t size);   /* recording thread; payload valid during the call */
-void  gpu_list_call(void *list, void *const *callees, uint32_t n);       /* CallCommands / CopyCommands, in order */
-void  gpu_list_end(void *list);                                           /* complete; valid until released */
-void  gpu_list_released(void *list);                                      /* the handle is gone (any thread) */
-void  gpu_submit(uint64_t queue, void *const *lists, uint32_t n);         /* the guest's submit, in handle order */
-void  gpu_queue_wait_fence(uint64_t queue, uint64_t fence);               /* nvnQueueWaitSync, instead of fw_record's side record */
-void  gpu_present_queue(uint64_t queue);   /* the queue of the present that follows on this thread (nvnQueuePresentTexture) */
+GPU_LIST_EXPORT void *gpu_list_begin(const gpu_list_info *info);                         /* recording thread */
+GPU_LIST_EXPORT void  gpu_emit(void *list, uint32_t op, const void *payload, uint32_t size);   /* recording thread; payload valid during the call */
+GPU_LIST_EXPORT void  gpu_list_call(void *list, void *const *callees, uint32_t n);       /* CallCommands / CopyCommands, in order */
+GPU_LIST_EXPORT void  gpu_list_end(void *list);                                           /* complete; valid until released */
+GPU_LIST_EXPORT void  gpu_list_released(void *list);                                      /* the handle is gone (any thread) */
+GPU_LIST_EXPORT void  gpu_submit(uint64_t queue, void *const *lists, uint32_t n);         /* the guest's submit, in handle order */
+GPU_LIST_EXPORT void  gpu_queue_wait_fence(uint64_t queue, uint64_t fence);               /* nvnQueueWaitSync, instead of fw_record's side record */
+GPU_LIST_EXPORT void  gpu_present_queue(uint64_t queue);   /* the queue of the present that follows on this thread (nvnQueuePresentTexture) */
 
 /* Prepared assets. The host's loader hooks name each texture load's BNTX texture;
    the back end makes that texture's image from the prepared store (ounce tool textures) when it is initialized,
@@ -52,25 +59,25 @@ enum { GPU_ASSET_LOAD = 1, GPU_ASSET_INPLACE = 2, GPU_ASSET_REBIND = 3, GPU_ASSE
 /* (REBIND: a record found replaces the link; none: the link stays, armed as by gpu_asset_rebind. SAME : a load with no
    data whose texels are another texture's, same_as: it takes that texture's link (its record or its plain image) when the
    descriptors agree; the host's game patch names it (the alias's target, read from the alias's chain) */
-int  gpu_assets_open(const char *dir);              /* the store's folder (index.bin, pack_NNN.bin): its textures, 0 none */
-int  gpu_asset_load(const gpu_asset_key *k);        /* 1: a prepared record; 0: the texture gets the placeholder (named) */
-void gpu_asset_rebind(const void *tex);             /* tex is initialized again over new storage (the same record) */
-void gpu_asset_pool(uint64_t lo, uint64_t hi);      /* the asset heap's pool (pool 127): its textures need a load */
-void gpu_texture_data_pool(uint64_t lo, uint64_t hi);   /* a texture data pool, named at its creation: layer 0 leaves it unbound */
+GPU_LIST_EXPORT int  gpu_assets_open(const char *dir);              /* the store's folder (index.bin, pack_NNN.bin): its textures, 0 none */
+GPU_LIST_EXPORT int  gpu_asset_load(const gpu_asset_key *k);        /* 1: a prepared record; 0: the texture gets the placeholder (named) */
+GPU_LIST_EXPORT void gpu_asset_rebind(const void *tex);             /* tex is initialized again over new storage (the same record) */
+GPU_LIST_EXPORT void gpu_asset_pool(uint64_t lo, uint64_t hi);      /* the asset heap's pool (pool 127): its textures need a load */
+GPU_LIST_EXPORT void gpu_texture_data_pool(uint64_t lo, uint64_t hi);   /* a texture data pool, named at its creation: layer 0 leaves it unbound */
 /* texels from the CPU that no NVN call carries (game patches): an NVNcopyRegion of tex's level and first layer from
    src (row bytes, layer bytes; 0: packed); src NULL: none to give (the placeholder content, counted) */
 enum { GPU_TEXELS_TERRAIN = 1, GPU_TEXELS_GLYPH = 2, GPU_TEXELS_FILE = 3, GPU_TEXELS_TERRAIN_KEPT = 4 };
 /* (FILE: a prepared file's linear texels, M4e. TERRAIN_KEPT : a tile's bytes the storage still holds, for a texture
    initialized there again: taken only into an image nothing has written) */
-void gpu_texels(uint32_t source, const void *tex, unsigned level, unsigned layer0, const void *region, const void *src,
+GPU_LIST_EXPORT void gpu_texels(uint32_t source, const void *tex, unsigned level, unsigned layer0, const void *region, const void *src,
                 uint64_t row, uint64_t img);
 
 /* The format table by pass key. The job recorder's entry asks whether a key's formats
    are known: 1, the job records one rendering secondary with them; 0, the recorder takes the game's own early return and the
    layer list draws the pass through the game's inline path, which gpu_pass_inline names (the list's targets set then give the
    key its formats). A layer list's call of a job notes them too */
-int  gpu_pass_known(uint64_t key);
-void gpu_pass_inline(void *list, uint64_t key);
+GPU_LIST_EXPORT int  gpu_pass_known(uint64_t key);
+GPU_LIST_EXPORT void gpu_pass_inline(void *list, uint64_t key);
 
 /* The transient pool (docs/direct/transient-pool.md; games/oot/patches/rt_slots.c). The game's transient render targets (agl's
    DynamicTextureAllocator) live in one range of storage addresses that the host names once, before the first texture is
@@ -86,14 +93,14 @@ void gpu_pass_inline(void *list, uint64_t key);
      gpu_target_given     the game's allocator gave the target out (tex: its nvn_tex): its image claims its range if
                           another has owned memory of it since
      gpu_host_event       an event of the host's for strict mode (reason: a fixed string) */
-int gpu_transient_pool(uint64_t lo, uint64_t hi);
-uint64_t gpu_image_need(const void *desc, uint64_t *align);
-void gpu_transient_slot(uint64_t gpu, uint64_t cap);
-void gpu_target_given(const void *tex);
-void gpu_host_event(const char *reason, const char *what);
+GPU_LIST_EXPORT int gpu_transient_pool(uint64_t lo, uint64_t hi);
+GPU_LIST_EXPORT uint64_t gpu_image_need(const void *desc, uint64_t *align);
+GPU_LIST_EXPORT void gpu_transient_slot(uint64_t gpu, uint64_t cap);
+GPU_LIST_EXPORT void gpu_target_given(const void *tex);
+GPU_LIST_EXPORT void gpu_host_event(const char *reason, const char *what);
 int64_t gpu_vram_free(void);   /* free VRAM in bytes as the driver sees it (budget minus usage of the device-local heap,
                                   plus images already waiting to be destroyed), sampled once a present; -1 not yet */
-void gpu_texture_cached(const void *tex, int cached);   /* agl released tex to its LRU cache (1: still registered,
+GPU_LIST_EXPORT void gpu_texture_cached(const void *tex, int cached);   /* agl released tex to its LRU cache (1: still registered,
                                                           its texels kept) or took it back (0); counted, nothing evicted */
 
 /* The host's upscale (runtime/upscale.h): a spatial upscale recorded into the list where the game's own upscaler would run,
@@ -108,11 +115,11 @@ typedef struct gpu_upscale_args {
     uint32_t dst_id, dst_w, dst_h;
     float sharpness;                   /* (the game's parameter: no filter of these reads it) */
 } gpu_upscale_args;
-void gpu_upscale(void *list, const gpu_upscale_args *a);
+GPU_LIST_EXPORT void gpu_upscale(void *list, const gpu_upscale_args *a);
 
 /* Shots of the presented frame: every `every` presents a 1280x720 PNG of what is shown, <dir>/vk_<present>.png (the
    host's shots / shot_every, the frozen back end's names). Called once, before the renderer starts */
-void gpu_shots(const char *dir, int every);
+GPU_LIST_EXPORT void gpu_shots(const char *dir, int every);
 
 #ifdef __cplusplus
 }

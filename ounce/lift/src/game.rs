@@ -81,7 +81,8 @@ impl Game {
             return Err(format!("{}: exe {:?} is not a file name", file.display(), raw.exe));
         }
         Ok(Game {
-            exe: raw.exe,
+            // (the executable's file name on this system: Windows runs only a name ending in .exe)
+            exe: if cfg!(windows) { format!("{}.exe", raw.exe) } else { raw.exe },
             title: raw.title.unwrap_or_else(|| raw.name.clone()),
             icon: raw.icon.map(|i| folder.join(i)),
             patches: raw.patches.iter().map(|p| folder.join(p)).collect(),

@@ -4,13 +4,12 @@
    (VK_EXT_external_memory_host) are not used there: amdgpu walks every page of a host-pointer import again at each
    submission (~3.4 ms per GB imported on RADV, against ~0.05 ms for dma-bufs).
 
-   Windows (not written): host pointers of the window's pages, which WDDM drivers are expected to pin once at the
-   import. What differs from Linux: pages are not made on first touch (MAP_NORESERVE): the window is reserved
-   (MEM_RESERVE) and ranges committed before the game or an import uses them; a committed range under an import is
-   never decommitted (the runtime already zeroes imported ranges instead of discarding them); the window must get the
-   fixed base address, which has to be free at start. Not known yet: whether NVIDIA's and AMD's Windows drivers import
-   pages of a section view (MapViewOfFile3) rather than VirtualAlloc memory, and whether they bind imported host memory
-   into sparse buffers (RADV does). */
+   Windows (os_guest_windows.c): the window reserved at its address (MEM_RESERVE) and committed as the runtime hands
+   ranges out (os_guest_commit, from hos_commit) or, for anything else the game touches, on the first touch (a fault
+   handler commits the 64 KB around it); ranges are exported as host pointers of the window's own pages
+   (VK_EXT_external_memory_host), committed first, and an exported range is never decommitted (a discard there zeroes
+   it, as the runtime does for ranges the renderer imported). A discard elsewhere decommits and commits again: the pages
+   read as zero and hold no memory until they are touched. */
 #ifndef OUNCE_OS_GUEST_H
 #define OUNCE_OS_GUEST_H
 #include <stdbool.h>
@@ -22,6 +21,9 @@ extern "C" {
 
 /* the window at exactly base, readable and writable: 0 or < 0 */
 int os_guest_reserve(void *base, uint64_t size);
+/* pages of the window made usable before the game (or a system call on its behalf, or an import) touches them:
+   0 or < 0 (Linux: nothing to do, a page is made at its first touch) */
+int os_guest_commit(void *p, size_t n);
 /* pages of the window given back: their contents are dropped and they read as zero again */
 void os_guest_discard(void *p, size_t n);
 uint64_t os_guest_resident(void);   /* the bytes of the window that hold memory now; 0 when not known */

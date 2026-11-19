@@ -315,7 +315,8 @@ _Static_assert(sizeof(OotGameDataBool) == 24, "bool entry");
 typedef struct __attribute__((may_alias)) { uint8_t _0[104]; uint64_t playing; } OotEventMgr;   /* +104: an event plays */
 _Static_assert(offsetof(OotEventMgr, playing) == 104, "playing");
 
-enum { OOT_GAMEDATA_SLOT = 0x84c9e180, OOT_EVENTMGR_SLOT = 0x84c9e090 };
+/* (guest addresses as uint64_t, not an enum: an enum is an int on Windows, and these would sign-extend) */
+static const uint64_t OOT_GAMEDATA_SLOT = 0x84c9e180, OOT_EVENTMGR_SLOT = 0x84c9e090;
 #define OOT_SEQUENCE_IS_LOADING_BANC 0xef2b60c2u   /* (MurMur3 of the bool's name) */
 
 static uint64_t singleton(uint64_t slot) {
@@ -734,7 +735,8 @@ PATCH_AT_SITE(0x811d82f4, word(0x39400008), after, w8, hos_oot_occlusion_flag, w
    writer of a ring is its owner (logged: "ring owner: ring N is A's"); a different thread writing it is logged once
    per (ring, thread): "ring owner: ring N pushed by A and B (pc P)". Always on: on the owner's writes, a guest load
    of the singleton, a relaxed add and a compare. */
-enum { OOT_RING_SLOT = 0x84c9e890, OOT_RINGS = 7 };
+static const uint64_t OOT_RING_SLOT = 0x84c9e890;   /* (not an enum constant: see OOT_GAMEDATA_SLOT) */
+enum { OOT_RINGS = 7 };
 static struct {
     HosThread *volatile owner;
     volatile int64_t pushes, pops;

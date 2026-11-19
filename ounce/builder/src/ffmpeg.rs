@@ -51,6 +51,7 @@ const CONFIGURE: &[&str] = &[
 pub const LIBS: [&str; 4] = ["libavcodec.a", "libdav1d.a", "libswscale.a", "libavutil.a"];
 
 /// A release's FFmpeg, built with it (the AppImage's), under its sources' root
+#[cfg_attr(windows, allow(dead_code))] // (Windows takes windows.rs's FFmpeg)
 pub const PREBUILT: &str = "prebuilt/ffmpeg";
 
 /// The C flags of both builds: the host C's target (the CPU), sections for --gc-sections; the sysroot (sysroot.rs)
@@ -149,6 +150,7 @@ pub fn ensure(dir: &Path, jobs: usize, sysroot: &Path) -> PathBuf {
 
 /// The FFmpeg a build links: a release's prebuilt one under `root`, else this recipe's in the cache folder (built
 /// the first time)
+#[cfg_attr(windows, allow(dead_code))]
 pub fn find(root: &Path, cache_dir: &Path, jobs: usize, sysroot: &Path) -> PathBuf {
     let prebuilt = root.join(PREBUILT);
     if prebuilt.join("ffmpeg.txt").is_file() {

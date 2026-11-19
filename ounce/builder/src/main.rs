@@ -3,6 +3,7 @@
 //! build is made of, and the window's build of a player's game folder.
 
 #[cfg(feature = "clang")]
+#[cfg(unix)]
 mod appdir;
 #[cfg(feature = "clang")]
 mod clang;
@@ -36,8 +37,15 @@ mod sysroot;
 mod textures;
 #[cfg(feature = "clang")]
 mod version;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod windows;
 
 use std::path::PathBuf;
+// (Windows: the zlib and zstd LLVM's libraries call; named so that they are linked, build.rs)
+#[cfg(windows)]
+use libz_sys as _;
+#[cfg(windows)]
+use zstd_sys as _;
 use std::time::Instant;
 
 /// the LLVM the lifter's IR text is written for
@@ -282,7 +290,10 @@ fn tool(argv: &[String]) {
         Some("sdl") => sdl::command(&argv[1..]),
         Some("portable") => elf::command(&argv[1..]),
         #[cfg(feature = "clang")]
+        #[cfg(unix)]
         Some("appdir") => appdir::command(&argv[1..]),
+        #[cfg(not(unix))]
+        Some("appdir") => fail("tool appdir makes the Linux AppImage: run it on Linux"),
         Some("llvm-version") => println!("{}", llvm::version()),
         Some("cache-keys") => {
             println!("sysroot={}\nffmpeg={}\nsdl={}\nstatic_llvm={}", sysroot::key(), ffmpeg::key(), sdl::key(), static_llvm::key())
@@ -388,17 +399,21 @@ fn link_cmd(args: &[String]) {
         .map(|l| PathBuf::from(l.trim().trim_matches('"')))
         .filter(|p| !p.as_os_str().is_empty())
         .collect();
-    let root = ounce_core::games::root().unwrap_or_else(|e| fail(e));
-    let sys = link::Sysroot { root: sysroot::find(&root, &config().cache_dir()) };
     let dir = out.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
     let order = order.map(|b| link::order_file(&b, dir).unwrap_or_else(|e| fail(e)));
     let x = link::Exe { out, map: map.as_deref(), objects: &objects, order: order.as_deref(), libs: &libs };
-    let a = link::exe_args(&x, &sys);
+    #[cfg(windows)]
+    let a = link::exe_args_windows(&x, &windows::msvc().lib);
+    #[cfg(not(windows))]
+    let a = {
+        let root = ounce_core::games::root().unwrap_or_else(|e| fail(e));
+        link::exe_args(&x, &link::Sysroot { root: sysroot::find(&root, &config().cache_dir()) })
+    };
     if print {
         println!("{}", a.join(" "));
     }
     let t = Instant::now();
-    match link::lld(&a) {
+    match if cfg!(windows) { link::lld_coff(&a) } else { link::lld(&a) } {
         Ok(m) => {
             print!("{m}");
             println!("linked {}: {} MB in {:.1} s", out.display(), std::fs::metadata(out).map_or(0, |m| m.len() >> 20), t.elapsed().as_secs_f64());
@@ -490,8 +505,13 @@ fn install(from: &std::path::Path, to: &std::path::Path, moved: bool) -> Result<
     if !moved {
         std::fs::copy(from, &tmp).map_err(|e| format!("{} -> {}: {e}", from.display(), tmp.display()))?;
     }
-    std::fs::File::open(&tmp).and_then(|f| f.sync_all()).map_err(|e| err(&tmp, e))?;
+    // (opened for writing: Windows flushes only a handle that may write)
+    std::fs::OpenOptions::new().write(true).open(&tmp).and_then(|f| f.sync_all()).map_err(|e| err(&tmp, e))?;
     std::fs::rename(&tmp, to).map_err(|e| err(to, e))?;
+    // (the folder's entry synced too; Windows opens no folder as a file, and its rename is in the file system's log)
+    if cfg!(windows) {
+        return Ok(());
+    }
     let dir = to.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
     std::fs::File::open(dir).and_then(|f| f.sync_all()).map_err(|e| err(dir, e))
 }
@@ -583,9 +603,14 @@ fn build(args: &[String]) {
     }
     let cache_dir = cache_dir.unwrap_or_else(|| ounce_core::layout::Layout::cache(&config));
     let cache = cache::Cache::open(&cache_dir).unwrap_or_else(|e| fail(e));
-    let sysroot_dir = sysroot_dir.unwrap_or_else(|| sysroot::find(&root, &config.cache_dir()));
+    // (the system's headers and libraries: Linux's sysroot, or on Windows MSVC's and the SDK's, windows.rs)
+    let sysroot_dir = if cfg!(windows) { None } else { Some(sysroot_dir.unwrap_or_else(|| sysroot::find(&root, &config.cache_dir()))) };
+    #[cfg(windows)]
+    let msvc = windows::msvc();
+    #[cfg(not(windows))]
+    let msvc = windows::Msvc { include: Vec::new(), lib: Vec::new() };
     let resource = resource_dir();
-    let tc = host::Toolchain { resource_dir: &resource, sysroot: &sysroot_dir };
+    let tc = host::Toolchain { resource_dir: &resource, sysroot: sysroot_dir.as_deref(), msvc: &msvc.include };
     let gate = gate::Gate::new();
     let prog = progress::Progress::new(progress, cjobs, &cache_dir);
     if gen_parts && gen.is_none() {
@@ -647,22 +672,38 @@ fn build(args: &[String]) {
     let game_dir = if run.opts.game.is_dir() { run.opts.game.clone() } else { run.opts.game.parent().unwrap().to_path_buf() };
     let order_bin = game_dir.join("hot_order.bin");
     let order = order_bin.exists().then(|| link::order_file(&order_bin, &obj).unwrap_or_else(|e| fail(e)));
-    let libs: Vec<String> = ffmpeg::LIBS.iter().map(|l| ffmpeg.join("lib").join(l).to_string_lossy().into_owned()).collect();
-    let sys = link::Sysroot { root: sysroot_dir.clone() };
+    let ffmpeg_libs: &[&str] = if cfg!(windows) { &windows::FFMPEG_LIBS } else { &ffmpeg::LIBS };
+    let libs: Vec<String> = ffmpeg_libs.iter().map(|l| ffmpeg.join("lib").join(l).to_string_lossy().into_owned()).collect();
     let x = link::Exe { out: &exe, map: Some(&map), objects: &objects, order: order.as_deref(), libs: &libs };
     stage("link", "linking");
     let t = Instant::now();
-    if let Err(m) = link::lld(&link::exe_args(&x, &sys)) {
+    let linked = if cfg!(windows) {
+        link::lld_coff(&link::exe_args_windows(&x, &msvc.lib))
+    } else {
+        link::lld(&link::exe_args(&x, &link::Sysroot { root: sysroot_dir.clone().unwrap() }))
+    };
+    if let Err(m) = linked {
         fail(format!("the link failed:\n{m}"));
     }
-    let l = labels::read(&game.labels).unwrap_or_else(|e| fail(e));
-    let (n, _) = labels::apply(&exe, &l).unwrap_or_else(|e| fail(e));
+    // (the labels rename ELF symbols, and the renderer's symbols are checked against the executable's ELF exports;
+    // on Windows the link map names the functions, and the renderer's own link resolved every symbol it calls here)
+    let n = if cfg!(windows) {
+        0
+    } else {
+        let l = labels::read(&game.labels).unwrap_or_else(|e| fail(e));
+        labels::apply(&exe, &l).unwrap_or_else(|e| fail(e)).0
+    };
     println!("linked {} ({} MB, {n} functions named) in {:.1} s", out.join(&game.exe).display(), std::fs::metadata(&exe).map_or(0, |m| m.len() >> 20), t.elapsed().as_secs_f64());
-    checks::backend_symbols(&direct, &exe).unwrap_or_else(|e| fail(e));
+    if !cfg!(windows) {
+        checks::backend_symbols(&direct, &exe).unwrap_or_else(|e| fail(e));
+    }
     // (the folder the game runs from: the image beside the executable, where hos_main.c looks without an argument)
-    let mut installs = vec![(direct.clone(), out.join("ounce_renderer.so")), (obj.join("image.bin"), out.join("image.bin"))];
-    // (a release's SDL, which the game loads from beside itself before the system's)
-    installs.extend(sdl_lib.iter().map(|l| (l.clone(), out.join(sdl::LIB))));
+    let mut installs = vec![(direct.clone(), out.join(commands::RENDERER)), (obj.join("image.bin"), out.join("image.bin"))];
+    // (a release's SDL, which the game loads from beside itself before the system's; on Windows always, with FFmpeg's DLLs)
+    installs.extend(sdl_lib.iter().map(|l| (l.clone(), out.join(if cfg!(windows) { windows::SDL_DLL } else { sdl::LIB }))));
+    if cfg!(windows) {
+        installs.extend(windows::FFMPEG_DLLS.iter().map(|d| (ffmpeg.join("bin").join(d), out.join(d))));
+    }
     for (from, to) in installs {
         if from != to {
             install(&from, &to, false).unwrap_or_else(|e| fail(e));

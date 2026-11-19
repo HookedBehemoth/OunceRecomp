@@ -12,8 +12,12 @@ enum {
     HL_VIDEO,       /* (nn_video.c: the decoder's image pools and pictures waiting) */
     HL_N
 };
-/* (weak: a test that builds one of these files alone still links) */
+/* (weak: a test that builds one of these files alone still links; COFF merges one definition per file as selectany) */
+#ifdef _WIN32
+__declspec(selectany) int64_t hos_ledger[HL_N] = {0};
+#else
 __attribute__((weak)) int64_t hos_ledger[HL_N];
+#endif
 #define hos_msize(p) ((int64_t)malloc_usable_size(p))
 static inline void hos_ledger_add(int k, int64_t bytes) { __atomic_fetch_add(&hos_ledger[k], bytes, __ATOMIC_RELAXED); }
 /* a heap block just taken (NULL: nothing) and one about to be freed, by the heap's own size for it */

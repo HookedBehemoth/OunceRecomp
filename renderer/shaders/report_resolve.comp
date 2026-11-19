@@ -35,7 +35,10 @@ void main() {
     if (r.kind == 1u && p.fixed_samples != 0u) counter = p.fixed_samples;
     const double d = double(int64_t(p.ts.v[ri] - p.dev0));
     const uint64_t ticks = uint64_t(max(0.0lf, p.host0 + d * p.scale));
-    const uint64_t at = p.windows.v[uint(r.addr >> 31)] + (r.addr & 0x7fffffffUL);
+    // (an entry per 64 KB granule, the distance to the device address, or for a split granule its pages' entries: bda_emit.h)
+    uint64_t e = p.windows.v[uint(r.addr >> 16)];
+    if ((e & 1UL) != 0UL) e = p.windows.v[uint(e >> 1) + uint(r.addr >> 12 & 15UL)];
+    const uint64_t at = e + r.addr;
     Out64 o = Out64(at);
     o.v[0] = counter;
     o.v[1] = ticks;

@@ -70,9 +70,21 @@ pub struct Stats {
     pub hollow_kept: u64,
 }
 
+/// A file's modification time in ns since 1970
+#[cfg(unix)]
+fn mtime_ns(md: &std::fs::Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    md.mtime() as u64 * 1_000_000_000 + md.mtime_nsec() as u64
+}
+
+/// A file's modification time in ns since 1970
+#[cfg(windows)]
+fn mtime_ns(md: &std::fs::Metadata) -> u64 {
+    md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos() as u64)
+}
+
 /// (romfs-relative path, size, mtime in ns) of the files to look at.
 pub fn walk(romfs: &Path, skip: &[String], only: &[String]) -> Result<Vec<(String, u64, u64)>, String> {
-    use std::os::unix::fs::MetadataExt;
     let mut out = Vec::new();
     let mut top: Vec<_> = std::fs::read_dir(romfs).map_err(|e| format!("{}: {e}", romfs.display()))?.flatten().collect();
     top.sort_by_key(|e| e.file_name());
@@ -94,6 +106,8 @@ pub fn walk(romfs: &Path, skip: &[String], only: &[String]) -> Result<Vec<(Strin
                     continue;
                 }
                 let rel = p.strip_prefix(romfs).unwrap().to_string_lossy().into_owned();
+                #[cfg(windows)]
+                let rel = rel.replace('\\', "/"); // (romfs paths are '/'-separated on every system)
                 if rel.ends_with(".hollow.tmp") {
                     continue; // (a file being zeroed when a build was stopped; written again and renamed this time)
                 }
@@ -101,7 +115,7 @@ pub fn walk(romfs: &Path, skip: &[String], only: &[String]) -> Result<Vec<(Strin
                     continue;
                 }
                 let md = std::fs::metadata(&p).map_err(|e| format!("{}: {e}", p.display()))?;
-                out.push((rel, md.len(), md.mtime() as u64 * 1_000_000_000 + md.mtime_nsec() as u64));
+                out.push((rel, md.len(), mtime_ns(&md)));
             }
         }
     }

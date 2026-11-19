@@ -67,7 +67,7 @@ void upscale_device_created() {
 
 using namespace hsd;
 
-extern "C" __attribute__((visibility("default"))) void gpu_upscale(void* list, const gpu_upscale_args* a) {
+extern "C" MKWVK_EXPORT void gpu_upscale(void* list, const gpu_upscale_args* a) {
     List* l = (List*)list;
     if (!shader) return refuse("no shader", a);
     if (!l || !l->rec || l->secondary) return refuse("not in a list that records outside a rendering", a);

@@ -251,7 +251,7 @@ void sites_stats(char* out, size_t cap, double frames) {
 
 using namespace hsd;
 
-extern "C" __attribute__((visibility("default"))) void* gpu_list_begin(const gpu_list_info* info) {
+extern "C" MKWVK_EXPORT void* gpu_list_begin(const gpu_list_info* info) {
     List* l = new List;
     l->info = *info;
     if (l->info.kind >= GPU_LIST_KINDS) l->info.kind = GPU_LIST_PACKET;
@@ -303,7 +303,7 @@ void pkt_append(List* l, uint32_t op, const void* payload, uint32_t size) {
 }
 }  // namespace
 
-extern "C" __attribute__((visibility("default"))) void gpu_emit(void* list, uint32_t op, const void* payload, uint32_t size) {
+extern "C" MKWVK_EXPORT void gpu_emit(void* list, uint32_t op, const void* payload, uint32_t size) {
     List* l = (List*)list;
     if (!l || op >= NOP_COUNT_) {
         st_bad_op.fetch_add(1, std::memory_order_relaxed);
@@ -321,7 +321,7 @@ extern "C" __attribute__((visibility("default"))) void gpu_emit(void* list, uint
     emit_ticks(l->info.kind, __builtin_ia32_rdtsc() - t0);
 }
 
-extern "C" __attribute__((visibility("default"))) void gpu_list_call(void* list, void* const* callees, uint32_t n) {
+extern "C" MKWVK_EXPORT void gpu_list_call(void* list, void* const* callees, uint32_t n) {
     List* l = (List*)list;
     if (!l) return;
     const uint64_t t0 = __builtin_ia32_rdtsc();
@@ -366,7 +366,7 @@ extern "C" __attribute__((visibility("default"))) void gpu_list_call(void* list,
     }
 }
 
-extern "C" __attribute__((visibility("default"))) void gpu_list_end(void* list) {
+extern "C" MKWVK_EXPORT void gpu_list_end(void* list) {
     List* l = (List*)list;
     if (!l) return;
     pass_list_end(l);
@@ -401,7 +401,7 @@ extern "C" __attribute__((visibility("default"))) void gpu_list_end(void* list) 
     st_calls.fetch_add(l->counts[NOP_CALL], std::memory_order_relaxed);
 }
 
-extern "C" __attribute__((visibility("default"))) void gpu_list_released(void* list) {
+extern "C" MKWVK_EXPORT void gpu_list_released(void* list) {
     List* l = (List*)list;
     if (!l) return;
     if (!l->ended) st_dropped.fetch_add(1, std::memory_order_relaxed);

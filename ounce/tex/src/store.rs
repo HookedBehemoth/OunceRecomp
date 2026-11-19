@@ -338,13 +338,33 @@ pub struct PackReader {
     files: Vec<Option<File>>,
 }
 
+#[cfg(unix)]
+fn read_exact_at(f: &File, buf: &mut [u8], at: u64) -> std::io::Result<()> {
+    std::os::unix::fs::FileExt::read_exact_at(f, buf, at)
+}
+
+#[cfg(windows)]
+fn read_exact_at(f: &File, mut buf: &mut [u8], mut at: u64) -> std::io::Result<()> {
+    while !buf.is_empty() {
+        match std::os::windows::fs::FileExt::seek_read(f, buf, at) {
+            Ok(0) => return Err(std::io::ErrorKind::UnexpectedEof.into()),
+            Ok(n) => {
+                buf = &mut buf[n..];
+                at += n as u64;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
 impl PackReader {
     pub fn new(dir: &Path) -> PackReader {
         PackReader { dir: dir.to_path_buf(), files: Vec::new() }
     }
 
     pub fn read(&mut self, f: &FrameRef) -> std::io::Result<Vec<u8>> {
-        use std::os::unix::fs::FileExt;
         let i = f.pack as usize;
         if self.files.len() <= i {
             self.files.resize_with(i + 1, || None);
@@ -353,7 +373,7 @@ impl PackReader {
             self.files[i] = Some(File::open(self.dir.join(pack_name(i as u32)))?);
         }
         let mut buf = vec![0u8; f.csize as usize];
-        self.files[i].as_ref().unwrap().read_exact_at(&mut buf, f.off)?;
+        read_exact_at(self.files[i].as_ref().unwrap(), &mut buf, f.off)?;
         Ok(buf)
     }
 }

@@ -42,3 +42,6 @@ rx_backend.c
 media/display_sdl.c
 os/os_linux.c
 os/os_guest_linux.c
+os/os_windows.c
+os/os_guest_windows.c
+os/os_exports_windows.c

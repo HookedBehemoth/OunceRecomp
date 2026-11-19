@@ -202,7 +202,7 @@ extern "C" const MkwVkRenderer* mkwvk_init(const MkwVkHost* h);   // (vk_main.cp
 
 /// The game's --precompile: the device made (no window, no game), then every program of the pack beside the executable
 /// on every core; progress(done, of, translated, kept, failed) as they finish. 0 when the pack was made whole
-extern "C" __attribute__((visibility("default"))) int mkwvk_precompile(const MkwVkHost* h, void (*progress)(int done, int of, int made, int kept, int failed)) {
+extern "C" MKWVK_EXPORT int mkwvk_precompile(const MkwVkHost* h, void (*progress)(int done, int of, int made, int kept, int failed)) {
     using namespace hsd;
     if (!mkwvk_init(h)) return logf("direct: precompile: the device was not made"), 1;
     const uint64_t size = pack_size();

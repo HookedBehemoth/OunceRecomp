@@ -2,6 +2,7 @@
 signatures) and the values x0-x7 and s/d0-7 hold at a call, as far as the listing tracks them in address order."""
 import os
 import re as regex
+import shutil
 import subprocess
 
 from disasm import A, regkey
@@ -85,7 +86,9 @@ def nvn_sigs(root):
 def demangle(names):
     if not names:
         return {}
-    r = subprocess.run(["c++filt"], input="\n".join(names), capture_output=True, text=True)
+    # (binutils' c++filt, else LLVM's: Windows has only the latter)
+    tool = shutil.which("c++filt") or shutil.which("llvm-cxxfilt") or "c++filt"
+    r = subprocess.run([tool], input="\n".join(names), capture_output=True, text=True)
     return dict(zip(names, r.stdout.split("\n")))
 
 

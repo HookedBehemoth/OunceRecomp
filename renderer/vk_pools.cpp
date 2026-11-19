@@ -6,6 +6,16 @@
 // of use for pools up to 64 MB (an importer thread); CPU_NO_ACCESS pools in VRAM (the VRAM class, step 7b), kept 10 s after
 // their finalize and handed back on the same pool again, 2048 MB at most. Left for M2 with the bindings: the per-binding
 // path (a range bound at its first use), the shaders' page table and the BDA window table.
+//
+// Regions (layer 0's other backing, chosen at layer0_on when the windows cannot take the export's memory: NVIDIA's Windows
+// driver binds only device-local memory into sparse buffers, and its host-pointer imports are system memory). Every
+// GPU-readable pool is held by a region of its own: a plain buffer over the pool's pages, so its device addresses run on
+// contiguously, which is all the translated shaders' table and layer0_span ask. The table (bda_emit.h) has an entry per
+// 64 KB granule, the distance from guest to device address; a granule that regions share (the game leaves one page between
+// pools) is split into 16 page entries. A host region's buffer is bound into an arena, a 64 MB piece of the guest window
+// imported once (an import costs ~11 ms however small); a region that crosses an arena's end has an import of its own. A
+// CPU_NO_ACCESS pool's region is device-local memory of its own (the VRAM class). A region whose pages a later pool takes
+// (the game reusing a finalized pool's memory) is freed once the GPU is past the work recorded with it (retired_sweep).
 
 #include <algorithm>
 #include <chrono>
@@ -14,10 +24,13 @@
 #include <deque>
 #include <list>
 #include <map>
+#include <unordered_map>
+#include <new>
 #include <memory>
 #include <thread>
 
 #include "vk_internal.h"
+#include "vk_pool.h"
 #include "vk_query.h"
 #include "layer0_windows.h"
 #include "vk_assets.h"
@@ -26,6 +39,8 @@
 
 namespace hsd {
 void draw_window_made(uint32_t k, uint64_t a);   // (vk_draw.cpp)
+void draw_table_set(uint32_t index, uint64_t value);
+uint64_t draw_table_null(uint64_t guest);
 }
 
 namespace hsd {
@@ -142,9 +157,14 @@ VkDeviceMemory import_host(uint64_t lo, uint64_t size, void* ptr) {
             for (uint32_t i = 0; i < dev.memory.memoryTypeCount; i++)
                 if (hp.memoryTypeBits >> i & 1) types += " " + std::to_string(i) + ":" + std::to_string(dev.memory.memoryTypes[i].propertyFlags);
             logf("direct: layer 0: host-pointer memory types (VkResult %d):%s", (int)r, types.c_str());
+            // (host visible and coherent, cached first: NVIDIA's Windows driver gives an uncached type and a cached one, and
+            // shaders that loop over a CPU-visible buffer (OoT's light sums) ran 100x slower on the first)
             constexpr VkMemoryPropertyFlags hc = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-            for (uint32_t i = 0; r == VK_SUCCESS && i < dev.memory.memoryTypeCount && type == UINT32_MAX; i++)
-                if ((hp.memoryTypeBits >> i & 1) && (dev.memory.memoryTypes[i].propertyFlags & hc) == hc) type = i;
+            for (int pass = 0; pass < 2 && type == UINT32_MAX; pass++)
+                for (uint32_t i = 0; r == VK_SUCCESS && i < dev.memory.memoryTypeCount && type == UINT32_MAX; i++) {
+                    const VkMemoryPropertyFlags f = dev.memory.memoryTypes[i].propertyFlags;
+                    if ((hp.memoryTypeBits >> i & 1) && (f & hc) == hc && (pass || (f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT))) type = i;
+                }
         }
     }
     if (type == UINT32_MAX) {
@@ -596,6 +616,281 @@ void bind_ahead(uint64_t gpu, uint64_t size, uint32_t flags, bool vr) {
     prefetch_pool(gpu, std::min(gpu + size, guest_bytes));
 }
 
+// ---- regions (Windows): see the top ----
+struct Region {
+    uint64_t lo, hi;
+    VkBuffer buffer;
+    VkDeviceMemory memory;
+    VkDeviceAddress address;
+    bool vram = false;   // (device-local memory of its own, not the guest's pages: a CPU_NO_ACCESS pool's)
+    uint64_t pages = 0;  // (of its pages, how many the table still gives it; none: it is retired)
+};
+bool regions_mode = false;
+constexpr uint32_t kRegionShift = 16, kPageShift = 12;   // (the shaders' table granule, bda_emit.h kTableShift, and its pages)
+constexpr uint32_t kGranulePages = 1u << (kRegionShift - kPageShift);
+constexpr uint32_t kSplitFirst = (1u << (39 - kRegionShift)) + 8, kSplits = 1u << 16;   // (bda_emit.h's table layout)
+/// a granule's owner: 0 none, a Region* (the whole granule), or a Split* | 1 (pages of several). Published after the table
+std::unique_ptr<std::atomic<uintptr_t>[]> granule_region;
+/// a granule regions share: its pages' owners, and its 16 page entries in the table at `index` (made once a granule, kept)
+struct Split {
+    uint32_t index;
+    std::atomic<Region*> page[kGranulePages];
+};
+std::unordered_map<uint64_t, std::unique_ptr<Split>> splits;   // (mu; by granule)
+uint32_t splits_used = 0;
+std::vector<std::unique_ptr<Region>> regions_made;   // (mu; a Region itself is never freed: readers hold it without mu)
+/// A region whose pages others took over (a pool made over a finalized pool's pages): its buffer and memory freed once
+/// nothing can use them. A second after its last page went, the newest submission is noted (every list recorded before
+/// then has been sent); once the GPU is past that, it goes
+struct Retired {
+    Region* r;
+    clk::time_point at;
+    uint64_t value = 0;
+};
+std::vector<Retired> retired;   // (mu)
+int64_t st_regions = 0, st_region_merges = 0, st_region_failed = 0, st_region_freed = 0, st_split_full = 0;
+uint64_t st_region_bytes = 0, region_live_bytes = 0;
+double st_region_ms = 0;
+
+Region* region_at(uint64_t g) {   // (the region holding guest g's page; read without mu)
+    if (g >= guest_bytes) return nullptr;
+    const uintptr_t v = granule_region[g >> kRegionShift].load(std::memory_order_acquire);
+    if (!(v & 1)) return (Region*)v;
+    return ((Split*)(v & ~(uintptr_t)1))->page[g >> kPageShift & (kGranulePages - 1)].load(std::memory_order_acquire);
+}
+void retired_sweep() {   // (mu held)
+    const auto now = clk::now();
+    for (size_t i = 0; i < retired.size();) {
+        Retired& t = retired[i];
+        if (!t.value && now - t.at >= std::chrono::seconds(1)) t.value = sync_pushed();
+        if (!t.value || sync_completed() < t.value) {
+            i++;
+            continue;
+        }
+        vkDestroyBuffer(dev.device, t.r->buffer, nullptr);
+        if (!t.r->memory) {   // (a region in an arena: the buffer was all its own)
+        } else if (vkFreeMemory(dev.device, t.r->memory, nullptr), t.r->vram) {
+            mem_account(MO_L0_VRAM, vram_type, -(int64_t)(t.r->hi - t.r->lo));
+            vram_used -= t.r->hi - t.r->lo;
+        } else {
+            mem_account(MO_L0_IMPORT, import_type.load(std::memory_order_relaxed), -(int64_t)(t.r->hi - t.r->lo));
+            region_live_bytes -= t.r->hi - t.r->lo;
+        }
+        t.r->buffer = VK_NULL_HANDLE, t.r->memory = VK_NULL_HANDLE;
+        st_region_freed++;
+        retired[i] = retired.back();
+        retired.pop_back();
+    }
+}
+/// `pages` pages of `from` given to another region: retired when it has none left (mu held)
+void region_lose(Region* from, uint64_t pages) {
+    if (!from) return;
+    from->pages -= std::min(from->pages, pages);
+    if (!from->pages) retired.push_back({from, clk::now()});
+}
+/// r's pages [lo, hi) in the table and the owner array, whole granules as one entry, shared ones split (mu held). The
+/// table is written first: a reader that finds r there finds its entries
+void region_assign(Region* r, uint64_t lo, uint64_t hi) {
+    const uint64_t distance = r->address - r->lo, gsize = 1ull << kRegionShift;
+    for (uint64_t k = lo >> kRegionShift; k <= (hi - 1) >> kRegionShift; k++) {
+        const uint64_t g0 = k << kRegionShift, a = std::max(lo, g0), b = std::min(hi, g0 + gsize);
+        const uintptr_t v = granule_region[k].load(std::memory_order_relaxed);
+        if (a == g0 && b == g0 + gsize) {   // (the whole granule)
+            if (v & 1) {
+                Split* s = (Split*)(v & ~(uintptr_t)1);
+                for (auto& p : s->page) region_lose(p.load(std::memory_order_relaxed) == r ? nullptr : p.load(std::memory_order_relaxed), 1);
+            } else if ((Region*)v != r) {
+                region_lose((Region*)v, kGranulePages);
+            }
+            draw_table_set((uint32_t)k, distance);
+            granule_region[k].store((uintptr_t)r, std::memory_order_release);
+            continue;
+        }
+        // (a part: the granule split, its pages' entries made from their owners first when it was whole)
+        Split* s;
+        auto it = splits.find(k);
+        if (it != splits.end()) {
+            s = it->second.get();
+        } else {
+            if (splits_used >= kSplits) {   // (no room: the granule goes to r whole, as the regions' first design did)
+                if (st_split_full++ < 8) logf("direct: layer 0: no room for another split granule (%u): granule %#llx is the newest region's", kSplits, (unsigned long long)g0);
+                if (!(v & 1) && (Region*)v != r) region_lose((Region*)v, kGranulePages);
+                draw_table_set((uint32_t)k, distance);
+                granule_region[k].store((uintptr_t)r, std::memory_order_release);
+                continue;
+            }
+            auto made = std::make_unique<Split>();
+            made->index = kSplitFirst + 16 * splits_used++;
+            for (auto& p : made->page) p.store(nullptr, std::memory_order_relaxed);
+            s = made.get();
+            splits.emplace(k, std::move(made));
+        }
+        if (!(v & 1)) {   // (whole until now: its owner's pages, the rest the null window's)
+            Region* w = (Region*)v;
+            for (uint32_t i = 0; i < kGranulePages; i++) {
+                s->page[i].store(w, std::memory_order_relaxed);
+                draw_table_set(s->index + i, w ? w->address - w->lo : draw_table_null(g0));
+            }
+        }
+        for (uint64_t q = a; q < b; q += 1ull << kPageShift) {
+            const uint32_t i = (uint32_t)(q >> kPageShift & (kGranulePages - 1));
+            Region* old = s->page[i].load(std::memory_order_relaxed);
+            if (old != r) region_lose(old, 1);
+            draw_table_set(s->index + i, distance);
+            s->page[i].store(r, std::memory_order_release);
+        }
+        draw_table_set((uint32_t)k, (uint64_t)s->index << 1 | 1);
+        granule_region[k].store((uintptr_t)s | 1, std::memory_order_release);
+    }
+}
+/// a new region's buffer over memory m (mu held): published over guest [lo, hi), the pages' earlier owners losing them
+Region* region_publish(uint64_t lo, uint64_t hi, VkBuffer b, VkDeviceMemory m, bool vram) {
+    VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+    da.buffer = b;
+    regions_made.push_back(std::make_unique<Region>(Region{lo, hi, b, m, vkGetBufferDeviceAddress(dev.device, &da), vram}));
+    Region* r = regions_made.back().get();
+    r->pages = (hi - lo) >> kPageShift;
+    region_assign(r, lo, hi);
+    st_regions++;
+    return r;
+}
+/// A host region over guest [lo, hi) (pages): one host-pointer import and a plain buffer over it; null on failure (mu held)
+/// The guest window's arenas: 64 MB pieces imported once each and kept, which every region inside one binds its buffer into
+/// at its offset. An import costs ~11 ms however small (NVIDIA's Windows driver), so a pool a call of its own made a boot of
+/// 3000 pools spend 80 s importing; a region that crosses an arena's end (or is larger) has an import of its own
+constexpr uint64_t kArena = 64ull << 20;
+std::unordered_map<uint64_t, VkDeviceMemory> arenas;   // (mu; by arena index)
+int64_t st_arenas = 0, st_own_imports = 0;
+VkDeviceMemory arena(uint64_t a) {   // (mu held: arena a's memory, imported the first time; null on failure)
+    auto it = arenas.find(a);
+    if (it != arenas.end()) return it->second;
+    const uint64_t lo = a * kArena, size = std::min(kArena, guest_bytes - lo);
+    const VkDeviceMemory m = guest_memory(lo, size);
+    if (m) arenas.emplace(a, m), st_arenas++, region_live_bytes += size, st_region_bytes += size;
+    return m;
+}
+
+Region* region_import(uint64_t lo, uint64_t hi) {
+    const auto t0 = clk::now();
+    bool in_arena = lo / kArena == (hi - 1) / kArena;
+    VkDeviceMemory m = in_arena ? arena(lo / kArena) : VK_NULL_HANDLE;
+    if (!m) in_arena = false, m = guest_memory(lo, hi - lo);   // (an arena that cannot be imported: the first, over the null guard)
+    if (!m) {
+        if (st_region_failed++ < 8) logf("direct: layer 0: region %#llx..%#llx not imported", (unsigned long long)lo, (unsigned long long)hi);
+        return nullptr;
+    }
+    VkExternalMemoryBufferCreateInfo eb{VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO};
+    eb.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
+    VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bi.pNext = &eb;
+    bi.size = hi - lo;
+    bi.usage = kWindowUsage | query_window_usage();
+    VkBuffer b = VK_NULL_HANDLE;
+    const VkDeviceSize at = in_arena ? lo % kArena : 0;
+    if (vkCreateBuffer(dev.device, &bi, nullptr, &b) != VK_SUCCESS || vkBindBufferMemory(dev.device, b, m, at) != VK_SUCCESS) {
+        if (st_region_failed++ < 8) logf("direct: layer 0: region %#llx..%#llx: no buffer over its import", (unsigned long long)lo, (unsigned long long)hi);
+        if (b) vkDestroyBuffer(dev.device, b, nullptr);
+        if (!in_arena) {
+            vkFreeMemory(dev.device, m, nullptr);
+            mem_account(MO_L0_IMPORT, import_type.load(std::memory_order_relaxed), -(int64_t)(hi - lo));
+        }
+        return nullptr;
+    }
+    // (a region in an arena owns its buffer alone: the arena's memory stays)
+    Region* r = region_publish(lo, hi, b, in_arena ? VK_NULL_HANDLE : m, false);
+    if (!in_arena) region_live_bytes += hi - lo, st_region_bytes += hi - lo, st_own_imports++;
+    st_region_ms += std::chrono::duration<double, std::milli>(clk::now() - t0).count();
+    return r;
+}
+/// A pool's region (mu held): exactly its pages, taken from whoever held them (a finalized pool's region, a span's)
+Region* region_pool(uint64_t lo, uint64_t hi) {
+    retired_sweep();
+    const uint64_t page = 1ull << kPageShift;
+    return region_import(lo / page * page, std::min((hi + page - 1) / page * page, guest_bytes));
+}
+/// A region holding guest [lo, hi) for a use outside the pools held (the texture data pool's, at its uses): the one there,
+/// else a new host region over it and over the regions that hold pages of it (mu held); null when one of those is VRAM
+Region* region_cover(uint64_t lo, uint64_t hi) {
+    if (Region* r = region_at(lo); r && lo >= r->lo && hi <= r->hi && region_at(hi - 1) == r) return r;
+    retired_sweep();
+    const uint64_t page = 1ull << kPageShift;
+    lo = lo / page * page, hi = std::min((hi + page - 1) / page * page, guest_bytes);
+    for (bool grew = true; grew;) {
+        grew = false;
+        for (uint64_t q = lo; q < hi; q += page)
+            if (Region* r = region_at(q)) {
+                if (r->vram) return nullptr;
+                if (r->lo < lo || r->hi > hi) lo = std::min(lo, r->lo), hi = std::max(hi, r->hi), grew = true, st_region_merges++;
+            }
+    }
+    return region_import(lo, hi);
+}
+/// A CPU_NO_ACCESS pool in VRAM (the VRAM class, as the windows' step 7b): a region of device-local memory of its own over
+/// the pool's pages, when the class has room; false: it stays host (mu held). The CPU never reads or writes such a pool, so
+/// its guest pages are not imported; a pool made over its pages later (the game's allocator reusing them once this one
+/// is finalized) takes them as any region's, and the region goes
+bool region_vram(uint64_t lo, uint64_t hi) {
+    const uint64_t page = 1ull << kPageShift;
+    if (lo % page || hi % page || hi > guest_bytes || vram_used + (hi - lo) > kVramLimit) return false;
+    retired_sweep();
+    VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bi.size = hi - lo;
+    bi.usage = kWindowUsage | query_window_usage();
+    VkBuffer b = VK_NULL_HANDLE;
+    if (vkCreateBuffer(dev.device, &bi, nullptr, &b) != VK_SUCCESS) return false;
+    VkMemoryRequirements req{};
+    vkGetBufferMemoryRequirements(dev.device, b, &req);
+    if (vram_type == UINT32_MAX)   // (device-local and not host-visible, else any device-local the buffer takes)
+        for (int pass = 0; pass < 2 && vram_type == UINT32_MAX; pass++)
+            for (uint32_t i = 0; i < dev.memory.memoryTypeCount && vram_type == UINT32_MAX; i++) {
+                const VkMemoryPropertyFlags f = dev.memory.memoryTypes[i].propertyFlags;
+                if ((req.memoryTypeBits >> i & 1) && (f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) && (pass || !(f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)))
+                    vram_type = i;
+            }
+    VkMemoryAllocateFlagsInfo fl{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
+    fl.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+    VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    ai.pNext = &fl;
+    ai.allocationSize = req.size;
+    ai.memoryTypeIndex = vram_type;
+    VkDeviceMemory m = VK_NULL_HANDLE;
+    if (vram_type == UINT32_MAX || vkAllocateMemory(dev.device, &ai, nullptr, &m) != VK_SUCCESS || vkBindBufferMemory(dev.device, b, m, 0) != VK_SUCCESS) {
+        if (m) vkFreeMemory(dev.device, m, nullptr);
+        vkDestroyBuffer(dev.device, b, nullptr);
+        if (st_vram_failed++ < 8) logf("direct: layer 0: pool %#llx+%#llx: no VRAM for it: stays host", (unsigned long long)lo, (unsigned long long)(hi - lo));
+        return false;
+    }
+    mem_account(MO_L0_VRAM, vram_type, (int64_t)(hi - lo));
+    vram_used += hi - lo;
+    region_publish(lo, hi, b, m, true);
+    st_vpools++;
+    return true;
+}
+
+/// whether the windows can take the memory the export gives: the sparse window buffer's memory types against a dma-buf's
+/// (Linux: these are never asked, the import picks among the buffer's own) or a host pointer's
+bool windows_take_exports() {
+    if (dev.dma_buf_import) return true;
+    VkExternalMemoryBufferCreateInfo eb{VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO};
+    eb.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
+    VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bi.pNext = &eb;
+    bi.flags = VK_BUFFER_CREATE_SPARSE_BINDING_BIT | VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT | VK_BUFFER_CREATE_SPARSE_ALIASED_BIT;
+    bi.size = l0::kWindow;
+    bi.usage = kWindowUsage;
+    VkBuffer b = VK_NULL_HANDLE;
+    if (vkCreateBuffer(dev.device, &bi, nullptr, &b) != VK_SUCCESS) return false;
+    VkMemoryRequirements req{};
+    vkGetBufferMemoryRequirements(dev.device, b, &req);
+    vkDestroyBuffer(dev.device, b, nullptr);
+    void* probe = ::operator new(65536, std::align_val_t(65536));
+    VkMemoryHostPointerPropertiesEXT hp{VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
+    const VkResult r = vkGetMemoryHostPointerPropertiesEXT(dev.device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, probe, &hp);
+    ::operator delete(probe, std::align_val_t(65536));
+    logf("direct: layer 0: sparse windows take memory types %#x, host pointers come as %#x", req.memoryTypeBits, r == VK_SUCCESS ? hp.memoryTypeBits : 0);
+    return r == VK_SUCCESS && (req.memoryTypeBits & hp.memoryTypeBits);
+}
+
 }  // namespace
 
 bool layer0_on() {
@@ -606,11 +901,15 @@ bool layer0_on() {
     std::lock_guard lk(once);
     if (state.load(std::memory_order_relaxed) >= 0) return state.load(std::memory_order_relaxed) != 0;
     const char* why = nullptr;
-    if (!(dev.features.sparseBinding && dev.features.sparseResidencyBuffer && dev.features.sparseResidencyAliased))
-        why = "no sparse residency of aliased buffers";
-    else if (!host->guest_size()) why = "no guest window";
-    else if (!dev.sparse_queue) why = "no queue for sparse binding";
+    const bool sparse = dev.features.sparseBinding && dev.features.sparseResidencyBuffer && dev.features.sparseResidencyAliased && dev.sparse_queue;
+    if (!host->guest_size()) why = "no guest window";
     else if (!export_open()) why = "no export of guest memory";
+    else if (!(sparse && windows_take_exports())) {
+        // (the regions: plain buffers over host-pointer imports)
+        if (!dev.host_import) why = sparse ? "the sparse windows cannot take the exported memory, and no host-pointer import"
+                                           : "no sparse residency of aliased buffers (or no queue for it), and no host-pointer import";
+        else regions_mode = true;
+    }
     if (why) {
         logf("direct: layer 0 off: %s", why);
         state.store(0, std::memory_order_release);
@@ -623,6 +922,14 @@ bool layer0_on() {
     chunk_memory.assign(bits->chunks, VK_NULL_HANDLE);
     cstate.reset(new std::atomic<uint8_t>[bits->chunks]);
     for (uint64_t c = 0; c < bits->chunks; c++) cstate[c].store(CH_NONE, std::memory_order_relaxed);
+    if (regions_mode) {
+        granule_region.reset(new std::atomic<uintptr_t>[(guest_bytes >> kRegionShift) + 1]);
+        for (uint64_t j = 0; j <= guest_bytes >> kRegionShift; j++) granule_region[j].store(0, std::memory_order_relaxed);
+        logf("direct: layer 0 on: guest memory in regions (a host-pointer import and a plain buffer each, over the pools whose "
+             "2 MB granules touch), every GPU-readable pool held at its creation (but the texture data pool, at its uses); no VRAM class");
+        state.store(1, std::memory_order_release);
+        return true;
+    }
     os_thread_release(os_thread_start(worker_main, nullptr, 0, "direct layer 0"));
     logf("direct: layer 0 on: guest memory in 4 GB windows every 2 GB, chunks of %llu MB (an export's limit %llu MB), every "
          "GPU-readable pool bound in full at its creation (but the texture data pool); CPU_NO_ACCESS pools in VRAM (up to %llu MB, "
@@ -639,6 +946,23 @@ void layer0_pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t ke
     if (!size || gpu >= (1ull << 40)) return;
     if (!layer0_on()) {
         st_early.fetch_add(1, std::memory_order_relaxed);   // (before the device)
+        return;
+    }
+    if (regions_mode) {
+        std::lock_guard lk(mu);
+        if (on) {
+            live.insert({gpu, LivePool{size, flags, false}});
+            const int why = (flags & (kGpuNoAccess | kVirtual)) ? 1 : (flags & kShaderCode) ? 2 : assets_pool_is(gpu, size) ? 3 : 0;
+            if (why) return void(st_left_pools[why].fetch_add(1, std::memory_order_relaxed));
+            st_ahead_pools.fetch_add(1, std::memory_order_relaxed), st_ahead_bytes.fetch_add((int64_t)size, std::memory_order_relaxed);
+            if (!(vram_class(size, flags) && region_vram(gpu, gpu + size))) region_pool(gpu, std::min(gpu + size, guest_bytes));
+            return;
+        }
+        for (auto [it, end] = live.equal_range(gpu); it != end; ++it)
+            if (it->second.size == size && it->second.flags == flags) {
+                live.erase(it);
+                break;
+            }
         return;
     }
     const bool vr = vram_class(size, flags);
@@ -676,6 +1000,12 @@ void layer0_pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t ke
 }
 
 bool layer0_bound(uint64_t lo, uint64_t hi) {   // (bound or being imported: a dma-buf may pin its pages any moment now)
+    if (regions_mode) {   // (a region's pages stay imported for the process's life)
+        if (hi <= lo || state.load(std::memory_order_acquire) != 1) return false;
+        for (uint64_t g = lo & ~((1ull << kPageShift) - 1); g < hi && g < guest_bytes; g += 1ull << kPageShift)
+            if (region_at(g)) return true;
+        return false;
+    }
     if (!bits || hi <= lo) return false;
     uint64_t c0, c1;
     l0::chunk_span(lo, hi, chunk, c0, c1);
@@ -698,7 +1028,24 @@ bool layer0_pool_of(uint64_t addr, uint64_t& base, uint64_t& size, uint32_t& fla
     return found;
 }
 
+/// (regions) guest [gpu, gpu + size)'s region, made now when none holds it (the texture data pool's uses, ranges outside the
+/// pools): read without mu when one does
+Region* region_span(uint64_t gpu, uint64_t size) {
+    if (!size || gpu >= guest_bytes || state.load(std::memory_order_acquire) != 1) return nullptr;
+    const uint64_t hi = std::min(gpu + size, guest_bytes);
+    if (Region* r = region_at(gpu); r && gpu >= r->lo && hi <= r->hi && region_at(hi - 1) == r) return r;
+    std::lock_guard lk(mu);
+    st_span_binds.fetch_add(1, std::memory_order_relaxed);
+    return region_cover(gpu, hi);
+}
+
 bool layer0_span(uint64_t gpu, uint64_t size, VkBuffer& buffer, VkDeviceSize& offset) {
+    if (regions_mode) {
+        Region* r = region_span(gpu, size);
+        if (!r) return false;
+        buffer = r->buffer, offset = gpu - r->lo;
+        return true;
+    }
     if (!size || gpu >= (1ull << 40) || !l0::fits_window(gpu, size) || state.load(std::memory_order_acquire) != 1) return false;
     const uint64_t hi = std::min(gpu + size, guest_bytes);
     if (hi <= gpu) return false;
@@ -732,6 +1079,12 @@ bool layer0_span(uint64_t gpu, uint64_t size, VkBuffer& buffer, VkDeviceSize& of
 
 /// guest [gpu, gpu + size) as a device address in its window (layer0_span's, bound first if it is not)
 bool layer0_address(uint64_t gpu, uint64_t size, VkDeviceAddress& a) {
+    if (regions_mode) {
+        Region* r = region_span(gpu, size);
+        if (!r) return false;
+        a = r->address + (gpu - r->lo);
+        return true;
+    }
     VkBuffer b;
     VkDeviceSize off;
     if (!layer0_span(gpu, size, b, off)) return false;
@@ -745,6 +1098,20 @@ void layer0_stats(char* out, size_t cap) {
         return;
     }
     std::lock_guard lk(mu);
+    if (regions_mode) {
+        retired_sweep();
+        std::snprintf(out, cap, "layer 0: %lld arenas and %lld imports of their own; %lld regions made (%llu MB imported in all, %llu MB live; %lld taken over by others, "
+                      "%lld of those freed), %lld merges, %lld failed; VRAM: %lld pools, %llu MB live, %lld not placed; in "
+                      "%.1f ms; %lld spans made at their use; pools held at creation %lld (%lld MB), not held: %lld the GPU cannot read "
+                      "or virtual, %lld shader code, %lld the texture data pool",
+                      (long long)st_arenas, (long long)st_own_imports, (long long)st_regions, (unsigned long long)(st_region_bytes >> 20), (unsigned long long)(region_live_bytes >> 20),
+                      (long long)(st_region_freed + (int64_t)retired.size()), (long long)st_region_freed, (long long)st_region_merges,
+                      (long long)st_region_failed, (long long)st_vpools, (unsigned long long)(vram_used >> 20), (long long)st_vram_failed,
+                      st_region_ms, (long long)st_span_binds.load(), (long long)st_ahead_pools.load(),
+                      (long long)(st_ahead_bytes.load() >> 20), (long long)st_left_pools[1].load(), (long long)st_left_pools[2].load(),
+                      (long long)st_left_pools[3].load());
+        return;
+    }
     int64_t kept = 0, livev = 0;
     for (const VPool& v : vpools) (v.live ? livev : kept)++;
     std::snprintf(out, cap, "layer 0: %lld chunks bound (%llu MB) in %lld windows, %lld bind calls, imports %.1f ms, binds %.1f ms, "

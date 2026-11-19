@@ -8,7 +8,6 @@ use crate::config::Config;
 use crate::games::Game;
 use crate::layout::Layout;
 use std::io::{Read, Seek, Write};
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -57,16 +56,7 @@ fn short(commit: &str) -> &str {
 }
 
 /// (MemAvailable, Shmem) in MB
-fn meminfo() -> (u64, u64) {
-    let text = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
-    let field = |k: &str| text.lines().find_map(|l| l.strip_prefix(k)).and_then(|r| r.split_whitespace().next()?.parse::<u64>().ok()).unwrap_or(0) >> 10;
-    (field("MemAvailable:"), field("Shmem:"))
-}
-
-fn rss_mb(pid: u32) -> u64 {
-    let text = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
-    text.lines().find_map(|l| l.strip_prefix("VmRSS:")).and_then(|r| r.split_whitespace().next()?.parse::<u64>().ok()).unwrap_or(0) >> 10
-}
+use crate::sys::{meminfo, rss_mb};
 
 /// The last "] vk: <n> presents" in the log's text since `pos`.
 fn presents_since(log: &Path, pos: &mut u64, last: &mut u64) {
@@ -101,6 +91,9 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
 
 /// Kernel lines of a GPU reset or a ring timeout since `since` (seconds since the epoch).
 fn gpu_resets(since: u64) -> Vec<String> {
+    if cfg!(windows) {
+        return Vec::new(); // (no kernel log to read there; a lost device is in the game's log)
+    }
     let Ok(o) = Command::new("journalctl").args(["-k", "-q", "--no-pager", "--since"]).arg(format!("@{since}")).output() else {
         return Vec::new();
     };
@@ -189,12 +182,7 @@ pub fn run(layout: &Layout, config: &Config, game: &Game, o: &Options) -> Result
         .stdout(file("stdout.txt")?)
         .stderr(file("log.txt")?);
     // (the game dies with ounce: killed or interrupted, it would otherwise go on holding the GPU)
-    unsafe {
-        cmd.pre_exec(|| {
-            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
-            Ok(())
-        });
-    }
+    crate::sys::tie_to_parent(&mut cmd);
     let start_epoch = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     let t0 = Instant::now();
     if o.headless || o.replay.is_some() {
@@ -205,6 +193,7 @@ pub fn run(layout: &Layout, config: &Config, game: &Game, o: &Options) -> Result
         cmd.arg("--set").arg(format!("{k}={v}"));
     }
     let mut child = cmd.spawn().map_err(|e| format!("{}: {e}", exe.display()))?;
+    let _tie = crate::sys::Tie::adopt(&child);
     let pid = child.id();
     let (mut timeline, mut mem) = (file("timeline.txt")?, file("mem.txt")?);
     let (mut pos, mut presents, mut peak) = (0u64, 0u64, 0u64);
@@ -233,7 +222,7 @@ pub fn run(layout: &Layout, config: &Config, game: &Game, o: &Options) -> Result
     let how = match how {
         Some(h) => h,
         None => {
-            unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+            crate::sys::stop(&mut child);
             let t = Instant::now();
             while child.try_wait().map_err(|e| e.to_string())?.is_none() {
                 if t.elapsed() > Duration::from_secs(2) {

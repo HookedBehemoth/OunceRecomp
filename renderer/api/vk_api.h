@@ -166,10 +166,17 @@ typedef struct MkwVkRenderer {
     void (*nvn_pool_native)(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t key, int on);
 } MkwVkRenderer;
 
+/* what the back end exports (Windows exports only what is marked; elsewhere the library is built hidden) */
+#ifdef _WIN32
+#define MKWVK_EXPORT __declspec(dllexport)
+#else
+#define MKWVK_EXPORT __attribute__((visibility("default")))
+#endif
+
 /* the DLL's one export: null when Vulkan is not usable */
 typedef const MkwVkRenderer *(*mkwvk_init_fn)(const MkwVkHost *host);
 #ifdef MKWVK_BUILDING
-__attribute__((visibility("default"))) const MkwVkRenderer *mkwvk_init(const MkwVkHost *host);
+MKWVK_EXPORT const MkwVkRenderer *mkwvk_init(const MkwVkHost *host);
 #endif
 
 /* (linux) what start() is given in place of a window handle (runtime/media/display_sdl.c): the window makes the

@@ -38,7 +38,14 @@ impl Drop for Lease<'_> {
     }
 }
 
+/// MB free: the available physical memory (GlobalMemoryStatusEx); None when it cannot be read
+#[cfg(windows)]
+pub fn free_mb() -> Option<u64> {
+    Some(ounce_core::sys::mem_total_avail().1).filter(|&m| m > 0)
+}
+
 /// MB free: MemAvailable, or less under a cgroup limit; None when it cannot be read
+#[cfg(unix)]
 pub fn free_mb() -> Option<u64> {
     let avail = std::fs::read_to_string("/proc/meminfo")
         .ok()?
@@ -52,6 +59,7 @@ pub fn free_mb() -> Option<u64> {
     Some(cgroup_room_mb().map_or(avail, |r| r.min(avail)))
 }
 
+#[cfg(unix)]
 fn cgroup_room_mb() -> Option<u64> {
     let line = std::fs::read_to_string("/proc/self/cgroup").ok()?;
     let rel = line.lines().find_map(|l| l.strip_prefix("0::"))?.trim().to_string();

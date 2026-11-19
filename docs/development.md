@@ -5,7 +5,7 @@ build.
 
 OunceRecomp lifts a game's AArch64 code to native x86-64 code, implements the console's operating system (Horizon) and
 graphics API (NVN2) in `runtime/`, and runs the game's GPU work on Vulkan with the direct back end in `renderer/`. It
-runs on Linux only, and the renderer is developed on Mesa RADV. One program, `ounce`, builds, runs and tests every game
+runs on Linux, where the renderer is developed on Mesa RADV, and on Windows ([Windows](windows.md)). One program, `ounce`, builds, runs and tests every game
 that has a `games/<game>/game.toml`.
 
 No game files are in this repository. The build reads your dump where it lies, and everything made from it stays on

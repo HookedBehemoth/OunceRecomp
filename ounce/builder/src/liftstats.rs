@@ -146,6 +146,23 @@ fn read_json(p: &Path) -> Value {
     serde_json::from_str(&t).unwrap_or_else(|e| fail(format!("{}: {e}", p.display())))
 }
 
+/// The CPU's brand string (CPUID 0x80000002-4: what /proc/cpuinfo's model name shows on Linux)
+#[cfg(windows)]
+fn cpu_model() -> String {
+    use std::arch::x86_64::__cpuid;
+    let mut b = Vec::with_capacity(48);
+    for leaf in 0x8000_0002u32..=0x8000_0004 {
+        // (every x86-64 CPU has the extended brand leaves)
+        let r = __cpuid(leaf);
+        for v in [r.eax, r.ebx, r.ecx, r.edx] {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    let s = String::from_utf8_lossy(&b).trim_matches(char::from(0)).trim().to_string();
+    if s.is_empty() { "unknown".into() } else { s }
+}
+
+#[cfg(unix)]
 fn cpu_model() -> String {
     let t = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
     t.lines().find(|l| l.starts_with("model name")).and_then(|l| l.split(':').nth(1)).map_or("unknown".into(), |m| m.trim().to_string())

@@ -140,7 +140,7 @@ static gpu_fns renderer_fns;
 static volatile int32_t renderer_state;   /* 0 not loaded yet, 2 loaded */
 static os_mutex renderer_lock = OS_MUTEX_INIT;
 static os_lib *renderer_module;
-static const char kDirectLib[] = "ounce_renderer.so";
+static const char kDirectLib[] = OS_LIB("ounce_renderer.so", "ounce_renderer.dll");
 const gpu_fns *rx_direct(void) {
     if (renderer_state) return &renderer_fns;
     os_mutex_lock(&renderer_lock);

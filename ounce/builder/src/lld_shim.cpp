@@ -1,4 +1,5 @@
-// The builder's linker: lld's ELF driver in this process (ld.lld's command line).
+// The builder's linker: lld in this process, its ELF driver (ld.lld's command line) or, on Windows, its COFF driver
+// (lld-link's): argv[0] names which.
 
 #include "lld/Common/Driver.h"
 #include "llvm/Support/raw_ostream.h"
@@ -8,12 +9,13 @@
 #include <string>
 
 LLD_HAS_DRIVER(elf)
+LLD_HAS_DRIVER(coff)
 
-// argv[0] is the driver's name ("ld.lld"). Returns lld's exit code; *msg (malloc'd) holds what it printed.
+// argv[0] is the driver's name ("ld.lld" or "lld-link"). Returns lld's exit code; *msg (malloc'd) holds what it printed.
 extern "C" int hk_lld_link(const char *const *argv, int argc, char **msg) {
     std::string out;
     llvm::raw_string_ostream os(out);
-    lld::Result r = lld::lldMain(llvm::ArrayRef<const char *>(argv, argc), os, os, {{lld::Gnu, &lld::elf::link}});
+    lld::Result r = lld::lldMain(llvm::ArrayRef<const char *>(argv, argc), os, os, {{lld::Gnu, &lld::elf::link}, {lld::WinLink, &lld::coff::link}});
     os.flush();
     *msg = (char *)malloc(out.size() + 1);
     memcpy(*msg, out.data(), out.size() + 1);
