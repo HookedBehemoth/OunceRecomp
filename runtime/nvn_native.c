@@ -366,6 +366,9 @@ NV(nvnMemoryPoolFinalize) {
     nvn_pool *o = (nvn_pool *)P(0);
     struct nvn_vmap *vm = pool_vmap(o);
     if (vm) {   /* (its GPU range is not reused) */
+        int mapped = 0;   /* (pages still mapped: what the GPU drew there goes into their memory first) */
+        for (uint64_t k = 0; k < vm->size / VPAGE && !mapped; k++) mapped = vm->page[k] != 0;
+        if (mapped) rx_nvn_vmap_changing(vm->gpu, vm->size);
         os_rwlock_lock(&vmap_lock);
         int found = 0;
         for (struct nvn_vmap **p = &vmaps; *p; p = &(*p)->next)
@@ -437,6 +440,12 @@ NV(nvnMemoryPoolMapVirtual) {
         if (p && (!p->mem || p->gpu != p->mem || size > p->size || (uint64_t)poff > p->size - size ||
                   !hos_guest_range(p->gpu + (uint64_t)poff, size)))
             die("MapVirtual request %d: physical pool", i);
+        {   /* (pages mapped now that change: what the GPU drew into textures there goes into their memory first, while
+               the old mapping holds: MK World draws its course maps' tiles in small pools and moves their pages) */
+            int mapped = 0;
+            for (uint64_t k = 0; k < size / VPAGE && !mapped; k++) mapped = vm->page[(uint64_t)voff / VPAGE + k] != 0;
+            if (mapped) rx_nvn_vmap_changing(v->gpu + (uint64_t)voff, size);
+        }
         {   /* (nvn.log_vmap=<lowest pool GPU address, hex>: the requests into pools from there, 3000 lines; how many
                in all every 2000) */
             static int log_vmap = -1;
@@ -466,7 +475,6 @@ NV(nvnMemoryPoolMapVirtual) {
         vmap_runs(vm);
         os_atomic_inc(&vpage_gen);
         os_rwlock_unlock(&vmap_lock);
-        rx_nvn_vmap_mapped(v->gpu + (uint64_t)voff, size, p ? p->gpu + (uint64_t)poff : 0);
     }
     RET(1);
 }
@@ -2925,8 +2933,13 @@ NV(nvnTextureGetSparseTileLayout) {
     const nvn_tex *t = CTX(P(0));
     int bw = 1, bh = 1;
     const int bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
-    int tw, th;
-    nvn_sparse_tile_blocks(bpb, &tw, &th);
+    int tw = 128, th = 128;   /* (in blocks: 64 KiB / bpb, as square as a power of two allows) */
+    switch (bpb) {
+    case 1: tw = 256, th = 256; break;
+    case 2: tw = 256, th = 128; break;
+    case 8: tw = 128, th = 64; break;
+    case 16: tw = 64, th = 64; break;
+    }
     tw *= bw, th *= bh;
     int levels = 0;
     for (uint32_t l = 0, w = t->d.width, h = t->d.height; l < t->d.levels; l++, w = w > 1 ? w / 2 : 1, h = h > 1 ? h / 2 : 1)

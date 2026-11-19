@@ -36,7 +36,6 @@
 #include "vk_lists.h"
 #include "vk_marks.h"
 #include "vk_pass.h"
-#include "vk_sparse.h"
 
 namespace hsd {
 std::atomic<int64_t> st_send_ns{0}, st_send_n{0};
@@ -153,35 +152,24 @@ struct Handed {
 };
 std::deque<Handed>& handed = *new std::deque<Handed>;
 
-uint64_t submitted_top = 0;   // (the newest timeline value submitted; queue_mu)
-/// One handed-over batch as one vkQueueSubmit2 (queue_mu held). The sparse binds queued before it are made first, on
-/// the bind queue, after everything submitted before; each of its chunks waits for them
+/// One handed-over batch as one vkQueueSubmit2 (queue_mu held)
 void submit_handed(const Handed& h) {
     const size_t k = h.chunks.size();
-    VkSemaphore bind_sem = VK_NULL_HANDLE;
-    uint64_t bind_value = 0;
-    const bool binds = sparse_flush(timeline, submitted_top, &bind_sem, &bind_value);
     std::vector<VkSubmitInfo2> si(k, VkSubmitInfo2{VK_STRUCTURE_TYPE_SUBMIT_INFO_2});
-    std::vector<VkSemaphoreSubmitInfo> sem(3 * k, VkSemaphoreSubmitInfo{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO});
+    std::vector<VkSemaphoreSubmitInfo> sem(2 * k, VkSemaphoreSubmitInfo{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO});
     std::vector<VkCommandBufferSubmitInfo> cb(h.cbs.size(), VkCommandBufferSubmitInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO});
     for (size_t i = 0; i < cb.size(); i++) cb[i].commandBuffer = h.cbs[i];
     for (size_t i = 0; i < k; i++) {
         const Chunk& c = h.chunks[i];
-        VkSemaphoreSubmitInfo& sig = sem[3 * i];
+        VkSemaphoreSubmitInfo& sig = sem[2 * i];
         sig.semaphore = timeline, sig.value = c.value, sig.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
         si[i].commandBufferInfoCount = (uint32_t)c.n, si[i].pCommandBufferInfos = c.n ? cb.data() + c.first : nullptr;
         si[i].signalSemaphoreInfoCount = 1, si[i].pSignalSemaphoreInfos = &sig;
-        uint32_t waits = 0;
         if (c.wait) {   // (a value given before this one: never a wait before its signal in submission order)
-            VkSemaphoreSubmitInfo& w = sem[3 * i + 1 + waits++];
+            VkSemaphoreSubmitInfo& w = sem[2 * i + 1];
             w = sig, w.value = c.wait;
+            si[i].waitSemaphoreInfoCount = 1, si[i].pWaitSemaphoreInfos = &w;
         }
-        if (binds) {
-            VkSemaphoreSubmitInfo& w = sem[3 * i + 1 + waits++];
-            w = sig, w.semaphore = bind_sem, w.value = bind_value;
-        }
-        si[i].waitSemaphoreInfoCount = waits, si[i].pWaitSemaphoreInfos = waits ? &sem[3 * i + 1] : nullptr;
-        submitted_top = std::max(submitted_top, c.value);
     }
     const auto t0 = clk::now();
     const VkResult r = vkQueueSubmit2(dev.queue, (uint32_t)k, si.data(), VK_NULL_HANDLE);

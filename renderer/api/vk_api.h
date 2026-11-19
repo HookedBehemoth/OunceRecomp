@@ -13,7 +13,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 17
+#define MKWVK_API_VERSION 16
 /* (renderer) the controls' names (runtime/nn_hid.c, runtime/media/pad_sdl.c, the pad_ and key_ lines of ounce_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position, SDL's order (the bottom face
    button first: A on an Xbox pad, cross on a DualSense) */
@@ -146,9 +146,9 @@ typedef struct MkwVkRenderer {
     void (*nvn_pool_created)(uint64_t gpu, uint64_t size);   /* a memory pool made (non-virtual): imported early */
     /* whether the GPU may use guest memory in [lo, hi) through an import (the host keeps such pages committed) */
     int (*guest_imported)(uint64_t lo, uint64_t hi);
-    /* (version 17) virtual pages [gpu, gpu + size) now map to the physical pool memory at guest address phys on (0:
-       unmapped), after nvnMemoryPoolMapVirtual changed the page table: the back end binds its sparse textures there */
-    void (*nvn_vmap_mapped)(uint64_t gpu, uint64_t size, uint64_t phys);
+    /* virtual pages [gpu, gpu + size) mapped now are about to be unmapped or remapped (the old mapping still in place):
+       what the GPU wrote into textures there goes into their memory first */
+    void (*nvn_vmap_changing)(uint64_t gpu, uint64_t size);
     /* a texture initialized (its storage: whether the CPU's reads of a range may need a texture's texels) */
     void (*nvn_texture_created)(const nvn_tex *t);
     /* the CPU set an event's value: in order with the submits (the GPU's waits on it) */

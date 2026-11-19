@@ -36,12 +36,6 @@ typedef struct {
 void nvn_tex_layout(const nvn_texdesc *d, nvn_texlayout *o);
 uint64_t nvn_tex_level_offset(const nvn_texdesc *d, unsigned level);
 int nvn_fmt_bpb(int format, int *bw, int *bh);   /* bytes per block (0: unknown format), block width / height */
-/* A sparse texture's tile (nvnTextureGetSparseTileLayout): 64 KiB of blocks of bpb bytes, as square as a power of two
-   allows, in blocks */
-static inline void nvn_sparse_tile_blocks(int bpb, int *tw, int *th) {
-    *tw = bpb == 1 || bpb == 2 ? 256 : bpb == 16 ? 64 : 128;
-    *th = bpb == 1 ? 256 : bpb == 8 || bpb == 16 ? 64 : 128;
-}
 void nvn_tex_level_tiles(const nvn_texdesc *d, unsigned level, unsigned *tileH, unsigned *tileD);
 /* Level 0 of a block-linear texture, every layer and slice, as packed rows into dst (its linear size): src holds the
    storage from its start (n bytes). Returns the bytes written; 0 for a pitch-linear, multisampled or unknown format, or
@@ -271,9 +265,9 @@ void rx_nvn_write_texels(const nvn_tex *t, unsigned level, unsigned layer0, cons
 /* the CPU is about to read memory the GPU may have written: GPU results there go to guest memory now */
 void rx_nvn_invalidate(uint64_t gpu, uint64_t size);
 void rx_nvn_pool_created(uint64_t gpu, uint64_t size);   /* (the back end may import it early) */
-/* virtual pages [gpu, gpu + size) now map to physical guest memory from phys on (0: unmapped), after the page table
-   changed (nvnMemoryPoolMapVirtual): the back end binds its sparse textures' tiles there */
-void rx_nvn_vmap_mapped(uint64_t gpu, uint64_t size, uint64_t phys);
+/* virtual pages [gpu, gpu + size) mapped now are about to be unmapped or remapped: what the GPU drew into textures
+   there goes into their memory first (the back end) */
+void rx_nvn_vmap_changing(uint64_t gpu, uint64_t size);
 /* the CPU set an event's value (nvnEventSignal): in order with the submits, for the GPU's waits on it */
 void rx_nvn_event_signal(uint64_t gpu, uint32_t value);
 

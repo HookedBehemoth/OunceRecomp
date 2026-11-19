@@ -5,8 +5,7 @@
 // in one device allocation at their storage offsets (the transient pool) and are kept as objects up to a bound.
 // Every image lives in VK_IMAGE_LAYOUT_GENERAL. An ASTC texture's image is in the texture store's format for it (BC7), loaded
 // or made by the game. A texture with no image this GPU can hold (a format with no Vulkan twin, a size the driver refuses)
-// gets the placeholder, counted and named; a buffer texture gets nothing. A sparse texture's image has no memory of its
-// own: its tiles are bound to the physical pools' memory where the game maps its pages (vk_sparse.h).
+// gets the placeholder, counted and named; a buffer texture gets nothing.
 #pragma once
 
 #include <atomic>
@@ -64,7 +63,6 @@ struct Image {
     // (the last one claimed: its texture initialized, or given out by the game's allocator) has defined content. A claim
     // by an image that is not the owner discards and clears it (init_image) and ends the others' ownership.
     bool pooled = false;
-    bool sparse = false;   // (a sparse texture's: no memory of its own, vk_sparse.h)
     uint64_t pool_off = 0, pool_size = 0;
     std::atomic<bool> owner{false};
     std::atomic<uint64_t> claimed{0};   // (the present of its last claim)

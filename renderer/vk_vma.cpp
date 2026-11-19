@@ -27,7 +27,7 @@ VmaAllocator vma = VK_NULL_HANDLE;
 // its user data, so its free needs no owner argument.
 std::atomic<int64_t> acct_bytes[MO_N][3], acct_count[MO_N][3];
 const char* const kOwnerNames[MO_N] = {"arenas", "task pools", "query reports", "constants", "tables", "uploads",
-                                       "transient pool", "sparse textures' pools", "layer 0 vram", "layer 0 imports", "images from the store",
+                                       "transient pool", "layer 0 vram", "layer 0 imports", "images from the store",
                                        "the game's other images", "other", "lists", "store scratch", "shader code"};
 std::atomic<int64_t> mapped_bytes{0};
 int heap_class(uint32_t type) {
@@ -248,11 +248,11 @@ void mem_owner_stats(char* vram, char* main_mem, char* counts, size_t cap) {
     for (uint64_t v : im.kind) walked += v;
     const int64_t unwalked = b[MO_IMAGE_STORE][0] + b[MO_IMAGE][0] + b[MO_OTHER][0] - (int64_t)walked;
     put("vram (MB): textures: store %lld, terrain %lld, glyphs %lld, texel writes %lld, copied or cleared %lld, never written %lld, "
-        "placeholder %.2f, sparse textures' pools %lld; targets: transient pool %lld allocated, in use %lld (shadow maps %lld, other depth %lld, colour %lld), "
+        "placeholder %.2f; targets: transient pool %lld allocated, in use %lld (shadow maps %lld, other depth %lld, colour %lld), "
         "outside it depth %lld, colour %lld; buffers: arenas %lld, task pools %lld, constants %lld, tables %lld, layer 0 "
         "vram %lld, others' on these heaps %lld; shots, dumps, offscreen and images beside the walk %lld; room free in VMA's blocks %lld",
         M(im.kind[ImageSplit::STORE]), M(im.kind[ImageSplit::TERRAIN]), M(im.kind[ImageSplit::GLYPH]), M(im.kind[ImageSplit::TEXELS]),
-        M(im.kind[ImageSplit::COPIED]), M(im.kind[ImageSplit::NEVER]), im.placeholder / 1048576.0, mb(b[MO_SPARSE][0]), mb(b[MO_TRANSIENT][0]),
+        M(im.kind[ImageSplit::COPIED]), M(im.kind[ImageSplit::NEVER]), im.placeholder / 1048576.0, mb(b[MO_TRANSIENT][0]),
         M(im.pool_use[0] + im.pool_use[1] + im.pool_use[2]), M(im.pool_use[0]), M(im.pool_use[1]), M(im.pool_use[2]),
         M(im.kind[ImageSplit::TARGET_DEPTH]), M(im.kind[ImageSplit::TARGET_COLOUR]), mb(b[MO_ARENA][0]), mb(b[MO_TASK][0]),
         mb(b[MO_CONST][0]), mb(b[MO_TABLES][0]), mb(b[MO_L0_VRAM][0]),

@@ -379,8 +379,13 @@ void rx_nvn_event_signal(uint64_t gpu, uint32_t value) {
     }
     if (vk && vk->nvn_event_signal) vk->nvn_event_signal(gpu, value);
 }
-void rx_nvn_vmap_mapped(uint64_t gpu, uint64_t size, uint64_t phys) {
-    if (vk && vk->nvn_vmap_mapped) vk->nvn_vmap_mapped(gpu, size, phys);
+/* (nvn_native.c: virtual pages about to be unmapped or remapped) the Vulkan back end writes what the GPU drew there into
+   their memory first */
+void rx_nvn_vmap_changing(uint64_t gpu, uint64_t size) {
+    /* (it may wait for the replay and the GPU's texels: a block for debug.crit) */
+    const int away = hos_block_begin(CRIT_BLOCK_OTHER, (const void *)14);
+    if (vk && vk->nvn_vmap_changing) vk->nvn_vmap_changing(gpu, size);
+    if (away) hos_block_end();
 }
 void rx_nvn_pool_created(uint64_t gpu, uint64_t size) {
     if (vk && vk->nvn_pool_created) vk->nvn_pool_created(gpu, size);
