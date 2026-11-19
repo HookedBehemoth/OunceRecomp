@@ -18,6 +18,8 @@ const GB: u64 = 1 << 30;
 /// its caches
 const MIN_VRAM: u64 = 8 * GB;
 const RECOMMENDED_VRAM: u64 = 10 * GB;
+/// the push data a draw writes at most (vk_pool.cpp kPushBytes: the uniform table's offset and its slots)
+const PUSH_BYTES: u32 = 144;
 
 // (the structure types: vulkan_core.h)
 const ST_APP_INFO: u32 = 0;
@@ -27,6 +29,7 @@ const ST_PROPERTIES2: u32 = 1000059001;
 const ST_DRIVER_PROPS: u32 = 1000196000;
 const ST_V12_FEATURES: u32 = 51;
 const ST_V13_FEATURES: u32 = 53;
+const ST_V12_PROPS: u32 = 52;
 const ST_SHADER_OBJECT: u32 = 1000482000;
 const ST_ROBUSTNESS2: u32 = 1000286000;
 const ST_EDS3: u32 = 1000455000;
@@ -230,12 +233,14 @@ unsafe fn device_checks(vk: &mut Vk, out: &mut Vec<Item>) {
         // (the device is not made without any of these)
         for (key, ext) in [
             ("swapchain", "VK_KHR_swapchain"),
-            ("external_memory_fd", "VK_KHR_external_memory_fd"),
-            ("dma_buf", "VK_EXT_external_memory_dma_buf"),
             ("shader_object", "VK_EXT_shader_object"),
             ("extended_dynamic_state3", "VK_EXT_extended_dynamic_state3"),
         ] {
             out.push(item(key, has(ext), if has(ext) { ext.to_string() } else { format!("{ext} missing") }));
+        }
+        // (the game's memory is handed over as dma-bufs: without these the back end starts with layer 0 off)
+        for (key, ext) in [("external_memory_fd", "VK_KHR_external_memory_fd"), ("dma_buf", "VK_EXT_external_memory_dma_buf")] {
+            out.push(optional(key, has(ext), if has(ext) { ext.to_string() } else { format!("{ext} missing: the game's memory is not mapped on the GPU (layer 0 off)") }));
         }
         // (null descriptors: VK_KHR_robustness2, or the same structure as VK_EXT_robustness2)
         let robust2_ext = if has("VK_KHR_robustness2") { Some("VK_KHR_robustness2") } else if has("VK_EXT_robustness2") { Some("VK_EXT_robustness2") } else { None };
@@ -282,6 +287,31 @@ unsafe fn device_checks(vk: &mut Vk, out: &mut Vec<Item>) {
             missing.push("shaderInt64");
         }
         out.push(item("descriptor_indexing", missing.is_empty(), if missing.is_empty() { "the six the pools' set needs, shaderInt64".into() } else { format!("missing {}", missing.join(" ")) }));
+        // (the pools' set's sizes, vk_pool.cpp: 7 view types x 65,536 sampled and storage images, 2 x 4,096 samplers,
+        // updated after bind; VkPhysicalDeviceVulkan12Properties' limits at their offsets)
+        let mut p12 = vec![0u8; 800];
+        p12[0..4].copy_from_slice(&ST_V12_PROPS.to_le_bytes());
+        let mut p2 = vec![0u8; 16 + 1024];
+        p2[0..4].copy_from_slice(&ST_PROPERTIES2.to_le_bytes());
+        p2[8..16].copy_from_slice(&(p12.as_mut_ptr() as usize).to_le_bytes());
+        props2(d, p2.as_mut_ptr());
+        let at = |o: usize| u32::from_le_bytes(p12[o..o + 4].try_into().unwrap());
+        let (images, samplers) = (7 * 65536u32, 2 * 4096u32);
+        let limits = [
+            (684, images, "set sampled images"),
+            (688, images, "set storage images"),
+            (664, samplers, "set samplers"),
+            (648, images, "stage sampled images"),
+            (652, images, "stage storage images"),
+            (636, samplers, "stage samplers"),
+            (660, 2 * images + 2 * samplers, "stage resources"),
+            (604, 2 * images + 2 * samplers, "descriptors in all pools"),
+        ];
+        let low: Vec<String> = limits.iter().filter(|l| at(l.0) < l.1).map(|l| format!("{} {} < {}", l.2, at(l.0), l.1)).collect();
+        out.push(item("descriptor_limits", low.is_empty(), if low.is_empty() { "update-after-bind: 458,752 images and 8,192 samplers".into() } else { format!("update-after-bind limits too low: {}", low.join(", ")) }));
+        // (VkPhysicalDeviceProperties' limits.maxPushConstantsSize; a draw pushes up to 144 bytes)
+        let push = u32::from_le_bytes(p[328..332].try_into().unwrap());
+        out.push(item("push_constants", push >= PUSH_BYTES, format!("{push} bytes{}", if push >= PUSH_BYTES { "" } else { ", under the 144 a draw pushes" })));
         if has("VK_EXT_extended_dynamic_state3") {
             // (vk_pool.cpp's eds3_ok: polygon mode, depth clamp, blend enable, equation, write mask, alpha to
             // coverage, samples, sample mask, alpha to one, logic op)
@@ -302,12 +332,16 @@ unsafe fn device_checks(vk: &mut Vk, out: &mut Vec<Item>) {
         let flags: Vec<u32> = qb.chunks_exact(24).map(|q| u32::from_le_bytes(q[..4].try_into().unwrap())).collect();
         out.push(item("graphics_queue", flags.iter().any(|f| f & 3 == 3), "a graphics and compute family"));
         let sparse = flags.iter().any(|f| f & 8 != 0 && f & 3 == 0);
-        out.push(item("sparse_queue", sparse, if sparse { "a sparse-binding family" } else { "no sparse-binding family without graphics and compute" }));
+        let any_sparse = flags.iter().any(|f| f & 8 != 0);
+        out.push(optional("sparse_queue", sparse, if sparse { "a sparse-binding family" } else if any_sparse { "no sparse-binding family of its own: binds on a graphics or compute queue" } else { "no sparse-binding family: the game's memory is not mapped on the GPU (layer 0 off)" }));
         if let Some(f) = destroy {
             f(vk.instance, null());
         }
     }
 }
+
+/// what a player does when /dev/udmabuf cannot be opened
+pub const UDMABUF_FIX: &str = "To fix it: load the module (sudo modprobe udmabuf; to keep it, add udmabuf to /etc/modules-load.d/udmabuf.conf) and let your user open it (the group that owns /dev/udmabuf, often kvm: sudo usermod -aG kvm $USER, then log in again)";
 
 /// /dev/udmabuf, through which the back end imports the game's memory as dma-bufs
 fn udmabuf() -> Item {
@@ -315,7 +349,7 @@ fn udmabuf() -> Item {
     let limit = std::fs::read_to_string("/sys/module/udmabuf/parameters/size_limit_mb").ok().and_then(|s| s.trim().parse::<u64>().ok());
     match (dev, limit) {
         (Ok(_), Some(mb)) => item("udmabuf", true, format!("/dev/udmabuf, {mb} MB per buffer")),
-        (Err(e), _) => optional("udmabuf", false, format!("/dev/udmabuf cannot be opened: {e}; the game's memory is not mapped on the GPU (layer 0 off)")),
+        (Err(e), _) => optional("udmabuf", false, format!("/dev/udmabuf cannot be opened ({e}): the game's memory is not mapped on the GPU (layer 0 off), which costs speed. {}", UDMABUF_FIX)),
         (Ok(_), None) => optional("udmabuf", false, "udmabuf's size_limit_mb cannot be read; the game's memory is not mapped on the GPU (layer 0 off)"),
     }
 }
