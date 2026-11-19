@@ -16,6 +16,7 @@ subdir('shaders')
 
 vk_sources = files(
   'vk_assets.cpp',
+  'vk_barrier.cpp',
   'vk_check.cpp',
   'vk_cmd.cpp',
   'vk_draw.cpp',

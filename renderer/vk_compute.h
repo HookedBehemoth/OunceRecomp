@@ -20,7 +20,7 @@ namespace hsd {
 
 /// Any op of a list that records (its compute state)
 void compute_state(List* l, uint32_t op, const void* data, uint32_t size);
-/// The list's command buffer (vk_pass.cpp's: a waiting barrier recorded first)
+/// The list's command buffer, what waits recorded first (vk_pass.cpp)
 using CmdOf = VkCommandBuffer (*)(List*);
 /// DISPATCH / DISPATCH_INDIRECT in a list that records, its rendering ended
 void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, CmdOf cmd);

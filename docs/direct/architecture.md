@@ -51,7 +51,13 @@ The packet expander is the only interpreter, and it runs on the calling thread a
 `SetRenderTargets` notes the targets. The back end begins dynamic rendering lazily, at the first draw, job call or call
 of a list that draws, so the clears in between become load operations. A barrier, a dispatch, a copy or a texture
 clear ends the rendering; the next draw begins it again and loads. The next `SetRenderTargets` or the list's end ends
-the pass. A barrier is the game's NVN barrier as one pipeline barrier. Images stay in `VK_IMAGE_LAYOUT_GENERAL`.
+the pass. Images stay in `VK_IMAGE_LAYOUT_GENERAL`.
+
+A game barrier becomes one pipeline barrier with the narrowest stages and accesses its NVN bits ask for. Some work
+needs a wait that the console makes without a barrier: after a dispatch, the next work that is not a dispatch waits for
+it, and work after a copy or a texture clear waits for that. The back end adds these waits itself. Dispatches in a row
+wait for each other only where the game puts a barrier. A list records the waits that are due as one barrier, before
+its next command.
 
 RADV has no dynamic-state inheritance and no inherited conditional rendering. A secondary command buffer therefore sets
 all its state, and a render condition is begun and ended inside it.

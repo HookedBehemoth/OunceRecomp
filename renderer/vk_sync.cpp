@@ -26,6 +26,8 @@
 
 #include "os.h"
 
+#include "vk_barrier.h"
+#include "vk_check.h"
 #include "vk_cmd.h"
 #include "vk_compute.h"
 #include "vk_draw.h"
@@ -317,6 +319,28 @@ void gputime_poll() {
         }
     }
 }
+/// One command buffer holding a full barrier, recorded once: before a chunk that follows an event wait
+VkCommandBuffer wait_barrier_buffer() {
+    static VkCommandBuffer cb = [] {
+        VkCommandPoolCreateInfo pi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+        pi.queueFamilyIndex = dev.queue_family;
+        VkCommandPool pool;
+        vkCreateCommandPool(dev.device, &pi, nullptr, &pool);
+        VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        ai.commandPool = pool, ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, ai.commandBufferCount = 1;
+        VkCommandBuffer c = VK_NULL_HANDLE;
+        vkAllocateCommandBuffers(dev.device, &ai, &c);
+        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        bi.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+        vkBeginCommandBuffer(c, &bi);
+        record_dep(c, Dep{VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+                          VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT, 0});
+        vkEndCommandBuffer(c);
+        object_made(2, "the event wait's barrier command buffer");
+        return c;
+    }();
+    return cb;
+}
 /// A chunk into the batch: with the chunk before it in one submit info (its value theirs), unless it waits for a value (a
 /// fence, an upload); after an event wait a full barrier first (its first scope: all work before it on the queue)
 uint64_t batch_add(uint64_t wait_value, bool barrier, const VkCommandBuffer* cbs, uint32_t n) {
@@ -327,7 +351,7 @@ uint64_t batch_add(uint64_t wait_value, bool barrier, const VkCommandBuffer* cbs
         sent.store(v, std::memory_order_release);
     }
     Chunk& c = batch.chunks.back();
-    if (barrier) batch.cbs.push_back(pass_barrier_buffer()), c.n++;
+    if (barrier) batch.cbs.push_back(wait_barrier_buffer()), c.n++;
     batch.cbs.insert(batch.cbs.end(), cbs, cbs + n), c.n += n;
     return c.value;
 }

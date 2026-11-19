@@ -1109,9 +1109,7 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
     }
     if (indirect) pDispatchIndirect(cb, abuf, aoff);
     else pDispatch(cb, grid[0], grid[1], grid[2]);
-    // (the game puts its barriers before its dispatches only: a draw or copy that follows the last dispatch of a chain has none,
-    // because the console's switch from compute to graphics waits by itself. So whatever the list records next waits for these writes)
-    l->pending_barrier = true;
+    l->after_dispatch = true;
     if (pstats_on()) pstat_after(cb, ps);
     if (passtime_on()) {
         PassLabel pl;
@@ -1154,15 +1152,6 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
 
 void compute_buffer_op(List* l, uint32_t op, const void* data, uint32_t size, CmdOf cmd) {
     load_functions();
-    auto barrier = [](VkCommandBuffer cb) {   // (NVN orders them with the 3D engine's work: made visible to what follows)
-        VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
-        b.srcStageMask = b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-        b.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
-        b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
-        VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-        d.memoryBarrierCount = 1, d.pMemoryBarriers = &b;
-        vkCmdPipelineBarrier2(cb, &d);
-    };
     if (op == NOP_COPY_B2B) {
         nvn_p_copy_bb p{};
         std::memcpy(&p, data, std::min<size_t>(sizeof p, size));
@@ -1185,7 +1174,7 @@ void compute_buffer_op(List* l, uint32_t op, const void* data, uint32_t size, Cm
         VkCommandBuffer cb = cmd(l);
         const VkBufferCopy r{so, dof, p.size};
         pCopyBuffer(cb, sb, db, 1, &r);
-        barrier(cb);
+        l->wait |= kAfterTransfer;
         return bump(me().buf_ops[0]);
     }
     nvn_p_clear_buf p{};
@@ -1200,7 +1189,7 @@ void compute_buffer_op(List* l, uint32_t op, const void* data, uint32_t size, Cm
     }
     VkCommandBuffer cb = cmd(l);
     pFillBuffer(cb, db, dof, p.size, p.value);
-    barrier(cb);
+    l->wait |= kAfterTransfer;
     bump(me().buf_ops[2]);
 }
 

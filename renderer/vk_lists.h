@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "vk_barrier.h"
 #include "vk_list_api.h"
 #include "vk_internal.h"
 #include "rx_nvn.h"
@@ -107,7 +108,8 @@ struct List {
     uint32_t sec_draws = 0;   // (a secondary's draw ops so far: its first is timed apart)
     uint64_t last_prog = 0;   // (M6b: its last drawn program, a job's: its caller's pass takes it at the call)
     uint32_t n_drawn = 0, n_mesh = 0, n_step_a = 0;   // (its draws drawn, skipped as mesh draws, skipped by step A: per pass in the log)
-    bool pending_barrier = false;   // (M2b: a barrier waiting for the list's next command: recorded with it)
+    Dep wait;                       // (barriers and transfers' dependencies waiting for the list's next command)
+    bool after_dispatch = false;    // (kAfterDispatch waiting for the list's next command that is not a dispatch)
     ListComp* cctx = nullptr;   // (M4a: made at its first compute state op)
     ListQuery* qctx = nullptr;  // (M5: made at its first counter or condition op)
     // (M4c: a job's task step, two plain secondaries of its slot holding the compute work of its task+mesh draws: the

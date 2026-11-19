@@ -2,7 +2,8 @@
 // rendering is begun at the first draw, job call or call of a list that draws (the load-time draw lists) after it, so the clears between become its load ops; a clear after
 // that, or one with a scissor short of the whole area, is vkCmdClearAttachments. A barrier, a dispatch, a copy or a
 // texture clear ends the rendering (the targets stay set: the next draw begins it again, loading); the next
-// SetRenderTargets or the list's end ends the pass. A barrier is the game's NVN barrier as one pipeline barrier.
+// SetRenderTargets or the list's end ends the pass. A barrier, and the waits the console makes with none (vk_barrier.h),
+// wait for the list's next command and are recorded before it, merged into one pipeline barrier.
 // Everything is in VK_IMAGE_LAYOUT_GENERAL. Draws, dispatches, mesh draws and conditions are counted and skipped.
 //
 // Lists of the layer, gate, compute and queue-head kinds record into command buffers of their thread's slot
@@ -20,6 +21,7 @@
 
 #include "vk_counters.h"
 
+#include "vk_barrier.h"
 #include "vk_check.h"
 #include "vk_cmd.h"
 #include "vk_compute.h"
@@ -37,14 +39,14 @@ namespace {
 
 enum {
     S_SET_RT, S_EMPTY_RT, S_NO_IMAGE, S_BEGUN, S_LOAD_CLEARS, S_CLEARS_IN, S_MASKED, S_CLEAR_NO_TARGET, S_CLEAR_DISABLED,
-    S_DRAWS, S_DISPATCHES, S_BARRIERS, S_COPIES, S_COPY_SKIPPED, S_CLEAR_TEX, S_CLEAR_TEX_SKIPPED, S_BUF_OPS, S_UNRECORDED,
+    S_DRAWS, S_DISPATCHES, S_BARRIERS, S_BARRIERS_NONE, S_DEPS, S_DEPS_DISPATCH, S_COPIES, S_COPY_SKIPPED, S_CLEAR_TEX, S_CLEAR_TEX_SKIPPED, S_BUF_OPS, S_UNRECORDED,
     S_CUTS, S_OTHER_THREAD, S_JOB_OUTSIDE, S_EVENT_CUTS, S_TASK_JOB_STEPS, S_TASK_JOB_SPLITS, S_TASK_INLINE_SPLITS, S_TASK_JOB_AGAIN,
     S_COUNT
 };
 const char* const kNames[S_COUNT] = {
     "SetRenderTargets", "with no target (drawn with no attachments)", "targets with no image", "renderings begun", "clears as load ops",
     "clears in a rendering", "masked clears skipped", "clears with no target", "clears not rendered", "draws",
-    "dispatches", "barriers", "copies", "copies skipped", "texture clears", "texture clears skipped",
+    "dispatches", "barriers", "barriers that order nothing", "pipeline barriers recorded", "of them after a dispatch", "copies", "copies skipped", "texture clears", "texture clears skipped",
     "buffer ops in lists that record nothing", "ops of lists that record nothing (job, load, packet)", "calls that cut a rendering",
     "records on another thread", "ops a job's rendering cannot hold (skipped)", "command buffers cut at an event op",
     "jobs' task steps executed", "of them in a begun rendering (ended and begun again)", "renderings ended for an inline task step",
@@ -176,13 +178,26 @@ double ticks_per_us() {
 
 bool records(const List* l) { return l->rec; }
 
-void record_barrier(VkCommandBuffer cb);
-VkCommandBuffer barrier_buffer();
 VkCommandBuffer cmd_raw(List* l);
-/// The list's command buffer, a waiting barrier recorded first
+/// The list's waiting dependencies recorded into cb as one barrier; a dispatch leaves the one a dispatch made waiting
+void flush_deps(List* l, VkCommandBuffer cb, bool dispatch) {
+    Dep d = l->wait;
+    if (l->after_dispatch && !dispatch) d |= kAfterDispatch, l->after_dispatch = false, count(S_DEPS_DISPATCH);
+    l->wait = {};
+    if (d.empty()) return;
+    record_dep(cb, d);
+    count(S_DEPS);
+}
+/// The list's command buffer, its waiting dependencies recorded first
 VkCommandBuffer cmd(List* l) {
     VkCommandBuffer cb = cmd_raw(l);
-    if (l->pending_barrier) l->pending_barrier = false, record_barrier(cb);
+    flush_deps(l, cb, false);
+    return cb;
+}
+/// The same for a dispatch
+VkCommandBuffer cmd_dispatch(List* l) {
+    VkCommandBuffer cb = cmd_raw(l);
+    flush_deps(l, cb, true);
     return cb;
 }
 VkCommandBuffer cmd_raw(List* l) {
@@ -387,50 +402,15 @@ void clear(List* l, uint32_t bit_mask, VkImageAspectFlags aspect, uint32_t colou
 }
 
 void barrier(List* l, int32_t bits) {
-    suspend(l);
     for (int b = 0; b < 16; b++)
         if (bits >> b & 1) st_bits.add(b);
     count(S_BARRIERS);
-    // (no command buffer yet: the barrier waits for the list's next command, or its end; a list of nothing but barriers then
-    // makes none, M2b)
-    if (!l->cur) return void(l->pending_barrier = true);
-    l->pending_barrier = false;   // (this one covers what a dispatch left waiting)
-    record_barrier(l->cur);
-}
-
-/// Every NVN barrier as one full memory barrier: the order bits wait for earlier work, the invalidate bits make its writes
-/// visible; Vulkan has no invalidate without a wait, and images are all GENERAL, so no image barriers
-void record_barrier(VkCommandBuffer cb) {
-    VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
-    b.srcStageMask = b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    b.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
-    b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
-    VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    d.memoryBarrierCount = 1;
-    d.pMemoryBarriers = &b;
-    vkCmdPipelineBarrier2(cb, &d);
-}
-
-/// One command buffer holding a full barrier, recorded once (a list's last barrier with no command after it in the list)
-VkCommandBuffer barrier_buffer() {
-    static VkCommandBuffer cb = [] {
-        VkCommandPoolCreateInfo pi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-        pi.queueFamilyIndex = dev.queue_family;
-        VkCommandPool pool;
-        vkCreateCommandPool(dev.device, &pi, nullptr, &pool);
-        VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-        ai.commandPool = pool, ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, ai.commandBufferCount = 1;
-        VkCommandBuffer c = VK_NULL_HANDLE;
-        vkAllocateCommandBuffers(dev.device, &ai, &c);
-        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-        bi.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
-        vkBeginCommandBuffer(c, &bi);
-        record_barrier(c);
-        vkEndCommandBuffer(c);
-        object_made(2, "the barrier command buffer");
-        return c;
-    }();
-    return cb;
+    Dep d = nvn_barrier_dep(bits);
+    if (d.empty()) return count(S_BARRIERS_NONE);
+    suspend(l);
+    // (one that waits for compute work takes the dispatch's wait along; one that does not leaves it for the next non-dispatch)
+    if (l->after_dispatch && (d.src & kAfterDispatch.src)) d |= kAfterDispatch, l->after_dispatch = false, count(S_DEPS_DISPATCH);
+    l->wait |= d;
 }
 
 void copy_bt(List* l, const nvn_p_copy_bt& p, bool to_image) {
@@ -474,6 +454,7 @@ void copy_bt(List* l, const nvn_p_copy_bt& p, bool to_image) {
     } else {
         vkCmdCopyImageToBuffer(cmd(l), s.im->image, VK_IMAGE_LAYOUT_GENERAL, buf, 1, &c);
     }
+    l->wait |= kAfterTransfer;
     if (passtime_on()) work_done(l, PT_COPY, s.w, s.h);
     count(S_COPIES);
 }
@@ -535,9 +516,10 @@ void copy_tt(List* l, const nvn_p_copy_tt& p) {
         return copy_skipped("sizes or block shapes differ, a compressed side", p, s, d);
     }
     d.im->written.fetch_or(W_COPY, std::memory_order_relaxed);
+    l->wait |= kAfterTransfer;
     if (passtime_on()) work_done(l, PT_COPY, d.w, d.h);
     count(S_COPIES);
-    static std::atomic<int> told{0};   // (named: the game's barriers around them are what synchronises them)
+    static std::atomic<int> told{0};   // (named: late copies are rare)
     if (present_count() > 1200 && told++ < 8)
         logf("direct: texture copy in list lr %#llx after its SetRenderTargets %llu (the ops before it %u, %u): #%u %#llx %ux%u vk %d "
              "level %u -> #%u %#llx vk %d level %u", (unsigned long long)l->info.lr, (unsigned long long)l->pass.set_rt_at, l->last_op2, l->last_op,
@@ -557,9 +539,7 @@ void clear_tex(List* l, const nvn_p_clear_tex& p) {
     std::memcpy(&c, p.c.u, 16);
     const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, s.level, 1, s.layer, s.layers};
     vkCmdClearColorImage(cmd(l), s.im->image, VK_IMAGE_LAYOUT_GENERAL, &c, 1, &range);
-    // (NVN's texture clear is in the 3D engine's order, Vulkan's a transfer: the clear is made visible to what follows, M2b's
-    // validation run found renderings loading it right after)
-    record_barrier(l->cur);
+    l->wait |= kAfterTransfer;
     if (passtime_on()) work_done(l, PT_CLEAR, s.w, s.h);
     s.im->written.fetch_or(W_CLEAR, std::memory_order_relaxed);
     count(S_CLEAR_TEX);
@@ -636,7 +616,7 @@ void pass_emit(List* l, uint32_t op, const void* data, uint32_t size) {
     case NOP_DISPATCH: case NOP_DISPATCH_INDIRECT:   // (M4a: outside the rendering; the targets stay noted)
         count(S_DISPATCHES);
         if (l->secondary) return count(S_JOB_OUTSIDE);
-        if (records(l)) suspend(l), compute_dispatch(l, op, data, size, &cmd);
+        if (records(l)) suspend(l), compute_dispatch(l, op, data, size, &cmd_dispatch);
         return;
     case NOP_CLEAR_BUF: case NOP_COPY_B2B:   // (M4a: the same)
         if (l->secondary) return count(S_JOB_OUTSIDE);
@@ -796,17 +776,11 @@ void pass_call(List* l, const List* callee) {
     if (!callee->has_cmds) return;
     if (l->pass.begun) count(S_CUTS);
     suspend(l);
-    if (l->pending_barrier) {   // (a barrier before the call: before the callee's commands)
-        l->pending_barrier = false;
-        if (l->cur) record_barrier(l->cur);
-        else l->segs.push_back({barrier_buffer(), nullptr});
-    }
+    if (!l->wait.empty() || l->after_dispatch) cmd(l);   // (what waits: before the callee's commands)
     if (l->cur) vkEndCommandBuffer(l->cur), l->cur = VK_NULL_HANDLE;
     l->segs.push_back({VK_NULL_HANDLE, callee});
     l->has_cmds = true;
 }
-
-VkCommandBuffer pass_barrier_buffer() { return barrier_buffer(); }
 
 void pass_cut(List* l) {
     if (!records(l)) return;
@@ -816,7 +790,7 @@ void pass_cut(List* l) {
         return count(S_JOB_OUTSIDE);
     }
     suspend(l);
-    if (l->cur) vkEndCommandBuffer(l->cur), l->cur = VK_NULL_HANDLE, count(S_EVENT_CUTS);   // (a waiting barrier goes with the next command)
+    if (l->cur) vkEndCommandBuffer(l->cur), l->cur = VK_NULL_HANDLE, count(S_EVENT_CUTS);   // (what waits goes with the next command)
 }
 
 VkCommandBuffer pass_outside(List* l) {
@@ -838,11 +812,7 @@ void pass_list_end(List* l) {
         return;
     }
     if (records(l)) end_pass(l), query_flush(l, &cmd);
-    if (l->pending_barrier) {   // (its last barrier: in its buffer, or the shared one between its segments)
-        l->pending_barrier = false;
-        if (l->cur) record_barrier(l->cur);
-        else l->segs.push_back({barrier_buffer(), nullptr}), l->has_cmds = true;
-    }
+    if (!l->wait.empty() || l->after_dispatch) cmd(l);   // (what waits: before the work of the lists after it)
     if (l->cur) vkEndCommandBuffer(l->cur), l->cur = VK_NULL_HANDLE;
 }
 
