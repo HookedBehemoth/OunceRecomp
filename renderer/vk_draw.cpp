@@ -89,7 +89,12 @@ bool arena_alloc(CmdSlot* slot, uint32_t bytes, uint8_t*& map, VkDeviceAddress& 
 uint64_t* window_table = nullptr;
 VkDeviceAddress window_table_address = 0, null_window = 0, zero_address = 0;
 VkBuffer zero_buffer = VK_NULL_HANDLE;
-constexpr uint32_t kWindows = 512, kTableBytes = 8 * 520 + 128;
+// (the table's shape is the translator's, bda_emit.h: an entry per 64 KB granule of the guest's 512 GB window, each the
+// distance from its guest addresses to their device addresses; the null window's entry; the split granules' page entries;
+// the check words. Layer 0's windows fill 32768 entries each, its regions (Windows) their granules and pages, vk_pools.cpp)
+constexpr uint32_t kTableShift = 16, kEntries = 1u << (39 - kTableShift), kSplitFirst = kEntries + 8, kSplits = 1u << 16;
+constexpr uint32_t kTableBytes = 8 * (kSplitFirst + 16 * kSplits) + 128;
+constexpr uint32_t kWindows = 512, kPerWindow = 1u << (31 - kTableShift);
 
 // ---- skips, by reason ----
 enum Reason {
@@ -1462,9 +1467,15 @@ void draw_list_submitted(const List* l) {
     }
 }
 
-void draw_window_made(uint32_t k, uint64_t a) {
-    if (window_table && k < kWindows) __atomic_store_n(&window_table[k], a, __ATOMIC_RELEASE);
+void draw_window_made(uint32_t k, uint64_t a) {   // (window k holds guest [2k GB, 2k GB + 4 GB) from device address a)
+    if (!window_table || k >= kWindows) return;
+    const uint64_t distance = a - ((uint64_t)k << 31);
+    for (uint32_t i = 0; i < kPerWindow && k * kPerWindow + i < kEntries; i++) __atomic_store_n(&window_table[k * kPerWindow + i], distance, __ATOMIC_RELEASE);
 }
+void draw_table_set(uint32_t index, uint64_t value) {
+    if (window_table && index < kSplitFirst + 16 * kSplits) __atomic_store_n(&window_table[index], value, __ATOMIC_RELEASE);
+}
+uint64_t draw_table_null(uint64_t guest) { return null_window - (guest >> kTableShift << kTableShift); }
 
 /// (vk_pool.cpp draw_device_created) the window table: an entry a layer-0 window, the null window past them; the zero buffer
 double seconds_since_device() { return (host->now_ns() - t_device) / 1e9; }
@@ -1489,7 +1500,8 @@ void draw_window_table_init() {
     }
     std::memset(map, 0, kTableBytes);
     uint64_t* t = (uint64_t*)map;
-    for (uint32_t k = 0; k <= kWindows; k++) t[k] = null_window;
+    for (uint32_t k = 0; k < kEntries; k++) t[k] = null_window - ((uint64_t)k << kTableShift);   // (a distance: g + it is in the null window)
+    t[kEntries] = null_window;
     window_table = t;
     {   // (attributes no stream supplies, uniform buffers not bound: 64 KB of zeros)
         VkDeviceMemory zm;
