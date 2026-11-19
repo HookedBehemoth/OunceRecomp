@@ -124,6 +124,9 @@ void shader_cache_index();
 /// (the start, vk_precompile.cpp) the shader pack's programs made again on the background workers when the caches are
 /// not the ones its last complete precompile filled
 void shader_warm();
+/// (vk_precompile.cpp, any thread) a code the game sets, the first time: an error and a strict event when the shader
+/// pack leaves it out (its archive is unreachable with the game's patches)
+void pack_check_set(uint64_t key, const char* what);
 /// The shader objects and variants alive, in counts (none is ever destroyed)
 void shader_held_stats(char* out, size_t cap);
 

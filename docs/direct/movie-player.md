@@ -39,4 +39,6 @@ With an NDVE resource, the game builds a renderer that runs NDVE, an enhancement
 Without one, it builds a plain renderer that draws the two planes, converting BT.709 video range to RGB in the movie
 layer.
 
-`games/oot/patches/movie.c` passes no NDVE resource, so every movie takes the plain path and shows the picture as decoded.
+`games/oot/patches/movie.c` passes no NDVE resource, so every movie takes the plain path and shows the picture as decoded. The
+network is built only from that resource, so its programs are left out of the shader pack
+([Shaders](../builder-plan.md#shaders)).

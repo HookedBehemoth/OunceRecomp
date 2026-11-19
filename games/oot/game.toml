@@ -37,6 +37,9 @@ main_sha256 = "2591fb99008d0814f8056c3f36b36790048ed857ff0ae2bb3a4c1e37b960a4de"
 [assets]
 zstd_dictionaries = "Pack/ZsDic.pack.zs"
 texture_skip_dirs = ["Sound", "Voice", "TerrainArc"]
+# the kinds of shader archive the patches make unreachable, left out of the shader pack: NDVE, the movies' enhancement
+# network (patches/movie.c plays every movie without it; its 22 compute programs took RADV minutes in the precompile)
+shaders_left_out = ["NDVE"]
 
 # zstd_decompress_sequences' local continuations: `adr x7, <label>` ... `br x7` inside the function, pc: word; the
 # code pointer audit accepts them, ounce/lift/src/plan.rs

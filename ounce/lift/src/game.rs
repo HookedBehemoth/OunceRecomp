@@ -26,6 +26,9 @@ pub struct Assets {
     /// top-level romfs folders the texture store does not look into (they hold no BNTX)
     #[serde(default)]
     pub texture_skip_dirs: Vec<String>,
+    /// the kinds of shader archive (their magic) the game's patches make unreachable: the shader pack leaves them out
+    #[serde(default)]
+    pub shaders_left_out: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]

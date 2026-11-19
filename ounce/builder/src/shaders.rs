@@ -19,8 +19,18 @@ pub fn dictionaries(romfs: &Path, g: &ounce_lift::game::Game) -> std::path::Path
     romfs.join(g.assets.zstd_dictionaries.as_deref().unwrap_or("-"))
 }
 
-/// Makes `out` from the romfs; `@@shaders pack <done> <of>` lines with --progress
-pub fn pack(romfs: &Path, dictionaries: &Path, scope: ounce_shaders::Scope, out: &Path) -> Result<(), String> {
+/// The kinds of archive the game's patches make unreachable (game.toml's `[assets].shaders_left_out`)
+pub fn left_out(g: &ounce_lift::game::Game) -> Result<Vec<ounce_shaders::Archive>, String> {
+    g.assets
+        .shaders_left_out
+        .iter()
+        .map(|m| ounce_shaders::Archive::from_magic(m).ok_or_else(|| format!("game {}: shaders_left_out: {m:?} is no kind of shader archive", g.name)))
+        .collect()
+}
+
+/// Makes `out` from the romfs, and `<out>.origins` (each code's archive and file); `@@shaders pack <done> <of>` lines
+/// with --progress
+pub fn pack(romfs: &Path, g: &ounce_lift::game::Game, scope: ounce_shaders::Scope, out: &Path) -> Result<(), String> {
     let t = Instant::now();
     let last = std::sync::Mutex::new(Instant::now());
     let tick = |done: usize, of: usize| {
@@ -33,8 +43,11 @@ pub fn pack(romfs: &Path, dictionaries: &Path, scope: ounce_shaders::Scope, out:
             println!("@@shaders pack {done} {of}");
         }
     };
-    let (p, st) = ounce_shaders::make(romfs, dictionaries, scope, &tick)?;
+    let left_out = left_out(g)?;
+    let (p, st) = ounce_shaders::make(romfs, &dictionaries(romfs, g), scope, &left_out, &tick)?;
     p.write(out)?;
+    let origins = std::path::PathBuf::from(format!("{}.origins", out.display()));
+    std::fs::write(&origins, p.origins_text()).map_err(|e| format!("{}: {e}", origins.display()))?;
     println!(
         "shaders: {} programs, {} stages, {} MB in {}: {} materials ({} resolved) reach {} of {} bfsha programs ({} shading models); {} programs of the other archives; {:.1} s",
         p.programs.len(),
@@ -49,6 +62,12 @@ pub fn pack(romfs: &Path, dictionaries: &Path, scope: ounce_shaders::Scope, out:
         st.other_programs,
         t.elapsed().as_secs_f64()
     );
+    let by: Vec<String> = st.by_archive.iter().map(|(a, n)| format!("{} {n}", a.magic())).collect();
+    println!("shaders: programs by archive: {}", by.join(", "));
+    if !left_out.is_empty() {
+        let names: Vec<&str> = left_out.iter().map(|a| a.magic()).collect();
+        println!("shaders: left out ({}, unreachable with the game's patches): {} programs, {} codes", names.join(", "), st.left_out_programs, p.left_out.len());
+    }
     for u in st.unread.iter().take(10) {
         println!("shaders: not read: {u}");
     }
@@ -95,11 +114,11 @@ pub fn precompile(folder: &Path, exe: &str) -> Result<(), String> {
 /// <why>`: the game makes the programs while it plays, as after a driver update.
 pub fn step(romfs: &Path, g: &ounce_lift::game::Game, folder: &Path) -> Result<(), String> {
     let (pack_at, key_at) = (folder.join(PACK), folder.join(format!("{PACK}.key")));
-    let key = format!("{:016x}\n", ounce_shaders::inputs_key(romfs, ounce_shaders::Scope::Reached));
+    let key = format!("{:016x}\n", ounce_shaders::inputs_key(romfs, ounce_shaders::Scope::Reached, &left_out(g)?));
     if pack_at.is_file() && std::fs::read_to_string(&key_at).ok().as_deref() == Some(key.as_str()) {
         println!("shaders: the pack in {} is current", pack_at.display());
     } else {
-        pack(romfs, &dictionaries(romfs, g), ounce_shaders::Scope::Reached, &pack_at)?;
+        pack(romfs, g, ounce_shaders::Scope::Reached, &pack_at)?;
         std::fs::write(&key_at, key).map_err(|e| format!("{}: {e}", key_at.display()))?;
     }
     if let Err(why) = crate::probe::device_ready() {
@@ -141,5 +160,5 @@ pub fn command(args: &[String]) {
     let g = game(game_dir);
     let romfs = Path::new(&romfs);
     let scope = if all { ounce_shaders::Scope::All } else { ounce_shaders::Scope::Reached };
-    pack(romfs, &dictionaries(romfs, &g), scope, Path::new(&out)).unwrap_or_else(|e| fail(e));
+    pack(romfs, &g, scope, Path::new(&out)).unwrap_or_else(|e| fail(e));
 }

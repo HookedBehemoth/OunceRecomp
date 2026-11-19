@@ -765,6 +765,7 @@ void scan_slot(Slot* s) {
         }
         s->fam = it->second, fresh = made;
     }
+    if (fresh) pack_check_set(key, "compute program");
     Family* f = s->fam;
     if (!fresh) {   // (the code's variant is made by the slot that saw it first: this one is ready when it is queued)
         std::lock_guard lk(f->mu);

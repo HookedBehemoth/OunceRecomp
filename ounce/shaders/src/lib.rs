@@ -6,12 +6,14 @@
 //! (gsys's own static options taken from the material's render infos where gsys sets them, any choice otherwise; the
 //! dynamic ones, the pass and the skinning, are chosen per draw). The other shader archives (agl's BAHS, its NDSR
 //! networks, the movie upscaler's NDVE, the BNSH inside particle sets and layouts) are taken whole. `Scope::All` takes
-//! every program of every archive instead, bfsha included (the shader census's seed).
+//! every program of every archive instead, bfsha included (the shader census's seed). A game whose patches make a kind
+//! of archive unreachable (OoT's and DKB's movies play without NDVE) leaves it out (`make`'s `left_out`).
 //!
 //! The pack is the seed format the shader tools read (`HKSEED01`): u32 programs, u32 stages; each stage {u64 code key,
 //! u32 NVN stage, u32 control bytes, u32 code bytes, the control section (0xd8 bytes), the code area its +0x44 sizes};
-//! each program {u32 count, u32 stage indices}. A stage's code key is the renderer's: FNV-1a 64 over the control
-//! section, then the code area.
+//! each program {u32 count, u32 stage indices}; then the codes left out, each {u64 code key, the archive's magic (4
+//! bytes)}, and their u32 count last (the renderer reads them from the end, to name one that is set all the same). A stage's code key is the renderer's: FNV-1a
+//! 64 over the control section, then the code area. Each stage's origin (its archive and file) is `Pack::origins`.
 //!
 //! The layouts read here (nn::g3d2, bfres 10 and bfsha 9; offsets from each structure's start):
 //! - bfres FMDL +0x38 its materials (0xb0 each), +0x6c their count; FMAT +0x10 the static shader variation, +0x40 / +0x48 /
@@ -48,6 +50,45 @@ pub enum Scope {
     Reached,
     /// every program of every archive (the census's seed)
     All,
+}
+
+/// The kinds of shader archive a program comes from
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
+pub enum Archive {
+    /// a bfsha shading model's program
+    Bfsha,
+    /// agl's shader archive
+    Bahs,
+    /// agl's networks (the game's upscaler)
+    Ndsr,
+    /// the movie player's enhancement network
+    Ndve,
+    /// a BNSH of a particle set or a layout (or, for `Scope::All`, a bfsha's)
+    Bnsh,
+}
+
+impl Archive {
+    pub const ALL: [Archive; 5] = [Archive::Bfsha, Archive::Bahs, Archive::Ndsr, Archive::Ndve, Archive::Bnsh];
+    /// its magic, as game.toml and the pack name it
+    pub fn magic(self) -> &'static str {
+        match self {
+            Archive::Bfsha => "FSHA",
+            Archive::Bahs => "BAHS",
+            Archive::Ndsr => "NDSR",
+            Archive::Ndve => "NDVE",
+            Archive::Bnsh => "BNSH",
+        }
+    }
+    pub fn from_magic(s: &str) -> Option<Archive> {
+        Archive::ALL.into_iter().find(|a| a.magic() == s)
+    }
+}
+
+/// Where a program was found: the kind of archive and the romfs file (`<file>:<member>` inside a SARC)
+#[derive(Clone, Debug)]
+pub struct Origin {
+    pub archive: Archive,
+    pub file: String,
 }
 
 /// The renderer's code key of a stage: FNV-1a 64 over the control section, then the code area.
@@ -300,34 +341,45 @@ fn bnsh_all(d: &[u8], out: &mut Vec<Vec<Stage>>) {
     }
 }
 
-fn programs_in(d: &[u8], out: &mut Vec<Vec<Stage>>) {
+/// The programs of one file (`file` its name), each with its origin
+fn programs_in(d: &[u8], file: &str, out: &mut Vec<(Origin, Vec<Stage>)>) {
     if d.len() < 0x100 {
         return;
     }
-    match &d[..4] {
+    let mut found = Vec::new();
+    let archive = match &d[..4] {
         b"BAHS" => {
-            let _ = bahs_programs(d, out);
+            let _ = bahs_programs(d, &mut found);
+            Archive::Bahs
         }
         b"NDSR" => {
-            let _ = ndsr_programs(d, 0, out);
+            let _ = ndsr_programs(d, 0, &mut found);
+            Archive::Ndsr
         }
-        b"NDVE" => ndve_programs(d, out),
-        _ => bnsh_all(d, out),
-    }
+        b"NDVE" => {
+            ndve_programs(d, &mut found);
+            Archive::Ndve
+        }
+        _ => {
+            bnsh_all(d, &mut found);
+            Archive::Bnsh
+        }
+    };
+    out.extend(found.into_iter().map(|s| (Origin { archive, file: file.to_string() }, s)));
 }
 
 /// The data itself, or each member when it is an archive (SARCs inside SARCs, each member decompressed)
-fn blobs(dicts: &Dicts, d: &[u8], out: &mut Vec<Vec<Stage>>, depth: u32) {
+fn blobs(dicts: &Dicts, d: &[u8], file: &str, out: &mut Vec<(Origin, Vec<Stage>)>, depth: u32) {
     if d.starts_with(b"SARC") && depth < 4 {
         if let Ok(members) = sarc_unpack(d) {
-            for (_, m) in members {
+            for (name, m) in members {
                 if let Ok(m) = dicts.decompress(m) {
-                    blobs(dicts, &m, out, depth + 1);
+                    blobs(dicts, &m, &format!("{file}:{name}"), out, depth + 1);
                 }
             }
         }
     } else {
-        programs_in(d, out);
+        programs_in(d, file, out);
     }
 }
 
@@ -371,6 +423,8 @@ struct Opt {
 
 /// A bfsha shading model: its options and its programs' keys.
 struct Model {
+    /// its bfsha in the romfs
+    source: String,
     file: Arc<Vec<u8>>,
     at: u64,
     opts: Vec<Opt>,
@@ -414,7 +468,7 @@ impl Model {
             by_static.entry(k[..sk].to_vec()).or_default().push(i as u32);
             keys.push(k);
         }
-        Some(Model { file: file.clone(), at: m, opts, by_name, sk, keys, by_static, wild: Mutex::new(HashMap::new()) })
+        Some(Model { source: String::new(), file: file.clone(), at: m, opts, by_name, sk, keys, by_static, wild: Mutex::new(HashMap::new()) })
     }
 
     fn name(&self) -> String {
@@ -596,6 +650,9 @@ pub struct Stats {
     pub bfsha_programs: usize,
     pub bfsha_reached: usize,
     pub other_programs: usize,
+    /// the programs of each kind of archive the pack took, and of those it left out
+    pub by_archive: std::collections::BTreeMap<Archive, usize>,
+    pub left_out_programs: usize,
     pub unread: Vec<String>,
 }
 
@@ -603,20 +660,25 @@ pub struct Stats {
 #[derive(Default)]
 pub struct Pack {
     pub stages: Vec<Stage>,
+    /// each stage's origin: where it was found first
+    pub origins: Vec<Origin>,
     keys: HashMap<u64, u32>,
     pub programs: Vec<Vec<u32>>,
     seen: HashSet<Vec<u32>>,
+    /// the codes of the archives left out that no program of the pack has, with their origin
+    pub left_out: Vec<(u64, Origin)>,
 }
 
 impl Pack {
     /// adds a program (its stages); false when the pack has it already
-    pub fn add(&mut self, stages: Vec<Stage>) -> bool {
+    pub fn add(&mut self, origin: &Origin, stages: Vec<Stage>) -> bool {
         let mut ids: Vec<u32> = stages
             .into_iter()
             .map(|s| {
                 let k = code_key(&s.control, &s.area);
                 *self.keys.entry(k).or_insert_with(|| {
                     self.stages.push(s);
+                    self.origins.push(origin.clone());
                     (self.stages.len() - 1) as u32
                 })
             })
@@ -630,8 +692,34 @@ impl Pack {
         true
     }
 
+    /// notes a program of an archive left out: its codes that the pack does not hold (`leave_out` after every `add`)
+    fn leave_out(&mut self, origin: &Origin, stages: &[Stage]) {
+        for s in stages {
+            let k = code_key(&s.control, &s.area);
+            if !self.keys.contains_key(&k) && !self.left_out.iter().any(|l| l.0 == k) {
+                self.left_out.push((k, origin.clone()));
+            }
+        }
+    }
+
     pub fn bytes(&self) -> u64 {
-        self.stages.iter().map(|s| (20 + s.control.len() + s.area.len()) as u64).sum::<u64>() + self.programs.iter().map(|p| 4 + 4 * p.len() as u64).sum::<u64>()
+        self.stages.iter().map(|s| (20 + s.control.len() + s.area.len()) as u64).sum::<u64>()
+            + self.programs.iter().map(|p| 4 + 4 * p.len() as u64).sum::<u64>()
+            + 4
+            + 12 * self.left_out.len() as u64
+    }
+
+    /// Each code's origin, a line each: `<code key> <NVN stage> <archive> <file>`, then the codes left out
+    /// (`<code key> - <archive> <file> left out`)
+    pub fn origins_text(&self) -> String {
+        let mut o = String::new();
+        for (s, g) in self.stages.iter().zip(&self.origins) {
+            o += &format!("{:016x} {} {} {}\n", code_key(&s.control, &s.area), s.kind, g.archive.magic(), g.file);
+        }
+        for (k, g) in &self.left_out {
+            o += &format!("{k:016x} - {} {} left out\n", g.archive.magic(), g.file);
+        }
+        o
     }
 
     /// The pack in the seed format (module docs), written beside and renamed over `path`
@@ -654,6 +742,11 @@ impl Pack {
                 o.extend_from_slice(&i.to_le_bytes());
             }
         }
+        for (k, g) in &self.left_out {
+            o.extend_from_slice(&k.to_le_bytes());
+            o.extend_from_slice(g.archive.magic().as_bytes());
+        }
+        o.extend_from_slice(&(self.left_out.len() as u32).to_le_bytes());
         let tmp = path.with_extension("tmp");
         std::fs::write(&tmp, &o).map_err(|e| format!("{}: {e}", tmp.display()))?;
         std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
@@ -691,10 +784,11 @@ fn bfsha_models(dicts: &Dicts, romfs: &Path, unread: &mut Vec<String>) -> (Vec<M
         let first = name.split('.').next().unwrap_or("").to_string();
         let (Some(n), Some(at)) = (u16_(&file, 0x78), u64_(&file, 0x48)) else { continue };
         for i in 0..n as u64 {
-            let Some(m) = Model::read(&file, at + 0x100 * i) else {
+            let Some(mut m) = Model::read(&file, at + 0x100 * i) else {
                 unread.push(format!("Shader/{name}: shading model {i}"));
                 continue;
             };
+            m.source = format!("Shader/{name}");
             let sm = m.name();
             let id = models.len();
             models.push(m);
@@ -727,15 +821,18 @@ fn bfres_paths(romfs: &Path) -> Vec<PathBuf> {
 }
 
 /// The pack's format and what this crate reads: a change to either changes it
-const VERSION: u64 = 1;
+const VERSION: u64 = 2;
 
 /// A key of what a pack is made from: the files it reads (their paths, sizes and modification times) and VERSION
-pub fn inputs_key(romfs: &Path, scope: Scope) -> u64 {
+pub fn inputs_key(romfs: &Path, scope: Scope, left_out: &[Archive]) -> u64 {
     let mut files = archive_paths(romfs);
     files.extend(bfres_paths(romfs));
     files.push(romfs.join("Shader/ExternalBinaryString.bfres.zs"));
     files.sort();
     let mut h = code_key(&VERSION.to_le_bytes(), &[scope as u8]);
+    for a in left_out {
+        h = code_key(&h.to_le_bytes(), a.magic().as_bytes());
+    }
     for f in files {
         let m = std::fs::metadata(&f).ok();
         let t = m.as_ref().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos() as u64);
@@ -746,8 +843,10 @@ pub fn inputs_key(romfs: &Path, scope: Scope) -> u64 {
 }
 
 /// The pack of a romfs; `dictionaries` is the romfs file of the game's zstd dictionaries (game.toml's
-/// `[assets].zstd_dictionaries`), `progress(done, of)` is told as files are read.
-pub fn make(romfs: &Path, dictionaries: &Path, scope: Scope, progress: &(dyn Fn(usize, usize) + Sync)) -> Result<(Pack, Stats), String> {
+/// `[assets].zstd_dictionaries`), `left_out` the kinds of archive the game's patches make unreachable (game.toml's
+/// `[assets].shaders_left_out`: their programs not taken, their codes listed), `progress(done, of)` is told as files
+/// are read.
+pub fn make(romfs: &Path, dictionaries: &Path, scope: Scope, left_out: &[Archive], progress: &(dyn Fn(usize, usize) + Sync)) -> Result<(Pack, Stats), String> {
     let dicts = Dicts::load(dictionaries)?;
     let mut st = Stats::default();
     let mut pack = Pack::default();
@@ -784,24 +883,35 @@ pub fn make(romfs: &Path, dictionaries: &Path, scope: Scope, progress: &(dyn Fn(
         }
         st.bfsha_reached = reached.len();
         for (id, p) in reached {
-            pack.add(models[id].stages(p));
+            let origin = Origin { archive: Archive::Bfsha, file: models[id].source.clone() };
+            if pack.add(&origin, models[id].stages(p)) {
+                *st.by_archive.entry(Archive::Bfsha).or_default() += 1;
+            }
         }
     }
-    let found: Vec<Vec<Vec<Stage>>> = archives
+    let found: Vec<Vec<(Origin, Vec<Stage>)>> = archives
         .par_iter()
         .map(|p| {
             let mut out = Vec::new();
             if let Ok(d) = read(&dicts, p) {
-                blobs(&dicts, &d, &mut out, 0);
+                blobs(&dicts, &d, &p.strip_prefix(romfs).unwrap_or(p).to_string_lossy(), &mut out, 0);
             }
             tick();
             out
         })
         .collect();
-    for progs in found {
-        for p in progs {
-            st.other_programs += pack.add(p) as usize;
+    let mut out = Vec::new();
+    for (origin, p) in found.into_iter().flatten() {
+        if left_out.contains(&origin.archive) {
+            out.push((origin, p));
+        } else if pack.add(&origin, p) {
+            st.other_programs += 1;
+            *st.by_archive.entry(origin.archive).or_default() += 1;
         }
+    }
+    st.left_out_programs = out.len();
+    for (origin, p) in &out {
+        pack.leave_out(origin, p);
     }
     Ok((pack, st))
 }
@@ -820,10 +930,15 @@ mod tests {
     #[test]
     fn a_program_is_kept_once_and_its_stages_once() {
         let st = |b: u8| Stage { kind: 0, control: vec![b; CONTROL], area: vec![b; 16] };
+        let o = Origin { archive: Archive::Bahs, file: "a".into() };
         let mut p = Pack::default();
-        assert!(p.add(vec![st(1), st(2)]));
-        assert!(!p.add(vec![st(2), st(1)]));
-        assert!(p.add(vec![st(1)]));
+        assert!(p.add(&o, vec![st(1), st(2)]));
+        assert!(!p.add(&o, vec![st(2), st(1)]));
+        assert!(p.add(&o, vec![st(1)]));
         assert_eq!((p.stages.len(), p.programs.len()), (2, 2));
+        // (a left-out program's codes are listed unless the pack holds them)
+        p.leave_out(&Origin { archive: Archive::Ndve, file: "b".into() }, &[st(1), st(3), st(3)]);
+        assert_eq!(p.left_out.len(), 1);
+        assert_eq!(p.left_out[0].0, code_key(&st(3).control, &st(3).area));
     }
 }

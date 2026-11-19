@@ -1277,6 +1277,9 @@ void scan_slot(Slot* s) {
         if (made) it->second = new Family, st_families.fetch_add(1, std::memory_order_relaxed);
         s->fam = it->second, fresh = made;
     }
+    if (fresh)
+        for (const uint64_t k : {s->vs.key, s->has_fs ? s->fs.key : 0, s->has_gs ? s->gs.key : 0, s->task ? s->task_key : 0})
+            if (k) pack_check_set(k, "program code");
     static const bool log_mesh = dbg_log(SET_DBG_LOGMESH);
     if (fresh && s->mesh && log_mesh)
         logf("direct: program serial %llu is %s: %s%s%smesh %016llx fragment %016llx (header-only stage %016llx)", (unsigned long long)s->serial,

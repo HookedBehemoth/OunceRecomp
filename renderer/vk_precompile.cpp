@@ -6,6 +6,8 @@
 // - at every start (shader_warm): when the caches' stamp (the translator, the device, the driver's binary UUID and
 //   version) is not the one the last complete precompile wrote into ounce_renderer_shaders.stamp, as after a driver
 //   update, the programs are made again on the background workers while the game plays.
+// The codes the pack leaves out (their archive unreachable with the game's patches, game.toml's shaders_left_out) are
+// listed at its end: one the game sets all the same is an error and a strict event (pack_check_set).
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -18,6 +20,7 @@
 
 #include "os.h"
 #include "vk_api.h"
+#include "vk_check.h"
 #include "vk_internal.h"
 #include "vk_shader.h"
 #include "vk_shader_parts.h"
@@ -27,7 +30,8 @@ namespace hsd {
 namespace {
 
 /// The pack, mapped: its programs' stages (the seed format: "HKSEED01", u32 programs, u32 stages; each stage {u64 key,
-/// u32 NVN stage, u32 control bytes, u32 code bytes, control, code}; each program {u32 count, u32 stage indices})
+/// u32 NVN stage, u32 control bytes, u32 code bytes, control, code}; each program {u32 count, u32 stage indices}; the
+/// codes left out {u64 key, 4 bytes the archive's magic}, then their u32 count)
 struct Pack {
     std::vector<PreStage> stages;
     std::vector<uint32_t> kinds;   // (each stage's NVN stage)
@@ -75,8 +79,15 @@ bool pack_read(const std::string& path, Pack& p) {
             ids.push_back(id);
         }
     }
-    return true;
+    uint32_t left;   // (the codes left out: read by pack_check_set, checked here)
+    return n >= at + 4 && (std::memcpy(&left, d + n - 4, 4), n - at == 4 + 12ull * left);
 }
+
+/// The codes the pack leaves out, by key: their archive's magic. Read from its end once
+struct LeftOut {
+    std::vector<std::pair<uint64_t, uint32_t>> codes;   // (sorted)
+    LeftOut();
+};
 
 PreResult make(const Pack& p, const std::vector<uint32_t>& ids) {
     PreStage st[8];
@@ -127,6 +138,35 @@ struct Counts {
 };
 
 }  // namespace
+
+LeftOut::LeftOut() {
+    os_file* f = os_file_open(pack_path().c_str(), OS_READ, nullptr);
+    const int64_t n = f ? os_file_size(f) : 0;
+    uint32_t count = 0;
+    if (n >= 20 && os_file_read_at(f, &count, 4, n - 4) == 4 && 12ull * count + 20 <= (uint64_t)n) {
+        std::vector<uint8_t> b(12ull * count);
+        if (os_file_read_at(f, b.data(), b.size(), n - 4 - b.size()) == (int64_t)b.size())
+            for (uint32_t i = 0; i < count; i++) {
+                uint64_t k;
+                uint32_t m;
+                std::memcpy(&k, &b[12 * i], 8), std::memcpy(&m, &b[12 * i + 8], 4);
+                codes.emplace_back(k, m);
+            }
+    }
+    os_file_close(f);
+    std::sort(codes.begin(), codes.end());
+}
+
+void pack_check_set(uint64_t key, const char* what) {
+    static const LeftOut left;
+    const auto it = std::lower_bound(left.codes.begin(), left.codes.end(), std::make_pair(key, 0u));
+    if (it == left.codes.end() || it->first != key) return;
+    const char magic[5] = {(char)it->second, (char)(it->second >> 8), (char)(it->second >> 16), (char)(it->second >> 24), 0};
+    logf("direct: error: the game set %s %016llx, an %s code, which the shader pack leaves out as unreachable with the "
+         "game's patches (game.toml shaders_left_out): it is translated now",
+         what, (unsigned long long)key, magic);
+    strict_event("a code the shader pack leaves out is set", "%s %016llx (%s)", what, (unsigned long long)key, magic);
+}
 
 /// (the start) the pack's programs made again on the background workers when the caches are not the ones its last
 /// complete precompile filled
