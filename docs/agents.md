@@ -22,3 +22,10 @@ PC's memory or resetting the GPU under each other.
   git -C work/wt/<name> rebase native-vk
   git merge --ff-only agent/<name>
   ```
+
+## Changing code
+
+- What the project supports is being narrowed on purpose (one renderer, no fallbacks). When a change needs it,
+  overhaul, restructure or delete the code it touches instead of patching around it until it works: remove paths,
+  switches and compatibility code that the new design no longer needs, and leave the code as if it had been written
+  that way. Say in the report what was removed and why.
