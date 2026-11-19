@@ -42,6 +42,7 @@ vk_sources = files(
   'vk_upscale.cpp',
   'vk_vma.cpp',
   'vk_work.cpp',
+  'vk_host_windows.cpp',   # (Windows only: the executable's functions as thunks; empty elsewhere)
 )
 vk_args = renderer_cpp_args
 vk_deps = [eden_dep, zstd_dep]
@@ -65,19 +66,29 @@ foreach kind, src : {'graphics': 'vk_shader.cpp', 'compute': 'vk_compute.cpp'}
     implicit_include_directories: false, pic: true, build_by_default: false)
 endforeach
 
+if windows
+  # (ounce_renderer.dll: what it calls in the executable resolves at this link to vk_host_windows.cpp's thunks, so an
+  # unresolved symbol is a failed build here too)
+  so_link_args = target_args + ['-fuse-ld=lld', '-Wl,/MAP:' + meson.current_build_dir() / 'ounce_renderer.dll.map',
+                                '-Wl,/OPT:REF', '-Wl,/OPT:ICF'] + cxx_link_args
+else
+  so_link_args = target_args + ['-fuse-ld=lld', '-Wl,-Map=' + meson.current_build_dir() / 'ounce_renderer.so.map',
+                                '-Wl,-Bsymbolic', '-Wl,--gc-sections'] + cxx_link_args + ['-ldl', '-lpthread', '-lm']
+endif
 vk_so = shared_module('ounce_renderer', vk_sources, spv_headers,
   cpp_args: vk_args, include_directories: vk_incs, dependencies: vk_deps,
   implicit_include_directories: false,
   link_whole: [eden_lib, sirit_lib, zstd_lib] + stamped,
   name_prefix: '',
-  link_args: target_args + ['-fuse-ld=lld', '-Wl,-Map=' + meson.current_build_dir() / 'ounce_renderer.so.map',
-                            '-Wl,-Bsymbolic', '-Wl,--gc-sections'] + cxx_link_args + ['-ldl', '-lpthread', '-lm'])
+  link_args: so_link_args)
 
 # (the host dlopens it with RTLD_NOW: an unresolved symbol is a failed build here, not a black window)
 exe = get_option('exe') == '' ? '' : root / get_option('exe')
-custom_target('ounce_renderer.so.symbols',
-  input: vk_so,
-  output: 'ounce_renderer.so.symbols',
-  command: [python, '-I', files('meson/check_symbols.py'), nm, '@INPUT@', '@OUTPUT@', exe],
-  depend_files: exe == '' ? [] : [exe],
-  build_by_default: true)
+if not windows
+  custom_target('ounce_renderer.so.symbols',
+    input: vk_so,
+    output: 'ounce_renderer.so.symbols',
+    command: [python, '-I', files('meson/check_symbols.py'), nm, '@INPUT@', '@OUTPUT@', exe],
+    depend_files: exe == '' ? [] : [exe],
+    build_by_default: true)
+endif
