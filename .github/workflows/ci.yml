@@ -105,8 +105,8 @@ jobs:
           filter: blob:none
       - name: The exefs
         run: |
-          mkdir -p "$RUNNER_TEMP/exefs"
-          tar --zstd -xf "work/ci-data/${{ matrix.game }}/exefs.tar.zst" -C "$RUNNER_TEMP/exefs"
+          # (the archive holds the exefs/ folder itself)
+          tar --zstd -xf "work/ci-data/${{ matrix.game }}/exefs.tar.zst" -C "$RUNNER_TEMP"
           rm -rf work/ci-data
       - name: Lift and compile
         run: ounce/target/release/ounce tool lift-stats ${{ matrix.game }} --exefs "$RUNNER_TEMP/exefs" --out "work/ci/lift-${{ matrix.game }}.json" --bench "work/ci/bench-${{ matrix.game }}.json" --work "$RUNNER_TEMP/lift"
@@ -164,11 +164,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # (a game whose lift failed has no numbers to keep)
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        id: numbers
+        continue-on-error: true
         with:
           name: lift-${{ matrix.game }}
           path: work/ci
-      - uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
+      - if: steps.numbers.outcome == 'success'
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
         with:
           name: lift ${{ matrix.game }}
           tool: customSmallerIsBetter

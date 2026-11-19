@@ -68,6 +68,9 @@ pub fn command(args: &[String]) {
     if !game_dir.join("game.toml").is_file() {
         fail(format!("no game {game} in {}", root.join("games").display()));
     }
+    if !exefs.join("main").is_file() {
+        fail(format!("{} has no main: --exefs names the exefs folder itself", exefs.display()));
+    }
     let work = work.unwrap_or_else(|| std::env::temp_dir().join(format!("ounce-lift-stats-{}", std::process::id())));
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work).unwrap_or_else(|e| fail(format!("{}: {e}", work.display())));
