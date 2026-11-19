@@ -16,7 +16,7 @@
 80d8cd50 friends_init                     # runtime/nn_answers.c nn::friends: friends::Initialize once, then SetAllocator
 80d8d7e0 friends_availability_check       # runtime/nn_answers.c nn::friends: the play history key and CheckFriendListAvailability; EnsureFriendListAvailable when the list is out of date
 80c8de50 audio_capture_buffer_size        # runtime/nn_audio.c capture: GetRequiredBufferSizeForCapture plus the game's own per-channel buffers
-800a1d60 bake_world_arrays_init           # sparse textures (report 2026-11-19): World_Game03's baked lighting arrays, 8192x8192 with 0x4c / 0x3a layers ("BakeShadow/GIMask/Sky", "BakeStaticLocal", "BakeDirBounce"), and the "Shadow" / "StaticLocal" heaps
+800a1d60 bake_world_arrays_init           # sparse textures: World_Game03's baked lighting arrays, 8192x8192 x [arg1] layers (68, a constant of world_scene_gfx_init); 0x4c and 0x3a are format table indices (g_82da6340: NVN 0x8e ASTC 8x8 sRGB, 0x50 BC6H UF) for "BakeShadow/GIMask/Sky", "BakeStaticLocal", "BakeDirBounce"
 800a1bf0 bake_array_texture_init          # sparse textures: one named bake array, its texture built (f_804e6fa0) and made sparse (f_800a0ed0)
 800a1600 bake_shadow_pages_map            # sparse textures: the shadow bake array's pages mapped (three MapVirtual sites, f_825ceb90 per page)
 800a0ed0 sparse_texture_init              # sparse textures: a sparse texture over its virtual pool, its tile layout read (nvnTextureGetSparseTileLayout), initialized through f_800ca9d0
@@ -29,3 +29,12 @@
 805e6690 world_scene_gfx_init             # sparse textures: "World_Game03" scene graphics set-up; calls bake_world_arrays_init
 8098aa90 bake_material_bind               # sparse textures: binds a material's baked lighting samplers ("bake_light0", "bake_shadow0", "bake_tex_st0/1") ?
 800ca9d0 gfx_texture_init_from_builder    # sparse textures: the texture initialize helper (324 callers): builder flags, storage, nvnTextureInitialize
+8098af20 bake_module_init                 # sparse textures: "bake::ModuleMgr" and the "bkres" resource factory (World_Game03_X.._Z.. cells' bkdat.byaml: their RBake_* texture names)
+80a0c100 bake_copy_frame_hook             # sparse textures: a per-frame render callback (flag +0x2dc4 bit 2) that runs bake_cell_copy_flush on the frame's command buffer
+80a0c130 bake_cell_copy_flush             # sparse textures: each queued cell texture copied into its array (kind 0..2) at its layer, level by level with nvnCommandBufferCopyTextureToTexture; a .min.bntx gives the levels from the array's split level (+0x15c) to 11, the full .bntx levels 0 to the split; first run copies BakeEmpty_Bake / BakeLit / BakeBounceLit
+80a0c020 bake_empty_texture_find          # sparse textures: the BakeEmpty_* texture by name ?
+80bda640 bake_texture_loaded              # sparse textures: a cell's RBake texture loaded (vtable 0x835b7878): its layer's pages mapped (bake_layer_pages_map) and its copy queued ?
+80bda8a0 bake_layer_pages_map             # sparse textures: under the bake mutexes, maps the pages a loaded cell texture needs through bake_page_map
+80bdaa50 bake_page_map                    # sparse textures: maps pages of one bake array (kind 0..2) from that kind's free physical page list; MapVirtual
+825e0d60 gfx_texture_copy_levels          # sparse textures: copies every level both textures have, layer by layer, with nvnCommandBufferCopyTextureToTexture (5 callers, not the bake path)
+800a05b0 world_map_env_sparse_init        # sparse textures: "allocCopyTextureSparseWork", a sparse work texture and its pages; "game::WorldInfoMapEnv::MepElementNonSparseCopy" job
