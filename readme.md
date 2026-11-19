@@ -1,12 +1,5 @@
 <h1 align="center">
-  <br>
-  <a>
-  <img src="assets/logo.png" alt="OunceRecomp" width="200">
-</a>
-
-  <br>
   <b>OunceRecomp</b>
-  <br>
 </h1>
 
 <h4 align="center">The Legend of Zelda: Ocarina of Time (Nintendo Switch 2) running natively on Linux, with no emulator.
