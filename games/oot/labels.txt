@@ -619,6 +619,13 @@
 
 # --- zstd and resource loading (work/assets/zstd.md: the decoder's map)
 80108da0 fs_ares_load_zstd                # work/assets/native/asset-loading.md, games/oot/patches/nn_zstd.c: the ARes loader (virtual): reads a file, zstd-decodes it
+80722da0 res_gsys_package_lists_load      # tools/shadercensus/shadermap.py (scene loads): reads gsys.gapkginfo and gsys.gapkglist, registers each package's shader_%02d, agl_sharc_%02d and bfres_%02d entries (f_80723d70)
+80b13af0 res_factories_register           # tools/shadercensus/shadermap.py (scene loads): the resource system's factories by extension (pack, zsdic, sarc, genvb, bmodelsh, bfres, bfsha, bgyml, ...) and its ForResource heaps
+80b5e6a0 res_bfres_factory_init           # tools/shadercensus/shadermap.py (scene loads): the bfres factory (0x88 bytes, vtable 0x84c87be0; its resource maker f_83bae9a0)
+829e0d00 seq_query_banc_is_loaded_name     # tools/shadercensus/shadermap.py (scene loads): the name of the AI query "QueryBancChangeIsLoaded" (its class vtable 0x84a8e300; the evaluate slot not found yet) # ?
+829e0e10 seq_query_banc_is_stable_name     # tools/shadercensus/shadermap.py (scene loads): the name of the AI query "QueryBancLoadMgrIsStable" (vtable at 0x84a8e450) # ?
+828a90d0 seq_wait_load_screen_name        # tools/shadercensus/shadermap.py (scene loads): the name of the AI action "ExecuteWaitLoadScreen" (vtable pointer at 0x84a00758) # ?
+832dc070 seq_request_load_current_scene_name # tools/shadercensus/shadermap.py (scene loads): the name of the sequence node "SeqExecuteBancBasedResourceMgrRequestLoadCurrentScene" (vtable pointer at 0x84bc4c08) # ?
 80455bc0 res_bfsha_load                   # work/assets/native/second-map.md: "bfsha" resource load
 804563b0 res_inplace_pool                 # work/assets/native/asset-loading.md: makes a pool over a decompressed file's GPU section
 834ab610 zstd_begin_using_ddict           # work/assets/zstd.md: inferred

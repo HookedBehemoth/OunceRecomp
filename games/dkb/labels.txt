@@ -229,3 +229,7 @@
 800d1000 layout_ortho_matrix              # games/dkb/patches/widescreen.c: (out, width s0, height s1): an ortho projection of +-width/2, +-height/2 (a layout's size, 1920 x 1080 for the HUD) and its matrices
 800d0ef4 layout_draw_projection           # games/dkb/patches/widescreen.c: a layout's draw projection from its size +0x50 / +0x54 (layout_ortho_matrix, or a perspective one with +0xe8 bit 8) # ?
 8109fc64 vignette_params                  # games/dkb/patches/widescreen.c: the vignette pass's "VignettingParam" buffer: a scale times 16:9 (0x81ca9e54) and the aspect 16:9 (mov / movk at 0x8109fdcc)
+
+# --- resource loading (tools/shadercensus/shadermap.py, scene loads)
+8055cb98 res_gsys_package_lists_load      # tools/shadercensus/shadermap.py (scene loads): as OoT's: gsys.gapkginfo / gapkglist, each package's shader_%02d, agl_sharc_%02d and bfres_%02d entries
+805e81bc res_factories_register           # tools/shadercensus/shadermap.py (scene loads): the resource system's factories by extension (bfarc, alsarc, vmat, pack, sarc, genvb, bfres, asb, bgyml, ...)
