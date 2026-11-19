@@ -81,6 +81,20 @@ follow pointers the game stores in memory, so a pool reachable only through a st
 
 What a translated program expects at a draw is in [the shader contract](shader-contract.md).
 
+## Guest memory on the GPU
+
+The GPU reads the game's memory where it lies, with no copy. This is *layer 0*. The host's operating-system layer
+(`runtime/os/os_guest.h`) hands ranges of the guest window to the back end as handles of a kind the platform picks: on
+Linux, dma-bufs of the window's memfd pages, made through `/dev/udmabuf`. The back end imports them in 16 MB chunks
+and binds them into sparse window buffers. Binds go to a queue of their own: a sparse-binding-only family if the
+device has one, else another family with sparse binding, else a second graphics queue, else the graphics queue.
+
+Layer 0 is off, and the log says why, when the device has no aliased sparse buffers or no queue with sparse
+binding, or when the window cannot be exported (on Linux, when `/dev/udmabuf` cannot be opened). On a device without
+the import extensions for the platform's handles, each import fails and is logged. Host-pointer handles
+(`VK_EXT_external_memory_host`) are imported where the device has the extension, but Linux does not hand them out: with
+amdgpu, each submit walks every page of a host-pointer import again.
+
 ## Programs
 
 All programs are in the romfs. The back end translates them with its fork of Eden's recompiler (`third_party/eden`) and

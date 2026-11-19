@@ -41,7 +41,9 @@ ounce_renderer.so  the direct back end (renderer), loaded by the host at start
   the rest of the SDK (libc, utility code, the graphics driver's front end) runs as lifted code. An import the host
   neither implements nor answers stops the game when called, naming it.
 - **Memory.** The guest window is a 512 GB reservation: the image at `0x80000000`, the heap from 64 GB up, and address
-  regions from 512 GB down (`runtime/hos.h`). Pages are committed as they are handed out or first touched.
+  regions from 512 GB down (`runtime/hos.h`). Pages are committed as they are handed out or first touched. As on
+  the console, nothing is mapped below the system region (16 MB), so a null guest pointer faults. The GPU reads the
+  window in place ([guest memory on the GPU](direct/architecture.md#guest-memory-on-the-gpu)).
 - **Threads.** Every guest thread runs on its own host thread, with no scheduler between them.
 - **Platform.** The host is built for Linux only. It reaches the operating system through `runtime/os/os.h` alone (threads,
   futex-based locks and events, time, memory, faults, files, modules), implemented in `runtime/os/os_linux.c`; another
