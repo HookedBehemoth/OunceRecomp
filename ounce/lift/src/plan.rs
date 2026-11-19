@@ -238,7 +238,7 @@ impl Plan {
         hk.sort_unstable();
         let mut hot: Vec<u64> = hot.iter().copied().filter(|e| es.binary_search(e).is_ok()).collect();
         hot.sort_unstable();
-        let mut code_excluded: Vec<u64> = img.modules.iter().map(|m| m.base).collect();
+        let mut code_excluded: Vec<u64> = img.modules.iter().flat_map(|m| m.header()).collect();
         code_excluded.sort_unstable();
         Plan {
             entries,

@@ -28,6 +28,15 @@ pub struct Module {
     pub bss: [u64; 2],
 }
 
+impl Module {
+    /// the addresses of the module's header words (+0, +4 MOD0's offset, +8 a second offset), which are data at the
+    /// start of its text: code takes their addresses as the module's base (MKW's main _init gives nnmusl base + 8 by
+    /// ADRP+ADD, DKB's by a relocated slot), so they are never functions or code pointers
+    pub fn header(&self) -> [u64; 3] {
+        [self.base, self.base + 4, self.base + 8]
+    }
+}
+
 #[derive(Deserialize, Debug, Clone, PartialEq)]
 pub struct Hook {
     pub addr: u64,

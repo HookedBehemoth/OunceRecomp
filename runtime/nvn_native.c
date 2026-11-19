@@ -2838,12 +2838,27 @@ NV(nvnProgramInitializeFromBuilder) {
 NV(nvnCommandBufferSetRecordingMode) {}
 NV(nvnCommandBufferSetComputeOverlapMode) {}
 
-/* Native images: the graphics system's display buffers (nn::gs), which the game's window textures are made from.
-   The graphics system is not emulated (nn_gs.c: no handles), so a native image is a linear texture of the display's
-   size in memory of its own, NVN_WINDOW_W x NVN_WINDOW_H; the replay presents it like any window texture. Builder:
-   {device, format, permission, handle}. */
+/* Native images: the graphics system's display buffers (nn::gs), which the game's window textures are made from,
+   and the images a system service hands out by handle (nn::chat's camera videos, nn_applet.c). The graphics system is
+   not emulated (nn_gs.c: no handles), so a native image is a linear texture in memory of its own: of the size its
+   service gave its handle (nvn_native_image_size), else of the display's, NVN_WINDOW_W x NVN_WINDOW_H; the replay
+   presents a display one like any window texture. Builder: {device, format, permission, handle}. */
 #define NVN_WINDOW_W 1920
 #define NVN_WINDOW_H 1080
+static struct { uint64_t handle; int32_t w, h; } image_sizes[256];
+static int nimage_sizes;
+static os_mutex image_sizes_lock = OS_MUTEX_INIT;
+void nvn_native_image_size(uint64_t handle, int w, int h) {
+    os_mutex_lock(&image_sizes_lock);
+    int k = 0;
+    while (k < nimage_sizes && image_sizes[k].handle != handle) k++;
+    if (k == nimage_sizes) {
+        if (k == (int)(sizeof image_sizes / sizeof image_sizes[0])) hos_fatal_lr(0, "nvn: more than %d sized native images", k);
+        nimage_sizes++;
+    }
+    image_sizes[k].handle = handle, image_sizes[k].w = w, image_sizes[k].h = h;
+    os_mutex_unlock(&image_sizes_lock);
+}
 typedef struct { void *dev; int32_t format, permission; uint64_t handle; } nvn_native_image_builder;
 typedef struct { uint32_t magic; int32_t format, width, height; uint64_t storage, size; } nvn_native_image;
 NV(nvnNativeImageBuilderSetDefaults) {
@@ -2868,7 +2883,11 @@ NV(nvnNativeImageInitialize) {
     memset(o, 0, sizeof *o);
     o->magic = NVN_MAGIC('N', 'I', 'M', 'G');
     o->format = b->format, o->width = NVN_WINDOW_W, o->height = NVN_WINDOW_H;
-    o->size = (uint64_t)NVN_WINDOW_W * NVN_WINDOW_H * 4;
+    os_mutex_lock(&image_sizes_lock);
+    for (int k = 0; k < nimage_sizes; k++)
+        if (image_sizes[k].handle == b->handle) o->width = image_sizes[k].w, o->height = image_sizes[k].h;
+    os_mutex_unlock(&image_sizes_lock);
+    o->size = (uint64_t)o->width * o->height * 4;
     o->storage = hos_region_alloc(o->size, 0x10000);
     if (o->storage) hos_gpu_track(o->storage, o->size, 1);
     hos_log("nvn: native image %dx%d format %#x (handle %#llx) at %#llx", o->width, o->height, o->format,

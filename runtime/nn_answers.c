@@ -307,6 +307,20 @@ PATCH_ANSWER(_ZN2nn4bcat25MountDeliveryCacheStorageEv, 0x47a,
 PATCH_ANSWER(_ZN2nn4bcat27UnmountDeliveryCacheStorageEv, 0,
              "nothing to do: the delivery cache is never mounted");
 
+/* ---- nn::friends (the friend list and play history, from the Nintendo Account's online services) */
+/* nn::friends::Initialize() */
+PATCH_ANSWER(_ZN2nn7friends10InitializeEv, 0,
+             "nothing to do: every query answers that no network service account is linked");
+/* nn::friends::SetAllocator(void* (*)(unsigned long), void (*)(void*, unsigned long)) */
+PATCH_ANSWER(_ZN2nn7friends12SetAllocatorEPFPvmEPFvS1_mE, 0,
+             "nothing to do: the host allocates nothing for the friends library");
+/* nn::friends::CheckFriendListAvailability(bool*, nn::account::Uid const&) */
+PATCH_ANSWER(_ZN2nn7friends27CheckFriendListAvailabilityEPbRKNS_7account3UidE, 0x7C7C,
+             "an account error (module 124), the flag left as it was: no network service account; the game reads the flag only on success");
+/* nn::friends::GetPlayHistoryRegistrationKey(nn::friends::PlayHistoryRegistrationKey*, nn::account::Uid const&, bool) */
+PATCH_ANSWER(_ZN2nn7friends29GetPlayHistoryRegistrationKeyEPNS0_26PlayHistoryRegistrationKeyERKNS_7account3UidEb, 0x7C7C,
+             "an account error (module 124), the key left as it was: no network service account; the game keeps a key only on success");
+
 /* ---- nn::hid */
 /* nn::hid::FinalizeJcms() */
 PATCH_ANSWER(_ZN2nn3hid12FinalizeJcmsEv, 0,
@@ -411,6 +425,17 @@ PATCH_ANSWER(_ZN2nn3ssl10InitializeEv, 0,
 /* nn::streamplay::GetRequiredMemorySize(nn::streamplay::StreamPlayType, nn::streamplay::StreamingMode, int) */
 PATCH_ANSWER(_ZN2nn10streamplay21GetRequiredMemorySizeENS0_14StreamPlayTypeENS0_13StreamingModeEi, 0x1000,
              "a page: the game reserves the larger of two sizes at boot; the host never streams, so it stays unused");
+
+/* ---- nn::swkbd (the software keyboard applet) */
+/* nn::swkbd::GetRequiredWorkBufferSize(bool) */
+PATCH_ANSWER(_ZN2nn5swkbd25GetRequiredWorkBufferSizeEb, 0xD000,
+             "the SDK's work buffer size: the game allocates it at boot; the keyboard is shown only when a name is typed");
+/* nn::swkbd::GetRequiredStringBufferSize() */
+PATCH_ANSWER(_ZN2nn5swkbd27GetRequiredStringBufferSizeEv, 0x7D4,
+             "the SDK's string buffer size (500 UTF-16 characters and a header): an allocation size only");
+/* nn::swkbd::GetRequiredTextCheckWorkBufferSize() */
+PATCH_ANSWER(_ZN2nn5swkbd34GetRequiredTextCheckWorkBufferSizeEv, 0x7D4,
+             "the SDK's text check buffer size: an allocation size only");
 
 /* ---- nn::vi */
 /* nn::vi::QueryDisplayCurrentRefreshRate(nn::vi::RefreshRate*, bool*, nn::vi::Display const*) */

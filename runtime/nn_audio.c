@@ -1390,6 +1390,28 @@ HLE(_ZN2nn5audio14IsAuxRemovableEPKNS0_7AuxTypeE) { RET(1); }
 HLE(_ZN2nn5audio17ReadAuxSendBufferEPNS0_7AuxTypeEPii) { RET(0); }
 HLE(_ZN2nn5audio20WriteAuxReturnBufferEPNS0_7AuxTypeEPKii) { RET((int)ARG(2)); }
 HLE(_ZN2nn5audio17GetAuxSampleCountEPKNS0_7AuxTypeE) { RET(0); }
+/* a capture (the mix copied out for the game to read) and a circular buffer sink: accepted, never fed, so a read
+   gives no samples */
+HLE(_ZN2nn5audio31GetRequiredBufferSizeForCaptureEPKNS0_22AudioRendererParameterEii) {
+    RET((uint64_t)(int)ARG(1) * (uint64_t)(int)ARG(2) * 4 + 0x100);   /* frames x channels of int32 */
+}
+HLE(_ZN2nn5audio10AddCaptureEPNS0_19AudioRendererConfigEPNS0_11CaptureTypeEPNS0_10SubMixTypeEPvm) { RET(0); }
+HLE(_ZN2nn5audio10AddCaptureEPNS0_19AudioRendererConfigEPNS0_11CaptureTypeEPNS0_12FinalMixTypeEPvm) { RET(0); }
+HLE(_ZN2nn5audio13RemoveCaptureEPNS0_19AudioRendererConfigEPNS0_11CaptureTypeEPNS0_10SubMixTypeE) {}
+HLE(_ZN2nn5audio13RemoveCaptureEPNS0_19AudioRendererConfigEPNS0_11CaptureTypeEPNS0_12FinalMixTypeE) {}
+HLE(_ZN2nn5audio15SetCaptureInputEPNS0_11CaptureTypeEPKai) {}
+HLE(_ZN2nn5audio17SetCaptureEnabledEPNS0_11CaptureTypeEb) {}
+HLE(_ZN2nn5audio16IsCaptureEnabledEPKNS0_11CaptureTypeE) { RET(1); }
+HLE(_ZN2nn5audio18IsCaptureRemovableEPKNS0_11CaptureTypeE) { RET(1); }
+HLE(_ZN2nn5audio17ReadCaptureBufferEPNS0_11CaptureTypeEPii) { RET(0); }
+HLE(_ZN2nn5audio21GetCaptureSampleCountEPKNS0_11CaptureTypeE) { RET(0); }
+/* (param, int channels, int frames, SampleFormat): at most 4 bytes a sample */
+HLE(_ZN2nn5audio42GetRequiredBufferSizeForCircularBufferSinkEPKNS0_22AudioRendererParameterEiiNS0_12SampleFormatE) {
+    RET((uint64_t)(int)ARG(1) * (uint64_t)(int)ARG(2) * 4 + 0x100);
+}
+HLE(_ZN2nn5audio21AddCircularBufferSinkEPNS0_19AudioRendererConfigEPNS0_22CircularBufferSinkTypeEPNS0_12FinalMixTypeEPKaiPvmNS0_12SampleFormatE) { RET(0); }
+HLE(_ZN2nn5audio24RemoveCircularBufferSinkEPNS0_19AudioRendererConfigEPNS0_22CircularBufferSinkTypeEPNS0_12FinalMixTypeE) {}
+HLE(_ZN2nn5audio22ReadCircularBufferSinkEPNS0_22CircularBufferSinkTypeEPvm) { RET(0); }
 HLE(_ZN2nn5audio17IsReverbRemovableEPKNS0_10ReverbTypeE) { RET(1); }
 HLE(_ZN2nn5audio22IsBufferMixerRemovableEPKNS0_15BufferMixerTypeE) { RET(1); }
 HLE(_ZN2nn5audio22IsI3dl2ReverbRemovableEPKNS0_15I3dl2ReverbTypeE) { RET(1); }

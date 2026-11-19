@@ -1,4 +1,4 @@
-/* nn::oe (applet), nn::account, nn::time, nn::pl, nn::err: what a game asks the system about itself.
+/* nn::oe (applet), nn::account, nn::time, nn::pl, nn::err, nn::chat: what a game asks the system about itself.
    The answers describe a docked console in English (language / language.txt: another language) with one user,
    "Player". */
 #include "hos.h"
@@ -202,6 +202,15 @@ static void calendar(uint64_t out, uint64_t info, int64_t posix, int local) {
         memcpy(GP(info + 8), "UTC", 3);
     }
 }
+/* The device's time zone is UTC, as calendar's: GetDeviceLocationName(LocationName*) gives "UTC" (char[0x24]), and
+   LoadTimeZoneRule(TimeZoneRule*, LocationName const&) succeeds with the rule left as it was: the host's conversions
+   take no rule (MKW loads "UTC"'s and imports no conversion that reads one) */
+HLE(_ZN2nn4time21GetDeviceLocationNameEPNS0_12LocationNameE) {
+    memset(GP(ARG(0)), 0, 0x24);
+    memcpy(GP(ARG(0)), "UTC", 3);
+    RET(0);
+}
+HLE(_ZN2nn4time16LoadTimeZoneRuleEPNS0_12TimeZoneRuleERKNS0_12LocationNameE) { RET(0); }
 /* ToCalendarTime(CalendarTime*, CalendarAdditionalInfo*, PosixTime const&) -> Result */
 HLE(_ZN2nn4time14ToCalendarTimeEPNS0_12CalendarTimeEPNS0_22CalendarAdditionalInfoERKNS0_9PosixTimeE) {
     calendar(ARG(0), ARG(1), (int64_t)G64(ARG(2)), 1);
@@ -333,3 +342,61 @@ HLE(_ZN2nn6camera3sdk19CreateCameraContextEPNS_5gsdrv18UniqueNativeHandleE) {
 /* StandardNetworkSystemClock::IsAccuracySufficient(): offline, so no (the lifted SDK version aborted, with no time
    service session) */
 HLE(_ZN2nn4time26StandardNetworkSystemClock20IsAccuracySufficientEv) { RET(0); }
+
+/* ---- nn::chat: GameChat (voice and video chat with friends, run by the system). The player is never in one: the
+   room-info event is made and never signaled, IsChatting answers false, so the game never asks for the room or
+   streams a camera. A camera video storage is still made at boot (MKW): its images are native images of the
+   storage's size (nvn_native_image_size) that no camera ever fills. ------------------------------------------- */
+HLE(_ZN2nn4chat10InitializeEv) {}
+/* AttachToRoomInfoChangedEvent(nn::os::SystemEvent*) */
+HLE(_ZN2nn4chat28AttachToRoomInfoChangedEventEPNS_2os11SystemEventE) { hos_system_event_init(ARG(0), 0); }
+HLE(_ZN2nn4chat10IsChattingEv) { RET(0); }
+
+void nvn_native_image_size(uint64_t handle, int w, int h);   /* nvn_native.c */
+/* a storage (its guest LocalCameraVideoType or RemoteCameraVideoType) -> its images' handles: CHAT_HANDLE + its
+   slot * CHAT_IMAGES + the image's index */
+#define CHAT_HANDLE 0x63680000u
+#define CHAT_STORAGES 16
+#define CHAT_IMAGES 16
+static struct { uint64_t type; int w, h, count; } chat_storage[CHAT_STORAGES];
+static os_mutex chat_lock = OS_MUTEX_INIT;
+/* Calculate{Local,Remote}CameraVideoBufferSize(int w, int h, int count) -> the bytes of count RGBA8 images */
+static void chat_buffer_size(Ctx *c) { RET(((uint64_t)(uint32_t)ARG(0) * (uint32_t)ARG(1) * 4 * (uint32_t)ARG(2) + 0xFFF) & ~0xFFFull); }
+/* Initialize{Local,Remote}CameraVideoStorage(type*, int w, int h, int count, void* memory, size_t size) */
+static void chat_storage_init(Ctx *c) {
+    const int w = (int)ARG(1), h = (int)ARG(2), count = (int)ARG(3);
+    if (w <= 0 || h <= 0 || count <= 0 || count > CHAT_IMAGES) hos_fatal(c, "chat: a camera video storage of %d %dx%d images", count, w, h);
+    os_mutex_lock(&chat_lock);
+    int k = 0;
+    while (k < CHAT_STORAGES && chat_storage[k].type && chat_storage[k].type != ARG(0)) k++;
+    if (k == CHAT_STORAGES) hos_fatal(c, "chat: more than %d camera video storages", CHAT_STORAGES);
+    chat_storage[k].type = ARG(0), chat_storage[k].w = w, chat_storage[k].h = h, chat_storage[k].count = count;
+    os_mutex_unlock(&chat_lock);
+    for (int i = 0; i < count; i++) nvn_native_image_size(CHAT_HANDLE + (uint32_t)(k * CHAT_IMAGES + i), w, h);
+    RET(0);
+}
+/* Get{Local,Remote}CameraImageHandle(type const*, int index) -> nn::gs::NativeImageHandle */
+static void chat_image_handle(Ctx *c) {
+    os_mutex_lock(&chat_lock);
+    int k = 0;
+    while (k < CHAT_STORAGES && chat_storage[k].type != ARG(0)) k++;
+    const int ok = k < CHAT_STORAGES && (int)ARG(1) >= 0 && (int)ARG(1) < chat_storage[k].count;
+    os_mutex_unlock(&chat_lock);
+    if (!ok) hos_fatal(c, "chat: image %d of a camera video storage never made", (int)ARG(1));
+    RET(CHAT_HANDLE + (uint32_t)(k * CHAT_IMAGES + (int)ARG(1)));
+}
+/* Finalize{Local,Remote}CameraVideoStorage(type*) */
+static void chat_storage_fini(Ctx *c) {
+    os_mutex_lock(&chat_lock);
+    for (int k = 0; k < CHAT_STORAGES; k++)
+        if (chat_storage[k].type == ARG(0)) chat_storage[k].type = 0;
+    os_mutex_unlock(&chat_lock);
+}
+HLE(_ZN2nn4chat35CalculateLocalCameraVideoBufferSizeEiii) { chat_buffer_size(c); }
+HLE(_ZN2nn4chat36CalculateRemoteCameraVideoBufferSizeEiii) { chat_buffer_size(c); }
+HLE(_ZN2nn4chat33InitializeLocalCameraVideoStorageEPNS0_20LocalCameraVideoTypeEiiiPvm) { chat_storage_init(c); }
+HLE(_ZN2nn4chat34InitializeRemoteCameraVideoStorageEPNS0_21RemoteCameraVideoTypeEiiiPvm) { chat_storage_init(c); }
+HLE(_ZN2nn4chat25GetLocalCameraImageHandleEPKNS0_20LocalCameraVideoTypeEi) { chat_image_handle(c); }
+HLE(_ZN2nn4chat26GetRemoteCameraImageHandleEPKNS0_21RemoteCameraVideoTypeEi) { chat_image_handle(c); }
+HLE(_ZN2nn4chat31FinalizeLocalCameraVideoStorageEPNS0_20LocalCameraVideoTypeE) { chat_storage_fini(c); }
+HLE(_ZN2nn4chat32FinalizeRemoteCameraVideoStorageEPNS0_21RemoteCameraVideoTypeE) { chat_storage_fini(c); }

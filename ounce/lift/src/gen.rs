@@ -59,14 +59,14 @@ fn slot_list(img: &Image, facts: &Facts, functions: &[u64]) -> Vec<(u64, usize)>
     let mut fns: Vec<u64> = functions.iter().copied().chain(img.hooks.iter().map(|h| h.addr)).collect();
     fns.sort_unstable();
     fns.dedup();
-    let bases: Vec<u64> = img.modules.iter().map(|m| m.base).collect();
+    let headers: Vec<u64> = img.modules.iter().flat_map(|m| m.header()).collect();
     let mut slots: Vec<(u64, usize)> = facts
         .reloc_slots
         .iter()
         .filter_map(|&at| {
             let v = u64::from_le_bytes(img.read(at, 8).unwrap().try_into().unwrap());
             let k = fns.binary_search(&v).ok()?;
-            (!bases.contains(&v)).then_some((at, k))
+            (!headers.contains(&v)).then_some((at, k))
         })
         .collect();
     slots.sort_unstable();

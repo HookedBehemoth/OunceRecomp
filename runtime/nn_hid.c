@@ -660,6 +660,22 @@ HLE(_ZN2nn3hid15GetNpadStyleSetERKj) { RET(G32(ARG(0)) == NPAD_NO1 ? STYLE_FULLK
 HLE(_ZN2nn3hid14InitializeNpadEv) {}
 HLE(_ZN2nn3hid18InitializeKeyboardEv) {}
 HLE(_ZN2nn3hid15InitializeMouseEv) {}
+
+/* nn::hid's Nmouse (a Joy-Con 2 or USB mouse as a pointer): the host has none. GetNmouseHandles counts 0 handles, so
+   a game asks nothing of one; GetNmouseStates (int* count, states, max, handle) -> bool and GetNmouseTypeSet
+   (BitFlagSet*, handle) -> bool answer false with nothing written but a count of 0. The pointer's ranges and position
+   are SDK 21's (MKW's 21.4 has them; DKB's 20.5 and OoT's 22.2 do not) */
+HLE(_ZN2nn3hid16InitializeNmouseEPvmii) {}
+HLE(_ZN2nn3hid14FinalizeNmouseEv) {}
+HLE(_ZN2nn3hid16GetNmouseHandlesEPNS0_12NmouseHandleEij) { RET(0); }
+HLE(_ZN2nn3hid15GetNmouseStatesEPiPNS0_11NmouseStateEiNS0_12NmouseHandleE) {
+    G32(ARG(0)) = 0;
+    RET(0);
+}
+HLE(_ZN2nn3hid16GetNmouseTypeSetEPNS_4util10BitFlagSetILi32ENS0_10NmouseTypeEEENS0_12NmouseHandleE) { RET(0); }
+HLE(_ZN2nn3hid19EnableNmousePointerENS0_12NmouseHandleEb) {}
+HLE(_ZN2nn3hid22SetNmousePointerRangesEii, sdk(21, 21)) {}
+HLE(_ZN2nn3hid24SetNmousePointerPositionENS0_12NmouseHandleEii, sdk(21, 21)) {}
 HLE(_ZN2nn3hid14DisconnectNpadERKj) {}
 HLE(_ZN2nn3hid18SetNpadJoyHoldTypeENS0_15NpadJoyHoldTypeE) {}
 HLE(_ZN2nn3hid22SetSupportedNpadIdTypeEPKjm) {}
