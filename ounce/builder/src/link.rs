@@ -12,7 +12,17 @@ extern "C" {
 
 /// ld.lld with these arguments (without the driver's name): lld's messages, or Err(them) on a failure
 pub fn lld(args: &[String]) -> Result<String, String> {
-    let a: Vec<CString> = std::iter::once("ld.lld").chain(args.iter().map(String::as_str)).map(|s| CString::new(s).unwrap()).collect();
+    lld_main("ld.lld", args)
+}
+
+/// lld-link (lld's COFF driver) with these arguments: as `lld`
+pub fn lld_coff(args: &[String]) -> Result<String, String> {
+    lld_main("lld-link", args)
+}
+
+/// lld in this process, the driver `driver` names
+fn lld_main(driver: &str, args: &[String]) -> Result<String, String> {
+    let a: Vec<CString> = std::iter::once(driver).chain(args.iter().map(String::as_str)).map(|s| CString::new(s).unwrap()).collect();
     let argv: Vec<*const c_char> = a.iter().map(|s| s.as_ptr()).collect();
     let mut msg = std::ptr::null_mut();
     let code = unsafe { hk_lld_link(argv.as_ptr(), argv.len() as c_int, &mut msg) };
@@ -101,5 +111,38 @@ pub fn exe_args(x: &Exe, s: &Sysroot) -> Vec<String> {
     }
     a.push(p(&s.gcc("crtendS.o")));
     a.push(p(&s.crt("crtn.o")));
+    a
+}
+
+/// The Windows link line, for lld-link (lld's COFF driver; argv[0] "lld-link", `lld_coff`): a console program against
+/// the static C runtime (libcmt, which the host's objects name) and MSVC's and the SDK's libraries (windows.rs). The
+/// executable's exports for the renderer are runtime/os/os_exports_windows.c's /EXPORT directives; no import library
+/// is written for them. /OPT:NOICF: identical lifted functions keep their own addresses (code pointers are compared).
+/// The guest window's fixed address (A64_HOST_BASE) is reserved at start, so the image stays relocatable (ASLR).
+pub fn exe_args_windows(x: &Exe, lib_dirs: &[PathBuf]) -> Vec<String> {
+    let p = |p: &Path| p.to_string_lossy().into_owned();
+    let mut a: Vec<String> = ["/nologo", "/machine:x64", "/subsystem:console", "/stack:8388608", "/opt:ref", "/opt:noicf", "/incremental:no",
+                              "/manifest:no", "/noimplib", "/debug:none"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    a.push(format!("/out:{}", p(x.out)));
+    for d in lib_dirs {
+        a.push(format!("/libpath:{}", p(d)));
+    }
+    if let Some(m) = x.map {
+        a.push(format!("/map:{}", p(m)));
+    }
+    a.extend(x.objects.iter().map(|o| p(o)));
+    if let Some(o) = x.order {
+        // (4037: a name the order file lists that is not a function of its own here)
+        a.push(format!("/order:@{}", p(o)));
+        a.push("/ignore:4037".into());
+    }
+    a.extend(x.libs.iter().cloned());
+    for l in ["libcmt.lib", "oldnames.lib", "kernel32.lib", "user32.lib", "advapi32.lib", "shell32.lib", "ole32.lib", "synchronization.lib",
+              "winmm.lib", "psapi.lib", "uuid.lib"] {
+        a.push(l.into());
+    }
     a
 }

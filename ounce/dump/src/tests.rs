@@ -472,6 +472,7 @@ fn paths_cannot_leave_the_output() {
 }
 
 #[test]
+#[cfg(unix)] // (symbolic links need a privilege on Windows)
 fn links_are_refused() {
     use std::os::unix::fs::symlink;
     let f = fixture();
@@ -508,7 +509,7 @@ fn partial_files_and_failures() {
     let target = romfs.join("Model/authored.zs");
     std::fs::create_dir_all(target.parent().unwrap()).unwrap();
     let files = vec![("Model/authored.zs".to_string(), 12345u64)];
-    for (code, want) in [(libc::ENOSPC, "No space left on device writing romfs/Model/authored.zs (12345 bytes): "), (libc::EACCES, "romfs/Model/authored.zs: ")] {
+    for (code, want) in [(extract::DISK_FULL[0], "No space left on device writing romfs/Model/authored.zs (12345 bytes): "), (libc_eacces(), "romfs/Model/authored.zs: ")] {
         std::fs::write(&target, b"previous file").unwrap();
         let e = extract::extract(
             &f.out,
@@ -522,7 +523,7 @@ fn partial_files_and_failures() {
         )
         .unwrap_err();
         assert!(e.starts_with(want), "{e}");
-        if code == libc::ENOSPC {
+        if code == extract::DISK_FULL[0] {
             assert!(e.ends_with(" GB free there"), "{e}");
         }
         assert_eq!(std::fs::read(&target).unwrap(), b"previous file");
@@ -557,6 +558,7 @@ fn heal_takes_a_module_from_another_title() {
 }
 
 #[test]
+#[cfg(unix)] // (symbolic links need a privilege on Windows)
 fn heal_and_unpack_refuse_links() {
     use std::os::unix::fs::symlink;
     let nup_bytes = healing(b"NSO0authored module");
@@ -817,4 +819,14 @@ fn exefs_in_memory_is_the_extracted_one() {
     std::fs::write(on_disk.join("main"), zbic_nso(&[&text, b"ro", b"data"])).unwrap();
     nso::unpack_nso(&on_disk.join("main"), &on_disk.join("main.plain")).unwrap();
     assert_eq!(files["main"], std::fs::read(on_disk.join("main")).unwrap());
+}
+
+/// (EACCES; on Windows the test takes ERROR_ACCESS_DENIED, 5)
+#[cfg(unix)]
+fn libc_eacces() -> i32 {
+    libc::EACCES
+}
+#[cfg(windows)]
+fn libc_eacces() -> i32 {
+    5
 }

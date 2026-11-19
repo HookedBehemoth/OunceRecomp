@@ -1141,6 +1141,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "libz-sys"
+version = "1.1.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fee3f59f4321dab0c78d828942e7aa09d0bd8ad6e78a501977e6bf3d02938045"
+dependencies = [
+ "cc",
+ "pkg-config",
+ "vcpkg",
+]
+
+[[package]]
 name = "linebender_resource_handle"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1619,6 +1630,7 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "libc",
+ "libz-sys",
  "lz4_flex",
  "ounce-core",
  "ounce-dump",
@@ -1630,6 +1642,8 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2",
+ "windows-sys 0.61.2",
+ "zstd-sys",
 ]
 
 [[package]]
@@ -1639,6 +1653,7 @@ dependencies = [
  "libc",
  "serde",
  "toml",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1652,6 +1667,7 @@ dependencies = [
  "cc",
  "libc",
  "sha2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1677,6 +1693,7 @@ dependencies = [
  "sha1",
  "sha2",
  "toml",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2454,6 +2471,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c14b15dffa2f4bd712103e857140aa04a4f2ff6e955c77d7eb8e53ee02a3b64"
 
 [[package]]
+name = "vcpkg"
+version = "0.2.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
+
+[[package]]
 name = "vello_common"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2937,3 +2960,13 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+
+[[package]]
+name = "zstd-sys"
+version = "2.1.3+zstd.1.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f729a06d0257428fd9d997ac8db7e1407bd0262ab016b085b36bc52957c0052d"
+dependencies = [
+ "cc",
+ "pkg-config",
+]

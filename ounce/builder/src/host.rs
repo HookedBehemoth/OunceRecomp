@@ -16,9 +16,14 @@ pub struct CJob {
 
 const CPU: [&str; 2] = ["-march=x86-64-v3", "-ffp-contract=off"];
 
-/// the target flags every C compile starts with: the CPU (and the build's --sysroot, sysroot.rs, given apart)
+/// the target flags every C compile starts with: the CPU (and the build's --sysroot, sysroot.rs, given apart); on
+/// Windows the MSVC target against the static C runtime (windows.rs)
 pub fn target() -> Vec<String> {
-    CPU.iter().map(|x| x.to_string()).collect()
+    let mut t: Vec<String> = CPU.iter().map(|x| x.to_string()).collect();
+    if cfg!(windows) {
+        t.extend([format!("--target={}", crate::windows::TRIPLE), "-fms-runtime-lib=static".into()]);
+    }
+    t
 }
 
 fn s(p: &Path) -> String {
@@ -34,6 +39,11 @@ pub fn host_jobs(root: &Path, rt64: &Path, sources: &[PathBuf], version: &str, f
     fl.extend([format!("-I{}", s(&rt.join("os"))), "-D_GNU_SOURCE".into(), format!("-I{}", s(&rt)), format!("-I{}", s(&rt.join("media")))]);
     fl.extend([format!("-I{}", s(&root.join("renderer/api"))), format!("-I{}", s(&root.join("third_party"))), format!("-I{}", s(rt64))]);
     fl.extend(["-Wno-everything", "-O2", "-g0", "-mcx16", "-Werror=implicit-function-declaration", "-Werror=incompatible-pointer-types"].map(String::from));
+    if cfg!(windows) {
+        // (the POSIX names the host's C calls, as the UCRT spells them: runtime/os/os_crt_windows.h)
+        fl.extend([format!("-I{}", s(&rt.join("os/win"))), "-include".into(), s(&rt.join("os/os_crt_windows.h"))]);
+        fl.extend(["-D_CRT_SECURE_NO_WARNINGS", "-D_CRT_NONSTDC_NO_DEPRECATE"].map(String::from));
+    }
     fl.push(format!("-I{}", s(&opus.join("include"))));
     fl.push(format!("-I{}", s(&ffmpeg.join("include"))));
     let mut jobs: Vec<CJob> = sources
@@ -61,6 +71,10 @@ pub fn host_jobs(root: &Path, rt64: &Path, sources: &[PathBuf], version: &str, f
 /// rt64/a64_rt.c at the generated code's flags (-O1 and two -mllvm options)
 pub fn rt_job(root: &Path, rt64: &Path) -> CJob {
     let mut f = target();
+    if cfg!(windows) {
+        let rt = root.join("runtime");
+        f.extend([format!("-I{}", s(&rt.join("os/win"))), "-include".into(), s(&rt.join("os/os_crt_windows.h")), "-D_CRT_SECURE_NO_WARNINGS".into()]);
+    }
     f.extend([format!("-I{}", s(rt64)), format!("-I{}", s(&root.join("third_party/a64-kit/rt")))]);
     f.extend(["-Wno-everything", "-fno-strict-aliasing", "-mcx16", "-O1", "-g0", "-mllvm", "-rotation-max-header-size=0", "-ffunction-sections", "-mllvm", "-capture-tracking-max-uses-to-explore=5000"].map(String::from));
     CJob { obj: "a64_rt.o".into(), src: rt64.join("a64_rt.c"), flags: f }
@@ -82,7 +96,16 @@ fn mllvm(flags: &[String]) -> Vec<(String, u32)> {
 /// its recipe (sysroot::key).
 pub struct Toolchain<'a> {
     pub resource_dir: &'a Path,
-    pub sysroot: &'a Path,
+    /// Linux: the sysroot; None on Windows, whose headers are MSVC's and the SDK's (`msvc`)
+    pub sysroot: Option<&'a Path>,
+    /// Windows: MSVC's and the SDK's include folders (windows.rs)
+    pub msvc: &'a [PathBuf],
+}
+
+/// what names the system headers an object was compiled against in its cache key: the sysroot's recipe, or on
+/// Windows MSVC's and the SDK's folders (their versions)
+fn system_key(tc: &Toolchain) -> String {
+    if tc.sysroot.is_some() { crate::sysroot::key() } else { tc.msvc.iter().map(|d| s(d)).collect::<Vec<_>>().join(";") }
 }
 
 pub fn compile(jobs: &[CJob], out: &Path, threads: usize, cache: Option<&Cache>, tc: &Toolchain, aux: &crate::lift::Aux) -> Result<usize, String> {
@@ -125,7 +148,13 @@ pub fn compile(jobs: &[CJob], out: &Path, threads: usize, cache: Option<&Cache>,
 /// the driver's arguments for a job (an -MD dependency file to `deps`)
 fn args(j: &CJob, tc: &Toolchain, deps: &Path) -> Vec<String> {
     let mut a = j.flags.clone();
-    a.extend(["-fstack-protector-strong".into(), format!("-resource-dir={}", s(tc.resource_dir)), format!("--sysroot={}", s(tc.sysroot))]);
+    a.extend(["-fstack-protector-strong".into(), format!("-resource-dir={}", s(tc.resource_dir))]);
+    if let Some(r) = tc.sysroot {
+        a.push(format!("--sysroot={}", s(r)));
+    }
+    for d in tc.msvc {
+        a.extend(["-imsvc".into(), s(d)]);
+    }
     a.extend(["-MD".into(), "-MF".into(), s(deps), "-c".into(), s(&j.src)]);
     a
 }
@@ -138,8 +167,9 @@ fn one(j: &CJob, cache: Option<&Cache>, tc: &Toolchain, gate: &crate::gate::Gate
     // contents: what they hold is in the list)
     let flags: Vec<&str> = j.flags.iter().map(String::as_str).filter(|f| !f.starts_with("-I")).collect();
     let base = |kind: &str| {
-        let k = Key::new(kind).add(s(&j.src).as_bytes()).add(b"-fstack-protector-strong").add(crate::sysroot::key().as_bytes());
-        if kind == "manifest" { k.add(j.flags.join("\0").as_bytes()).add(s(tc.sysroot).as_bytes()) } else { k.add(flags.join("\0").as_bytes()) }
+        let k = Key::new(kind).add(s(&j.src).as_bytes()).add(b"-fstack-protector-strong").add(system_key(tc).as_bytes());
+        let root = tc.sysroot.map(s).unwrap_or_default();
+        if kind == "manifest" { k.add(j.flags.join("\0").as_bytes()).add(root.as_bytes()) } else { k.add(flags.join("\0").as_bytes()) }
     };
     let content_key = |deps: &[String]| -> Option<Key> {
         let mut k = base("c");
@@ -165,11 +195,54 @@ fn one(j: &CJob, cache: Option<&Cache>, tc: &Toolchain, gate: &crate::gate::Gate
     let _ = std::fs::remove_file(&tmp);
     if let Some(c) = cache {
         // (make's rule: "<obj>: <dep> <dep> \" ...; the first word is the target)
-        let deps: Vec<String> = text.replace("\\\n", " ").split_whitespace().skip(1).map(String::from).collect();
+        let deps: Vec<String> = make_words(&text).into_iter().skip(1).collect();
         c.put_manifest(base("manifest"), &deps)?;
         if let Some(k) = content_key(&deps) {
             c.put(k, &o)?;
         }
     }
     Ok((o, false))
+}
+
+/// The words of a make rule as clang's -MD writes it: whitespace apart, a backslash before a line end continues the line,
+/// and one before a space is part of the word (a path with spaces: Windows' `C:\Program Files\...`, whose other
+/// backslashes are its separators)
+fn make_words(text: &str) -> Vec<String> {
+    let (mut words, mut w) = (Vec::new(), String::new());
+    let mut it = text.chars().peekable();
+    while let Some(c) = it.next() {
+        match c {
+            '\\' if matches!(it.peek(), Some('\n') | Some('\r')) => {
+                while matches!(it.peek(), Some('\n') | Some('\r')) {
+                    it.next();
+                }
+                if !w.is_empty() {
+                    words.push(std::mem::take(&mut w));
+                }
+            }
+            '\\' if it.peek() == Some(&' ') => {
+                w.push(' ');
+                it.next();
+            }
+            c if c.is_whitespace() => {
+                if !w.is_empty() {
+                    words.push(std::mem::take(&mut w));
+                }
+            }
+            c => w.push(c),
+        }
+    }
+    if !w.is_empty() {
+        words.push(w);
+    }
+    words
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn make_words_keep_escaped_spaces() {
+        let w = super::make_words("x.o: a.c C:\\Program\\ Files\\VC\\stdio.h \\\n  /usr/include/b.h\n");
+        assert_eq!(w, ["x.o:", "a.c", "C:\\Program Files\\VC\\stdio.h", "/usr/include/b.h"]);
+    }
 }

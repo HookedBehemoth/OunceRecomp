@@ -2,6 +2,8 @@
 //! of a checkout (`games`), where a build and a run write (`layout`) and a game run (`run`).
 
 pub mod config;
+pub mod dirs;
 pub mod games;
 pub mod layout;
 pub mod run;
+pub mod sys;

@@ -136,7 +136,34 @@ fn busy_s() -> f64 {
     crate::BUSY_NS.load(Ordering::Relaxed) as f64 / 1e9
 }
 
+/// (process CPU seconds, user and system; the peak working set in MB)
+#[cfg(windows)]
+pub fn usage() -> (f64, f64) {
+    let (cpu, peak) = win_usage();
+    (cpu, peak as f64 / (1 << 20) as f64)
+}
+
+/// (CPU seconds, user and system; the peak working set in bytes) of this process
+#[cfg(windows)]
+fn win_usage() -> (f64, u64) {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+    let ft = |t: FILETIME| ((t.dwHighDateTime as u64) << 32 | t.dwLowDateTime as u64) as f64 / 1e7;
+    // SAFETY: this process's pseudo-handle and out structs
+    unsafe {
+        let z = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let (mut a, mut b, mut k, mut u) = (z, z, z, z);
+        let cpu = if GetProcessTimes(GetCurrentProcess(), &mut a, &mut b, &mut k, &mut u) != 0 { ft(k) + ft(u) } else { 0.0 };
+        let mut c: PROCESS_MEMORY_COUNTERS = std::mem::zeroed();
+        c.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+        let peak = if GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) != 0 { c.PeakWorkingSetSize as u64 } else { 0 };
+        (cpu, peak)
+    }
+}
+
 /// (process CPU seconds, user and system; VmHWM in MB)
+#[cfg(unix)]
 pub fn usage() -> (f64, f64) {
     let stat = std::fs::read_to_string("/proc/self/stat").unwrap_or_default();
     let f: Vec<&str> = stat.rsplit(')').next().unwrap_or("").split_whitespace().collect();
@@ -301,10 +328,13 @@ pub fn lift(r: &Run, out: &dyn Out) -> Result<Stats, String> {
         c_lift,
         c_disc + busy_s() + g.3
     );
+    #[cfg(unix)]
     let hwm = std::fs::read_to_string("/proc/self/status")
         .ok()
         .and_then(|s| s.lines().find(|l| l.starts_with("VmHWM:")).map(|l| l[6..].trim().to_string()))
         .unwrap_or_default();
+    #[cfg(windows)]
+    let hwm = format!("{} kB", win_usage().1 >> 10);
     println!("peak memory (VmHWM): {hwm}");
     #[cfg(feature = "count-alloc")]
     println!(

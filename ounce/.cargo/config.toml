@@ -1,0 +1,10 @@
+# Windows (MSVC): the static C runtime (/MT), the one the LLVM release's libraries are built against (builder/build.rs),
+# and the crates' C and C++ (zbic, zstd, the BC encoders, the LLVM shims) compiled by LLVM's clang, whose flags they
+# are written for, not by cl
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[env]
+CC_x86_64_pc_windows_msvc = "clang"
+CXX_x86_64_pc_windows_msvc = "clang++"
+AR_x86_64_pc_windows_msvc = "llvm-lib"

@@ -117,7 +117,10 @@ fn relative_links(root: &Path, dir: &Path) -> Result<(), String> {
                 let up: PathBuf = from.components().map(|_| "..").collect();
                 let rel = up.join(inside.strip_prefix(root).unwrap());
                 std::fs::remove_file(&p).map_err(|e| e.to_string())?;
+                #[cfg(unix)]
                 std::os::unix::fs::symlink(&rel, &p).map_err(|e| format!("{}: {e}", p.display()))?;
+                #[cfg(not(unix))]
+                return Err(format!("{}: the Linux sysroot is made on Linux only", rel.display()));
             }
         }
     }

@@ -1691,11 +1691,14 @@ impl Horizon {
 
 // ---- the build's cross-check: the records the compiler made of the declarations against the scan
 
-/// the bytes of a 64-bit ELF object's sections named `name` (none: empty)
+/// the bytes of an object's sections named `name` (none: empty): a 64-bit ELF object, or an x86-64 COFF one (Windows)
 fn elf_sections(path: &Path, name: &[u8]) -> Res<Vec<u8>> {
     let data = std::fs::read(path).map_err(|e| format!("patch declarations: {}: {e}", path.display()))?;
+    if data.len() >= 20 && data[..2] == [0x64, 0x86] {
+        return Ok(coff_sections(&data, name));
+    }
     if data.len() < 0x40 || &data[..4] != b"\x7fELF" || data[4] != 2 {
-        return Err(format!("patch declarations: {} is not a 64-bit ELF object", path.display()));
+        return Err(format!("patch declarations: {} is neither a 64-bit ELF object nor an x86-64 COFF one", path.display()));
     }
     let u16_at = |o: usize| u16::from_le_bytes([data[o], data[o + 1]]) as usize;
     let u32_at = |o: usize| u32::from_le_bytes(data[o..o + 4].try_into().unwrap()) as usize;
@@ -1715,6 +1718,33 @@ fn elf_sections(path: &Path, name: &[u8]) -> Res<Vec<u8>> {
         }
     }
     Ok(out)
+}
+
+/// the bytes of a COFF object's sections named `name`: a name longer than 8 bytes is `/<decimal offset>` into the string
+/// table after the symbol table; an uninitialized section (IMAGE_SCN_CNT_UNINITIALIZED_DATA) holds nothing
+fn coff_sections(data: &[u8], name: &[u8]) -> Vec<u8> {
+    let u16_at = |o: usize| u16::from_le_bytes([data[o], data[o + 1]]) as usize;
+    let u32_at = |o: usize| u32::from_le_bytes(data[o..o + 4].try_into().unwrap()) as usize;
+    let (nsec, symtab, nsym, opt) = (u16_at(2), u32_at(8), u32_at(12), u16_at(16));
+    let strtab = symtab + nsym * 18;
+    let mut out = Vec::new();
+    for k in 0..nsec {
+        let h = 20 + opt + k * 40;
+        let raw = &data[h..h + 8];
+        let short = &raw[..raw.iter().position(|&b| b == 0).unwrap_or(8)];
+        let full: &[u8] = match std::str::from_utf8(short).ok().and_then(|t| t.strip_prefix('/')).and_then(|n| n.parse::<usize>().ok()) {
+            Some(off) => {
+                let start = strtab + off;
+                &data[start..start + data[start..].iter().position(|&b| b == 0).unwrap_or(0)]
+            }
+            None => short,
+        };
+        if full == name && u32_at(h + 36) & 0x80 == 0 {
+            let (size, off) = (u32_at(h + 16), u32_at(h + 20));
+            out.extend_from_slice(&data[off..off + size]);
+        }
+    }
+    out
 }
 
 /// a declaration as tokens (a trailing comma before the closing parenthesis dropped: an empty operand list)

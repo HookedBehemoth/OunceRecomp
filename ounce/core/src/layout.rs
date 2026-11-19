@@ -10,6 +10,8 @@
 //! ```
 //!
 //! A release (sources without .git, the AppImage's) writes the same folders under `~/.cache/ounce/work/` instead.
+//! `OUNCE_WORK=<dir>` puts them in `<dir>` (a faster disk, or on Windows a folder the virus scanner leaves alone: it
+//! stops freshly built programs from starting elsewhere).
 //!
 //! What is shared lives in the config's folders: the object cache (`<cache>/objects`) and, per game, the data folder's
 //! `<game>/golden/` (the smoke tests' goldens) and `<game>/rec/` (input recordings).
@@ -29,12 +31,13 @@ impl Layout {
 
     /// A checkout's work/, or for a release (its sources in a read-only folder, no .git) the cache folder's work/
     fn work_base(&self) -> PathBuf {
+        if let Some(d) = std::env::var_os("OUNCE_WORK").filter(|d| !d.is_empty()) {
+            return PathBuf::from(d);
+        }
         if self.root.join(".git").exists() {
             return self.root.join("work");
         }
-        std::env::var_os("XDG_CACHE_HOME").filter(|v| !v.is_empty()).map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache"))
-            .join("ounce/work")
+        crate::dirs::cache().join("work")
     }
 
     pub fn work(&self) -> PathBuf {

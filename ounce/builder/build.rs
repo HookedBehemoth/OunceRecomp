@@ -18,6 +18,9 @@ fn main() {
     println!("cargo:rerun-if-changed=src/clang_shim.cpp");
     println!("cargo:rerun-if-env-changed=LLVM_CONFIG");
     println!("cargo:rerun-if-env-changed=LLVM_STATIC_DIR");
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        return windows();
+    }
     if std::env::var_os("CARGO_FEATURE_STATIC_LLVM").is_some() {
         return static_llvm();
     }
@@ -112,4 +115,61 @@ fn static_llvm() {
     }
     // (the C++ library statically too: the shipped ounce needs no libstdc++ of the player's)
     println!("cargo:rustc-link-arg=-l:libstdc++.a");
+}
+
+/// Windows (MSVC): LLVM, lld and clang linked statically from the release tree llvm-config names (LLVM_CONFIG, else
+/// llvm-config on the PATH: the `clang+llvm-<version>-x86_64-pc-windows-msvc` archive holds every library). Its
+/// libraries are built against the static C runtime (/MT), as the shims are here and the crates are with
+/// `+crt-static` (.cargo/config.toml). zlib and zstd, which the archive's llvm-config names but does not ship, are the
+/// libz-sys and zstd-sys crates' (Cargo.toml); libxml2, which only lld-link's manifest merger calls, is
+/// src/xml_stub.c's (the game's link passes /manifest:no).
+fn windows() {
+    println!("cargo:rerun-if-changed=src/xml_stub.c");
+    let version = llvm_config(&["--version"]);
+    let major: u32 = version.split('.').next().unwrap().parse().unwrap();
+    assert_eq!(major, LLVM_MAJOR, "LLVM {version}: the lifter's IR is written for LLVM {LLVM_MAJOR}");
+    let clang = std::env::var_os("CARGO_FEATURE_CLANG").is_some();
+    let libdir = std::path::PathBuf::from(llvm_config(&["--libdir"]));
+    let mut b = cc::Build::new();
+    b.cpp(true).file("src/llvm_shim.cpp").file("src/lld_shim.cpp").warnings(false).static_crt(true);
+    if clang {
+        b.file("src/clang_shim.cpp");
+        let res = libdir.join("clang").join(major.to_string());
+        println!("cargo:rustc-env=HK_CLANG_RESOURCE_DIR={}", res.display());
+    }
+    // (llvm-config's flags are cl's; the C and C++ of every crate are compiled by clang, .cargo/config.toml)
+    for f in llvm_config(&["--cxxflags"]).split_whitespace() {
+        match f {
+            "/EHs-c-" => b.flag("-fno-exceptions"),
+            "/GR-" => b.flag("-fno-rtti"),
+            f if f.starts_with("-std:") => b.flag(f.replace("-std:", "-std=")),
+            f => b.flag(f),
+        };
+    }
+    b.compile("llvm_shim");
+    cc::Build::new().file("src/xml_stub.c").static_crt(true).warnings(false).compile("xml_stub");
+    println!("cargo:rustc-link-search=native={}", libdir.display());
+    // (every component library; the DLLs' import libraries (LLVM-C, libclang, LTO, Remarks) and clangd's are left out)
+    let mut libs: Vec<String> = std::fs::read_dir(&libdir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter_map(|n| n.strip_suffix(".lib").map(String::from))
+        .filter(|n| {
+            let llvm = n.starts_with("LLVM") && n.as_bytes().get(4).is_some_and(|c| c.is_ascii_alphabetic());
+            llvm || n.starts_with("lld") || clang && n.starts_with("clang") && !n.starts_with("clangd") && !n.starts_with("clangTidy")
+        })
+        .collect();
+    libs.sort();
+    for l in &libs {
+        println!("cargo:rustc-link-lib=static={l}");
+    }
+    // (the system's own libraries; zlib's, zstd's and libxml2's archives, named by the release's build machine, are
+    // replaced as said above)
+    for l in llvm_config(&["--system-libs"]).split_whitespace() {
+        let name = l.strip_suffix(".lib").unwrap_or(l);
+        if !name.contains(['/', '\\']) &&!["zs", "xml2s"].contains(&name) {
+            println!("cargo:rustc-link-lib=dylib={name}");
+        }
+    }
 }

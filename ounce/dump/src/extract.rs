@@ -4,9 +4,17 @@
 use crate::nup::Part;
 use std::fs::File;
 use std::io::{self, Write};
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+
+/// The OS error codes of a full disk (raw_os_error)
+#[cfg(unix)]
+pub const DISK_FULL: &[i32] = &[libc::ENOSPC];
+/// The OS error codes of a full disk (raw_os_error: ERROR_DISK_FULL, ERROR_HANDLE_DISK_FULL)
+#[cfg(windows)]
+pub const DISK_FULL: &[i32] = &[112, 39];
 
 const WINDOWS_DEVICES: [&str; 6] = ["CON", "CONIN$", "CONOUT$", "PRN", "AUX", "NUL"];
 
@@ -57,7 +65,7 @@ pub fn extraction_path(out: &Path, part: &str, rel: &str, temporary: &str) -> Re
         if m.file_type().is_symlink() {
             return Err(format!("extraction path is a link or reparse point: {}", p.display()));
         }
-        if *p == tmp && m.nlink() > 1 {
+        if *p == tmp && nlink(p, &m) > 1 {
             return Err(format!("extraction temporary file has other hard links: {}", p.display()));
         }
     }
@@ -173,7 +181,7 @@ pub fn extract(
         if let Err(e) = result {
             // (the room is measured before the failed file's space is freed)
             let msg = match e.raw_os_error() {
-                Some(libc::ENOSPC) => format!(
+                Some(c) if DISK_FULL.contains(&c) => format!(
                     "No space left on device writing {}/{rel} ({size} bytes): {}",
                     part.name(),
                     free_gb(parent).map_or("free space unknown".into(), |g| format!("{g:.1} GB free there"))
@@ -190,7 +198,39 @@ pub fn extract(
     Ok(w)
 }
 
+/// How many hard links the file has
+#[cfg(unix)]
+fn nlink(_p: &Path, m: &std::fs::Metadata) -> u64 {
+    m.nlink()
+}
+
+/// How many hard links the file has (GetFileInformationByHandle; 1 when it cannot be opened)
+#[cfg(windows)]
+fn nlink(p: &Path, _m: &std::fs::Metadata) -> u64 {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
+    let Ok(f) = File::open(p) else { return 1 };
+    // SAFETY: an open file's handle and an out struct
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(f.as_raw_handle(), &mut info) } == 0 {
+        return 1;
+    }
+    info.nNumberOfLinks as u64
+}
+
 /// The room on the disk of `dir`, in GB.
+#[cfg(windows)]
+pub fn free_gb(dir: &Path) -> Option<f64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let w: Vec<u16> = dir.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let mut avail = 0u64;
+    // SAFETY: a NUL-terminated wide path and out values
+    (unsafe { GetDiskFreeSpaceExW(w.as_ptr(), &mut avail, std::ptr::null_mut(), std::ptr::null_mut()) } != 0).then(|| avail as f64 / 1e9)
+}
+
+/// The room on the disk of `dir`, in GB.
+#[cfg(unix)]
 pub fn free_gb(dir: &Path) -> Option<f64> {
     use std::os::unix::ffi::OsStrExt;
     let c = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;

@@ -211,8 +211,10 @@ fn overlay(layout: &Layout, dir: &Path, s: &Scene) -> Option<PathBuf> {
     let banc = s.banc.as_ref()?;
     let ov = dir.join("overlay");
     if !ov.join("Sequence").is_dir() {
-        let py = layout.root.join("work/venv/bin/python");
-        let py = if py.is_file() { py } else { PathBuf::from("python3") };
+        // (the checkout's venv; on Windows its Scripts/python.exe, or OUNCE_VENV's, as tools/re/re takes it)
+        let venv = std::env::var_os("OUNCE_VENV").map(PathBuf::from).unwrap_or_else(|| layout.root.join("work/venv"));
+        let py = venv.join(if cfg!(windows) { "Scripts/python.exe" } else { "bin/python" });
+        let py = if py.is_file() { py } else { PathBuf::from(if cfg!(windows) { "python" } else { "python3" }) };
         let mut c = Command::new(py);
         c.arg("-I").arg(layout.root.join("tools/dump/make_chisel_overlay.py")).arg(&ov).args(["--route", "newgame", "--banc", banc]);
         if !s.start.is_empty() {

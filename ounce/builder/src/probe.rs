@@ -101,6 +101,50 @@ impl Vk {
     }
 }
 
+/// A shared library by its system name, opened (dlopen; Windows: LoadLibrary): its handle, or null
+#[cfg(unix)]
+unsafe fn lib_open(name: &CStr) -> *mut c_void {
+    libc::dlopen(name.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL)
+}
+
+#[cfg(windows)]
+unsafe fn lib_open(name: &CStr) -> *mut c_void {
+    windows_sys::Win32::System::LibraryLoader::LoadLibraryA(name.as_ptr() as *const u8) as *mut c_void
+}
+
+/// A symbol of a library lib_open opened, or null
+#[cfg(unix)]
+unsafe fn lib_sym(lib: *mut c_void, name: &CStr) -> *mut c_void {
+    libc::dlsym(lib, name.as_ptr())
+}
+
+#[cfg(windows)]
+unsafe fn lib_sym(lib: *mut c_void, name: &CStr) -> *mut c_void {
+    windows_sys::Win32::System::LibraryLoader::GetProcAddress(lib as _, name.as_ptr() as *const u8).map_or(null_mut(), |f| f as *mut c_void)
+}
+
+#[cfg(unix)]
+unsafe fn lib_close(lib: *mut c_void) {
+    libc::dlclose(lib);
+}
+
+#[cfg(windows)]
+unsafe fn lib_close(lib: *mut c_void) {
+    windows_sys::Win32::Foundation::FreeLibrary(lib as _);
+}
+
+/// The Vulkan loader's name (the one the back end opens, renderer/vk_main.cpp)
+#[cfg(unix)]
+const VULKAN: &CStr = c"libvulkan.so.1";
+#[cfg(windows)]
+const VULKAN: &CStr = c"vulkan-1.dll";
+
+/// SDL3's and SDL2's names (runtime/media/hos_sdl.c's)
+#[cfg(unix)]
+const SDL_NAMES: [(&CStr, &str); 2] = [(c"libSDL3.so.0", "SDL3"), (c"libSDL2-2.0.so.0", "SDL2")];
+#[cfg(windows)]
+const SDL_NAMES: [(&CStr, &str); 2] = [(c"SDL3.dll", "SDL3"), (c"SDL2.dll", "SDL2")];
+
 fn cstr(b: &[u8]) -> String {
     let n = b.iter().position(|&c| c == 0).unwrap_or(b.len());
     String::from_utf8_lossy(&b[..n]).into_owned()
@@ -113,16 +157,18 @@ fn version(v: u32) -> String {
 /// Every check, in the order printed.
 fn checks() -> Vec<Item> {
     let mut out = Vec::new();
-    // SAFETY: dlopen and dlsym with NUL-terminated names; the symbol is the loader's vkGetInstanceProcAddr
-    let lib = unsafe { libc::dlopen(c"libvulkan.so.1".as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+    let loader = VULKAN.to_string_lossy();
+    // SAFETY: a library opened and a symbol looked up by NUL-terminated names; the symbol is the loader's
+    // vkGetInstanceProcAddr
+    let lib = unsafe { lib_open(VULKAN) };
     if lib.is_null() {
-        out.push(item("vulkan", false, "libvulkan.so.1 is not installed"));
+        out.push(item("vulkan", false, format!("{loader} is not installed")));
         return out;
     }
     // SAFETY: as above
-    let sym = unsafe { libc::dlsym(lib, c"vkGetInstanceProcAddr".as_ptr()) };
+    let sym = unsafe { lib_sym(lib, c"vkGetInstanceProcAddr") };
     if sym.is_null() {
-        out.push(item("vulkan", false, "libvulkan.so.1 has no vkGetInstanceProcAddr"));
+        out.push(item("vulkan", false, format!("{loader} has no vkGetInstanceProcAddr")));
         return out;
     }
     // SAFETY: the symbol is vkGetInstanceProcAddr
@@ -238,8 +284,13 @@ unsafe fn device_checks(vk: &mut Vk, out: &mut Vec<Item>) {
         ] {
             out.push(item(key, has(ext), if has(ext) { ext.to_string() } else { format!("{ext} missing") }));
         }
-        // (the game's memory is handed over as dma-bufs: without these the back end starts with layer 0 off)
-        for (key, ext) in [("external_memory_fd", "VK_KHR_external_memory_fd"), ("dma_buf", "VK_EXT_external_memory_dma_buf")] {
+        // (the game's memory is handed over as dma-bufs, on Windows as host pointers (runtime/os/os_guest.h): without
+        // these the back end starts with layer 0 off)
+        #[cfg(unix)]
+        let memory_exts = [("external_memory_fd", "VK_KHR_external_memory_fd"), ("dma_buf", "VK_EXT_external_memory_dma_buf")];
+        #[cfg(windows)]
+        let memory_exts = [("external_memory_host", "VK_EXT_external_memory_host")];
+        for (key, ext) in memory_exts {
             out.push(optional(key, has(ext), if has(ext) { ext.to_string() } else { format!("{ext} missing: the game's memory is not mapped on the GPU (layer 0 off)") }));
         }
         // (null descriptors: VK_KHR_robustness2, or the same structure as VK_EXT_robustness2)
@@ -341,9 +392,16 @@ unsafe fn device_checks(vk: &mut Vk, out: &mut Vec<Item>) {
 }
 
 /// what a player does when /dev/udmabuf cannot be opened
+#[cfg(unix)]
 pub const UDMABUF_FIX: &str = "To fix it: load the module (sudo modprobe udmabuf; to keep it, add udmabuf to /etc/modules-load.d/udmabuf.conf) and let your user open it (the group that owns /dev/udmabuf, often kvm: sudo usermod -aG kvm $USER, then log in again)";
 
 /// /dev/udmabuf, through which the back end imports the game's memory as dma-bufs
+#[cfg(windows)]
+fn udmabuf() -> Item {
+    Item { key: "udmabuf", state: "info", value: "not used on Windows: the game's memory reaches the GPU as host pointers".into() }
+}
+
+#[cfg(unix)]
 fn udmabuf() -> Item {
     let dev = std::fs::OpenOptions::new().read(true).write(true).open("/dev/udmabuf");
     let limit = std::fs::read_to_string("/sys/module/udmabuf/parameters/size_limit_mb").ok().and_then(|s| s.trim().parse::<u64>().ok());
@@ -366,11 +424,11 @@ fn sdl() -> Item {
     if ounce_core::games::root().ok().and_then(|r| crate::sdl::prebuilt(&r)).is_some() {
         return item("sdl", true, "SDL 3.4.20, the release's own");
     }
-    for (name, what) in [(c"libSDL3.so.0", "SDL3"), (c"libSDL2-2.0.so.0", "SDL2")] {
-        // SAFETY: dlopen of a NUL-terminated name; the handle is closed at once
-        let h = unsafe { libc::dlopen(name.as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL) };
+    for (name, what) in SDL_NAMES {
+        // SAFETY: a library opened by a NUL-terminated name; the handle is closed at once
+        let h = unsafe { lib_open(name) };
         if !h.is_null() {
-            unsafe { libc::dlclose(h) };
+            unsafe { lib_close(h) };
             return item("sdl", true, what);
         }
     }
