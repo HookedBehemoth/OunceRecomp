@@ -31,3 +31,5 @@ void assets_texture_init(const void *nvn_texture);   /* (an nvn_tex) */
 int passes_recorder(uint64_t key);
 /* patch_log.c : the game patches' counters, every 600 presents (nvn_native.c's present, direct mode) */
 void patches_frame(void);
+/* graphics.c : the local lights' shadow resolution scale (local_shadow_resolution: 0.5, 1, 2 or 4), for rt_slots.c's sizes */
+float oot_local_shadow_scale(void);

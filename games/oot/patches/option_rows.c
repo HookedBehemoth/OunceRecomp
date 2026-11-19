@@ -61,10 +61,11 @@ typedef struct __attribute__((may_alias)) {
 _Static_assert(offsetof(ChoiceRow, layout) == 0x20 && offsetof(ChoiceRow, type) == 0x58 && offsetof(ChoiceRow, index) == 0x5c,
                "the choice row");
 
-/* The rows: an enum setting each (renderer/api/settings.h), its choices in the setting's order. A row offers the choices
-   its setting allows now (offer): the Upscaler row the game's network only while the chosen render scale is at most 100%
-   (hos_upscaler_allows), so the settings never pair it with a frame larger than the output. The row's index is a place
-   in that list; the entry's choice count (+0x10, which the row's step reads each time) follows it */
+/* The rows: an enum or bool setting each (renderer/api/settings.h), its choices in the setting's order (a bool's: Off,
+   On). A row offers the choices its setting allows now (offer): the Upscaler row the game's network only while the
+   chosen render scale is at most 100% (hos_upscaler_allows), so the settings never pair it with a frame larger than
+   the output. The row's index is a place in that list; the entry's choice count (+0x10, which the row's step reads
+   each time) follows it */
 enum { MAX_CHOICES = 9, ROW_FRAME_RATE = 0, ROW_RENDER_SCALE, ROW_UPSCALER };
 typedef struct {
     setting_id id;
@@ -79,6 +80,20 @@ static const Setting settings[] = {
      9, {"50%", "58%", "67%", "75%", "80%", "83%", "100%", "150%", "200%"}},
     {SET_UPSCALER, "Upscaler", "Sets how the 3D is scaled to the output.\nThe game's own works up to 100%.", 3,
      {"Game", "Bilinear", "Catmull-Rom"}},
+    {SET_SHADOW_RESOLUTION, "Shadow Resolution",
+     "Sets the resolution of the sun's and moon's shadows.\nAbove the starting value, applies after a restart.", 4,
+     {"50%", "100%", "200%", "400%"}},
+    {SET_LOCAL_SHADOW_RESOLUTION, "Light Shadow Resolution",
+     "Sets the resolution of the shadows of lamps and torches.\nAbove the starting value, applies after a restart.", 4,
+     {"50%", "100%", "200%", "400%"}},
+    {SET_ANISOTROPIC_FILTERING, "Anisotropic Filtering", "Sharpens textures seen at an angle.\nGame keeps the game's filtering.", 5,
+     {"Game", "2x", "4x", "8x", "16x"}},
+    {SET_TEXTURE_LOD_BIAS, "Texture Sharpness",
+     "Shifts the textures' detail level.\nBelow 0 is sharper but may shimmer; 0 is the game's.", 5, {"-1", "-0.5", "0", "+0.5", "+1"}},
+    {SET_BLOOM, "Bloom", "Turns the glow around bright lights on or off.", 2, {"Off", "On"}},
+    {SET_DEPTH_OF_FIELD, "Depth of Field", "Turns the blur of the distance on or off.", 2, {"Off", "On"}},
+    {SET_FIELD_OF_VIEW, "Field of View", "Sets how wide the camera sees.\n100% is the game's.", 7,
+     {"80%", "90%", "100%", "110%", "120%", "130%", "140%"}},
 };
 enum { N = sizeof settings / sizeof *settings };
 float hos_render_scale_chosen(void);   /* (frame_rate.c: render_scale's value) */

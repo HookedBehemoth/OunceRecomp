@@ -449,6 +449,7 @@ void present(const nvn_tex* t, const int* crop) {   // (the guest's Presentation
     dump_present(n);
     pstats_present(n);   // (M6h: debug.pstats)
     passtime_present(n);
+    pool_samplers_present();
     sync_present(t, crop);
 }
 

@@ -308,6 +308,9 @@ VkSamplerAddressMode wrap(uint8_t w) {
 
 
 // ---- samplers: one object per distinct create info, never destroyed ----
+// (the user's texture filtering, anisotropic_filtering and texture_lod_bias, as the samplers were made with them: read at
+// each present, pool_samplers_present)
+std::atomic<float> forced_aniso{1.0f}, added_lod_bias{0.0f};
 struct SamplerKey {
     VkSamplerCreateInfo ci;   // (pNext null: the reduction mode beside it)
     VkSamplerReductionMode reduction;
@@ -328,9 +331,14 @@ SamplerKey sampler_key(const nvn_samp_par& p, bool compare) {
     ci.mipmapMode = (p.minf == NVN_MIN_FILTER_NEAREST_MIPMAP_LINEAR || p.minf == NVN_MIN_FILTER_LINEAR_MIPMAP_LINEAR)
                         ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
     ci.addressModeU = wrap(p.ws), ci.addressModeV = wrap(p.wt), ci.addressModeW = wrap(p.wr);
-    ci.mipLodBias = std::clamp(p.lod_bias, -dev.props.limits.maxSamplerLodBias, dev.props.limits.maxSamplerLodBias);
-    ci.anisotropyEnable = p.aniso > 1.0f && dev.features.samplerAnisotropy;
-    ci.maxAnisotropy = std::clamp(p.aniso, 1.0f, dev.props.limits.maxSamplerAnisotropy);
+    // (the user's texture filtering: a mip-mapped, linearly filtered sampler that does not compare gets at least the forced
+    // anisotropy and the added LOD bias; screen-space and shadow samplers keep the game's)
+    const bool mipped = ci.minFilter == VK_FILTER_LINEAR && ci.mipmapMode == VK_SAMPLER_MIPMAP_MODE_LINEAR && !compare;
+    const float aniso = mipped ? std::max(p.aniso, forced_aniso.load(std::memory_order_relaxed)) : p.aniso;
+    const float bias = p.lod_bias + (mipped ? added_lod_bias.load(std::memory_order_relaxed) : 0.0f);
+    ci.mipLodBias = std::clamp(bias, -dev.props.limits.maxSamplerLodBias, dev.props.limits.maxSamplerLodBias);
+    ci.anisotropyEnable = aniso > 1.0f && dev.features.samplerAnisotropy;
+    ci.maxAnisotropy = std::clamp(aniso, 1.0f, dev.props.limits.maxSamplerAnisotropy);
     ci.compareEnable = compare;
     ci.compareOp = compare ? (p.cmp_mode && p.cmp_func >= 1 && p.cmp_func <= 8 ? compare_op(p.cmp_func) : VK_COMPARE_OP_LESS_OR_EQUAL)
                            : VK_COMPARE_OP_ALWAYS;
@@ -636,18 +644,51 @@ void pool_texture_registered(int id, const nvn_tex* t, const nvn_view* v) {
     s = want;
 }
 
-nvn_samp_par slot_samp[kPoolSamplers];   // (logs: what each sampler id was registered with)
+nvn_samp_par slot_samp[kPoolSamplers];   // (what each sampler id was registered with: logs, and the quality's rewrite)
+bool slot_samp_set[kPoolSamplers];
 void pool_sampler_registered(int id, const nvn_samp_par* p) {
     if (!ready || !p) return;
     if (id < 0 || (uint32_t)id >= kSamplers) return void(st_big_id.fetch_add(1, std::memory_order_relaxed));
     const VkSampler plain = sampler_of(sampler_key(*p, false), false), compare = sampler_of(sampler_key(*p, true), true);
     std::lock_guard lk(pool_mu);   // (update after bind, as a texture's: pool_texture_registered)
-    slot_samp[id] = *p;
+    slot_samp[id] = *p, slot_samp_set[id] = true;
     Writes w;
     w.add(kPoolSamplerBinding, (uint32_t)id, VK_DESCRIPTOR_TYPE_SAMPLER, VK_NULL_HANDLE, plain);
     w.add(kPoolCompareSamplerBinding, (uint32_t)id, VK_DESCRIPTOR_TYPE_SAMPLER, VK_NULL_HANDLE, compare);
     w.flush();
     st_samp.fetch_add(1, std::memory_order_relaxed);
+}
+
+/// The texture filtering the settings ask for now
+std::pair<float, float> filtering_wanted() {
+    static const float aniso[] = {1, 2, 4, 8, 16}, bias[] = {-1, -0.5f, 0, 0.5f, 1};
+    return {aniso[std::clamp<int64_t>(setting_int(SET_ANISOTROPIC_FILTERING), 0, 4)],
+            bias[std::clamp<int64_t>(setting_int(SET_TEXTURE_LOD_BIAS), 0, 4)]};
+}
+
+void pool_samplers_present() {
+    const auto [aniso, bias] = filtering_wanted();
+    if (!ready || (aniso == forced_aniso.load(std::memory_order_relaxed) && bias == added_lod_bias.load(std::memory_order_relaxed)))
+        return;
+    {   // (no submitted work reads the entries while they change: what is handed to the queue is sent and done first)
+        std::lock_guard qk(dev.queue_mu);
+        sync_send_handed();
+        vkDeviceWaitIdle(dev.device);
+    }
+    forced_aniso.store(aniso, std::memory_order_relaxed), added_lod_bias.store(bias, std::memory_order_relaxed);
+    std::lock_guard lk(pool_mu);
+    uint32_t n = 0;
+    for (uint32_t id = 0; id < kSamplers; id++) {
+        if (!slot_samp_set[id]) continue;
+        const nvn_samp_par& p = slot_samp[id];
+        Writes w;
+        w.add(kPoolSamplerBinding, id, VK_DESCRIPTOR_TYPE_SAMPLER, VK_NULL_HANDLE, sampler_of(sampler_key(p, false), false));
+        w.add(kPoolCompareSamplerBinding, id, VK_DESCRIPTOR_TYPE_SAMPLER, VK_NULL_HANDLE, sampler_of(sampler_key(p, true), true));
+        w.flush();
+        n++;
+    }
+    logf("pool: texture filtering: anisotropy at least %.0f, LOD bias %+.2f: %u samplers written again",
+        (double)forced_aniso.load(), (double)added_lod_bias.load(), n);
 }
 
 void pool_image_gone(const Image* im) {

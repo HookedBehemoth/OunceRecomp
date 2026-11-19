@@ -66,7 +66,7 @@ target is a screen-space mask, not a normals target.
 
 | Kind | Size comes from | Notes |
 |---|---|---|
-| sun cascades (`shadow_map_depth`) | the scene config `gsys/ModelSceneConfigParam/Main.gsys__ModelSceneConfigParam.bgyml` (`DepthShadowTexWidth`, ...) | 1600 x 1600 x 3 layers of D16 in Kokiri and Hyrule Field |
+| sun cascades (`shadow_map_depth`) | the game's shadow quality table (`pass_sun_shadow_quality_init`), not the scene config's `DepthShadowTexWidth` (1024) | 1600 x 1600 x 3 layers of D16 docked; transient |
 | local lights (`local_shadow_depth`) | set per light each frame from its screen size or distance, scaled by `LocalDepthShadowParam` | square, 384 to about 2,400; one per shadowed light per frame |
 | static sun shadow | the scene config | 12288 x 12288 D16, persistent |
 
@@ -77,6 +77,10 @@ width, so a larger map is drawn whole. The host rounds each light's map up to a 
 below. That keeps the number of distinct shapes small. `rt.quant=0` turns the classes off.
 
 Shadow filter widths are in texels, so a larger map gives a narrower penumbra unless the filter scales with it.
+
+The graphics options scale both kinds (`games/oot/patches/graphics.c`). The sun's scale multiplies the six cascade
+sizes of the quality table, and the next frame's array has the new size. The local lights' scale multiplies the size
+a light wants before its size class, up to 4096. Both change live. The static sun shadow keeps its size.
 
 ## Upscaling
 

@@ -94,13 +94,14 @@ share it.
 To see where a frame's CPU and GPU time goes in many scenes at once, run:
 
 ```sh
-ounce profile oot --exclusive [--scene <name>]... [--size <w>x<h>] [--shaders]
+ounce profile oot --exclusive [--scene <name>]... [--size <w>x<h>] [--shaders] [--set <key>=<value>]...
 ```
 
 The scenes are listed in `games/<game>/profile.toml`. Each scene is one headless benchmark run: the scene boots
 straight into its map, waits until it has settled, and then measures 600 frames (`--frames` sets another number). The
 first time a scene runs, `ounce profile` makes its overlay in the data folder's `<game>/profile/<scene>/`. The frame
-size is the game's `output_res` setting when its options file chooses one, and 2560x1440 otherwise.
+size is the game's `output_res` setting when its options file chooses one, and 2560x1440 otherwise. `--set` gives every run
+of the profile a setting, to compare a choice with the default.
 
 For each scene the report gives:
 

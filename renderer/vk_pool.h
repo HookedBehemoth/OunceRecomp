@@ -80,6 +80,9 @@ void pool_shader_layout(VkShaderCreateInfoEXT& ci);
 /// (the host's registrations, any thread)
 void pool_texture_registered(int id, const nvn_tex* t, const nvn_view* v);
 void pool_sampler_registered(int id, const nvn_samp_par* p);
+/// (each present, the Presentation Thread) the user's texture filtering: when anisotropic_filtering or texture_lod_bias
+/// changed, mip-mapped samplers get at least that anisotropy and the bias added, and every registered id is written again
+void pool_samplers_present();
 struct Image;
 /// (vk_image.cpp, an image destroyed once the GPU is done with it) the entries that hold it nulled
 void pool_image_gone(const Image* im);

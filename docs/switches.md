@@ -36,6 +36,12 @@ file of their own in the run folder, so they never change yours; a window run us
 | `frame_rate=<30, 60, 120, vsync>` | The frame-rate cap (user setting, the Options screen's Frame Rate row, live). `vsync`: the display's refresh rate, presented in step with it. Above 60 the game is told the display has a variable refresh |
 | `render_scale=<50%..200%>` | The 3D's resolution against the output (user setting, the Render Resolution row). Below 100% the upscaler takes it up; above 100% and above the value at the start it applies at the next start, as the render-target pool is sized then |
 | `upscaler=<game, bilinear, catmull-rom>` | What takes the 3D to the output (user setting, the Upscaler row, live). The game's network only up to 100%: the row offers it only then |
+| `shadow_resolution=<50%, 100%, 200%, 400%>` | The sun's and moon's shadow resolution against the game's (user setting, the Shadow Resolution row). Live up to the value at the start; above it at the next start, as the render-target pool grows with it |
+| `local_shadow_resolution=<50%, 100%, 200%, 400%>` | The shadow resolution of lamps and torches, at most 4096 a side (user setting, the Light Shadow Resolution row); as `shadow_resolution` |
+| `anisotropic_filtering=<game, 2x, 4x, 8x, 16x>` | The least anisotropic filtering of mip-mapped textures (user setting, live) |
+| `texture_lod_bias=<-1, -0.5, 0, +0.5, +1>` | Added to mip-mapped textures' level of detail; below 0 sharper (user setting, the Texture Sharpness row, live) |
+| `bloom=<0, 1>`, `depth_of_field=<0, 1>` | The game's bloom and depth of field (user settings, live) |
+| `field_of_view=<80%..140%>` | The main camera's view against the game's (user setting, live) |
 | `output_res=<choice>` | A fixed output resolution (user setting, at the next start); without one the frame follows the window |
 | `headless=1` | No window: the renderer draws offscreen |
 | `window_size=<w>x<h>` | The window's size (by default 720 high at the monitor's shape), or the headless image's (by default 1920x1080). The game's frame follows the window's pixels |

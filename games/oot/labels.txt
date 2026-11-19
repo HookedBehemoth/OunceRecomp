@@ -208,6 +208,7 @@
 808bf670 pass_bilateral_grid_compute      # work/assets/native/engine-frame.md: "bilateral_grid_tmp" compute
 80267200 pass_bloom_blur                  # work/assets/native/engine-frame.md: bloom "blur" (x12)
 8026a9e0 pass_bloom_detect                # work/assets/native/engine-frame.md: bloom "detect0/1"
+8027e6c0 pass_bloom_stage                 # games/oot/patches/graphics.c: the bloom stage of a view (owner +0x60, its enable byte +0x808): pass_bloom_detect, else f_8354c2d0
 80263b60 pass_clear_helper                # work/assets/native/engine-frame.md: clear helper
 80299510 pass_closest_surface             # work/assets/native/engine-frame.md, work/assets/native/rt-alloc.md: quarter-res merge / closest-surface
 8067ffb0 pass_compute_12x1                # work/assets/native/engine-frame.md: dispatch 12x1x1 (pass 7)
@@ -223,6 +224,7 @@
 8028a2a0 pass_key_draw                    # docs/direct/jobs.md, games/oot/patches/passes.c: (owner, drawctx, key): draws a pass by its key, inline through pass_draw_inline (0x8028a588); shared by the depth probes, fog half depth, fog pre-pass depth, skin shading and others (was pass_depth_probe_list, its first caller)
 802867f0 pass_depth_probes                # work/assets/native/engine-frame.md: "inner/outer_depth_probe_tex"
 80280270 pass_dof                         # work/assets/native/engine-frame.md: DOF / bilateral grid group
+8027f550 pass_dof_stage                   # games/oot/patches/graphics.c: the depth of field stage (its enable byte +0x10e0): f_8027fc80 then pass_dof, or f_83515de0 when +0x7c0 is 1
 80681320 pass_draw_inline                 # docs/direct-backend-plan.md, docs/direct/jobs.md: the layer list drawing a pass itself
 802ab6c0 pass_draw_main_screen            # work/assets/native/engine-frame.md: "Draw(drawMainScreen_)"
 80295060 pass_env_cube_compute            # work/assets/native/engine-frame.md: compute 4x4x6 (#239)
@@ -265,6 +267,8 @@
 80666d20 pass_soft_edge_depth             # games/oot/patches/depth_copy.c: gsys::RenderBuffer::SoftEdgeDepth (its depth copy, blr at 0x806675d8, replaced by an instead row)
 80668fc0 pass_sun_shadow                  # work/assets/native/engine-frame.md: sun shadow cascades (x3)
 80669460 pass_sun_shadow_alloc            # work/assets/native/engine-frame.md, docs/direct/render-targets.md: "shadow_map_depth" array (transient when +0x110 is 0, size +0x70 x +0x90, layers = cascades)
+80ea2450 pass_sun_shadow_quality_init    # games/oot/patches/graphics.c: the game's shadow quality object (0x138 bytes, made by texdata_model_procedural +0x604): nine halfword sizes at +0x78 (1000 1400 1600 1600 2000 2200 3072 x3); the sun cascades take the fourth docked at 2560x1440
+834c8a60 agl_bloom_param_visit            # agl::BloomParam's fields visited by name (EditType +0x122 ... Intensity +0xc8, Enable +0x11a) # ?
 80f76a20 pass_local_shadow_static         # docs/direct/render-targets.md: "LocalDepthShadow::drawStaticDepth": f_802640a0 with flag 1
 80663f00 pass_local_shadow_updatable      # docs/direct/render-targets.md: "LocalDepthShadow::drawUpdatableStaticDepth": two maps (+8, +0x500)
 809ec950 pass_static_shadow_depth         # docs/direct/render-targets.md, work/assets/native/rt-alloc.md sites: "static_shadow_depth" (a kept texture at +0x578 in mode 2, else a DTA target)

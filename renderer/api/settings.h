@@ -21,6 +21,13 @@ extern "C" {
     E(FRAME_RATE, "frame_rate", USER, 1, "30|60|120|vsync", "frame rate cap; vsync: the display's refresh rate, presented in step with it") \
     E(RENDER_SCALE, "render_scale", USER, 6, "50%|58%|67%|75%|80%|83%|100%|150%|200%", "the 3D's resolution against the output's; above the boot value it applies at the next start") \
     E(UPSCALER, "upscaler", USER, 0, "game|bilinear|catmull-rom", "what takes the 3D to the output: the game's network (only up to 100%), or a host filter") \
+    E(SHADOW_RESOLUTION, "shadow_resolution", USER, 1, "50%|100%|200%|400%", "the sun's and moon's shadow resolution against the game's; above the boot value it applies at the next start (the render-target pool grows with it)") \
+    E(LOCAL_SHADOW_RESOLUTION, "local_shadow_resolution", USER, 1, "50%|100%|200%|400%", "the shadow resolution of lamps, torches and other lights against the game's (at most 4096); above the boot value it applies at the next start") \
+    E(ANISOTROPIC_FILTERING, "anisotropic_filtering", USER, 0, "game|2x|4x|8x|16x", "the least anisotropic filtering of the textures (sharper surfaces seen at an angle)") \
+    E(TEXTURE_LOD_BIAS, "texture_lod_bias", USER, 2, "-1|-0.5|0|+0.5|+1", "added to the textures' mip level: below 0 sharper (and may shimmer), above 0 softer") \
+    B(BLOOM, "bloom", USER, 1, "the glow around bright lights")                                                               \
+    B(DEPTH_OF_FIELD, "depth_of_field", USER, 1, "the blur of the distance and of what the camera does not focus on")          \
+    E(FIELD_OF_VIEW, "field_of_view", USER, 2, "80%|90%|100%|110%|120%|130%|140%", "the camera's view against the game's (the width of its picture)") \
     E(OUTPUT_RES, "output_res", USER, 0, "2048x1152|2560x1440|3840x2160|1920x1080|5120x1440", "the game's output size (docked); applies at the next start") \
     B(HANDHELD, "handheld_profile", USER, 0, "the handheld profile: 1080p output and the game's handheld resolutions") \
     B(FULLSCREEN, "fullscreen", USER, 0, "start in fullscreen")                                                                \

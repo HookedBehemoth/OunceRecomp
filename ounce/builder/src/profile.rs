@@ -12,7 +12,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const HELP: &str = "profile <game> [--scene NAME]... [--size WxH] [--frames N] [--shaders] [--census <stages.jsonl>]";
+const HELP: &str = "profile <game> [--scene NAME]... [--size WxH] [--frames N] [--shaders] [--census <stages.jsonl>] [--set KEY=VALUE]...";
 
 struct Opts {
     scenes: Vec<String>,
@@ -20,6 +20,7 @@ struct Opts {
     frames: u32,
     shaders: bool,
     census: Option<PathBuf>,
+    set: Vec<(String, String)>,   // (--set: settings every run of the profile gets)
 }
 
 /// One pass's line of passtime.csv
@@ -368,9 +369,11 @@ fn table(name: &str, s: &Scene, r: &SceneResult, top: usize) -> String {
 }
 
 /// Runs one headless benchmark of the scene; with `shaders`, the per-draw run (debug.pstats=bench) instead
-fn run_scene(layout: &Layout, game: &Game, name: &str, s: &Scene, dir: &Path, size: &str, frames: u32, shaders: bool) -> PathBuf {
+fn run_scene(layout: &Layout, game: &Game, name: &str, s: &Scene, dir: &Path, size: &str, frames: u32, shaders: bool,
+             extra: &[(String, String)]) -> PathBuf {
     let config = config();
     let mut set: Vec<(String, String)> = vec![("window_size".into(), size.into())];
+    set.extend(extra.iter().cloned());
     if let Some(ov) = overlay(layout, dir, s) {
         set.push(("fs.overlay".into(), ov.to_string_lossy().into_owned()));
     }
@@ -420,7 +423,7 @@ pub fn command(args: &[String]) {
     let Some(gname) = args.first().filter(|a| !a.starts_with('-')) else { fail(HELP) };
     let game = Game::load(&root, gname).unwrap_or_else(|e| fail(e));
     let layout = Layout::new(root, gname);
-    let mut o = Opts { scenes: Vec::new(), size: None, frames: 600, shaders: false, census: None };
+    let mut o = Opts { scenes: Vec::new(), size: None, frames: 600, shaders: false, census: None, set: Vec::new() };
     let mut it = args[1..].iter();
     while let Some(a) = it.next() {
         let mut val = || it.next().cloned().unwrap_or_else(|| fail(format!("{a} wants a value")));
@@ -430,6 +433,11 @@ pub fn command(args: &[String]) {
             "--frames" => o.frames = val().parse().unwrap_or_else(|_| fail("--frames N")),
             "--shaders" => o.shaders = true,
             "--census" => o.census = Some(val().into()),
+            "--set" => {
+                let v = val();
+                let (k, x) = v.split_once('=').unwrap_or_else(|| fail(format!("profile: --set {v}: KEY=VALUE")));
+                o.set.push((k.into(), x.into()));
+            }
             _ => fail(format!("profile: what is {a}? ({HELP})")),
         }
     }
@@ -451,11 +459,11 @@ pub fn command(args: &[String]) {
         println!("profile: {name}");
         let dir = data.join(name);
         std::fs::create_dir_all(&dir).unwrap_or_else(|e| fail(format!("{}: {e}", dir.display())));
-        let run = run_scene(&layout, &game, name, s, &dir, &size, o.frames, false);
+        let run = run_scene(&layout, &game, name, s, &dir, &size, o.frames, false, &o.set);
         let mut r = SceneResult::default();
         read_log(&run, &mut r);
         if o.shaders && r.frame.is_some() {
-            let cap = run_scene(&layout, &game, name, s, &dir, &size, o.frames, true);
+            let cap = run_scene(&layout, &game, name, s, &dir, &size, o.frames, true, &o.set);
             r.shaders = shaders_of(&cap, &r, census.as_deref());
         }
         let t = table(name, s, &r, 12);

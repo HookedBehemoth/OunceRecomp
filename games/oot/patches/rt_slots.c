@@ -114,7 +114,8 @@ static uint64_t park_frames(void) {
    a light keeps one shape for long: parking hands its entry back, and the back end keeps one image for it. Safe
    because the pass takes its viewport and scissor from the texture (f_802640a0 reads entry +0x40 width / +0x42 height,
    not its own size at +0x4e8) and the projection maps the light's frustum to the whole map; only the shadow's texel
-   density rises (by less than the step between two classes, at most 1.5 a side). rt.quant=0: off (the game's sizes);
+   density rises (by less than the step between two classes, at most 1.5 a side). The user's local shadow resolution
+   (graphics.c) multiplies the size wanted before its class, up to 4096. rt.quant=0: off (the game's sizes);
    rt.quant=<n>: the rounding before the classes, up to a multiple of n from 512 on with no hysteresis (128 is what
    the picture checks' references were made with: an A/B) */
 static int shadow_classes_on(void) {
@@ -489,7 +490,8 @@ static int alloc_pre(GuestCall *g, uint64_t sp, uint64_t lr, uint64_t dta, uint6
                 __atomic_add_fetch(&n.quantized, 1, __ATOMIC_RELAXED);
             }
         } else if (w == h && w >= 16 && w <= 4096) {
-            const uint32_t to = shadow_size(shadow_obj, w);
+            const float scaled = (float)w * oot_local_shadow_scale();   /* (the user's local shadow resolution) */
+            const uint32_t to = shadow_size(shadow_obj, scaled < 16.0f ? 16 : scaled > 4096.0f ? 4096 : (uint32_t)scaled);
             G32(d + 0x10) = G32(d + 0x14) = to;
             if (to != w) __atomic_add_fetch(&n.quantized, 1, __ATOMIC_RELAXED);
         }
@@ -801,7 +803,7 @@ static void alloc_gave(uint64_t entry) {
 }
 
 /* the local-shadow size classes, and each shadow object's class now (the hysteresis) */
-static const uint32_t shadow_class[] = {256, 384, 512, 640, 768, 1024, 1280, 1536, 2048, 2432};
+static const uint32_t shadow_class[] = {256, 384, 512, 640, 768, 1024, 1280, 1536, 2048, 2432, 3072, 4096};
 #define N_CLASS ((int)(sizeof shadow_class / sizeof *shadow_class))
 static uint32_t class_of(uint32_t w) {
     for (int i = 0; i < N_CLASS; i++)
