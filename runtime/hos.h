@@ -14,6 +14,7 @@
 #define HOS_H
 #include "a64.h"
 #include "os.h"
+#include "settings.h"   /* (the settings: renderer/api/settings.h) */
 #include <stdarg.h>
 
 /* rt/a64_rt.c: code pointers are host function pointers (docs/lifter-output.md, "Indirect calls and jumps"). What the game
@@ -63,14 +64,13 @@ static inline void *hos_guest_range(uint64_t a, uint64_t n) {
 }
 #define HOS_TICK_HZ 31250000ULL   /* (mkw-recomp: the Switch 2 counter; the SDK checks it at init) */
 
-/* ---- logging: HOS_TRACE=1 logs every HLE call that uses HOS_TRACE_CALL */
+/* ---- logging: trace logs every HLE call that uses HOS_TRACE_CALL */
 extern int hos_trace;
 void hos_log(const char *fmt, ...);
 void hos_log_flush(void);
 long long hos_vi_present_number(void);   /* (nn_vi.c) */
-int hos_dbg_item(const char *item);
-int hos_log_switch(const char *item);
-/* HOS_BENCH (runtime/bench.c): the frames to measure, 0 when off; the game's file reads, its player updates, the presents */
+int hos_log_switch(setting_id id);   /* (a debug log: on, or debug.logall) */
+/* bench (runtime/bench.c): the frames to measure, 0 when off; the game's file reads, its player updates, the presents */
 int hos_bench_on(void);
 void hos_bench_fs_read(void);
 void hos_bench_message(void);
@@ -105,18 +105,18 @@ void hos_thread_start(HosThread *t);
 void hos_thread_join(HosThread *t);
 void hos_thread_destroy(HosThread *t);
 void hos_thread_set_name(HosThread *t, const char *name);
-void hos_thread_pin(os_thread *h, const char *name);   /* HOS_PIN: host CPU affinity by thread name */
+void hos_thread_pin(os_thread *h, const char *name);   /* threads.pin: host CPU affinity by thread name */
 const char *hos_thread_name(HosThread *t);
 void hos_thread_affinity(HosThread *t, int ideal, uint64_t mask);
 uint64_t hos_thread_mask(HosThread *t);
 int hos_thread_priority(HosThread *t, int set, int value);
 int hos_thread_core(HosThread *t);
 int hos_cores(void);
-/* (HOS_DBG=crit: crit.h) a guest thread's block in a host call: hos_block_begin names it (1 if recorded), and
+/* (debug.crit= crit.h) a guest thread's block in a host call: hos_block_begin names it (1 if recorded), and
    hos_block_end after it records the span. No scheduler: guest threads run freely on their host threads (hos_thread.c) */
 int hos_block_begin(int why, const void *key);
 void hos_block_end(void);
-void hos_thread_fp_log(long long present);   /* (hos_thread.c) HOS_FP_LOG=1: FPCR and MXCSR of the presenting thread */
+void hos_thread_fp_log(long long present);   /* (hos_thread.c) log.fp: FPCR and MXCSR of the presenting thread */
 int hos_current_core(uint64_t lr);   /* (hos_thread.c) GetCurrentCoreNumber for the running thread */
 int hos_cv_sleep(os_cond *cv, os_mutex *lk, int64_t timeout_ns);   /* os_cond_wait for guest threads: 0 or OS_ETIMEDOUT */
 void hos_thread_stack(HosThread *t, uint64_t *addr, uint64_t *size);
@@ -149,6 +149,6 @@ uint32_t movie_reader_codec(MovieReader *r);   /* the stream's FourCC: 'VP90', '
 uint64_t hos_ticks(void);
 void hos_sleep_ns(int64_t ns);
 int64_t hos_now_ns(void);
-int64_t hos_spin_ns(void);   /* how long a sync wait spins before it sleeps: HOS_SPIN_US, default 5 us (nn_os_sync.c) */
+int64_t hos_spin_ns(void);   /* how long a sync wait spins before it sleeps: threads.spin_us, default 5 us (nn_os_sync.c) */
 #include "patch.h"   /* (the patch declarations: PATCH_AT, PATCH_FUNC, HLE, NV, ...) */
 #endif

@@ -5,9 +5,8 @@
    guest main thread, run every module's DT_INIT in rtld's order (the SDK crt's _init: TLS registration with musl,
    then the module's constructors), then nninitStartup and nnMain.
 
-   Usage: <the game's exe> [image.bin] [--romfs <dir>] [--user <dir>] [--trace]
-   Environment: HOS_TRACE=1 (log HLE calls), HOS_MEMORY_MB (memory the game is told it has),
-                HOS_NVN_CONTINUE=1 (go on past nvnBootstrapLoader). */
+   Usage: <the game's exe> [image.bin] [--romfs <dir>] [--user <dir>] [--options <file>] [--set <key>=<value>]...
+   (the settings: runtime/settings.c) */
 #include "hos.h"
 #include "game_hooks.h"
 #include "hos_paths.h"
@@ -156,89 +155,18 @@ static const char *saves_dir(const char *beside) {
     return os_path_kind(dir) == OS_PATH_NONE ? beside : dir;
 }
 
-/* ounce_env.txt beside the game: NAME=VALUE lines set as environment variables before anything reads them, for the
-   switches players are asked to test (RX_VK_NOOPT and the rest). Lines starting with # are notes. On Linux this runs
-   before the window, so HOS_HEADLESS and HOS_WINDOW_SIZE are already set when the window is made.
-   HOS_ENV_FILE=<path> reads that file instead: a scripted or A/B test run brings its own switches and leaves the
-   player's ounce_env.txt as it is.
-   (runtime) ounce_env.txt is a file players pass around, so it sets only the game's own switches (RX_, HOS_,
-   OUNCE_, EDEN_, NVN_, TOTK_ and SDL_ names), never HOS_ENV_FILE or SDL's library override, and no value that is a
-   path: the system's variables (the Vulkan loader's layers, PATH and the like) can load code, and
-   the dump switches write files where they name. The file HOS_ENV_FILE names sets anything. */
-static int env_line_allowed(const char *name, const char *value) {
-    static const char *const prefixes[] = {"RX_", "HOS_", "OUNCE_", "EDEN_", "NVN_", "TOTK_", "SDL_"};
-    int ok = 0;
-    for (size_t i = 0; i < sizeof prefixes / sizeof *prefixes; i++) ok |= !strncmp(name, prefixes[i], strlen(prefixes[i]));
-    if (!ok || !strcmp(name, "HOS_ENV_FILE") || !strcmp(name, "SDL_DYNAMIC_API")) return 0;
-    /* (runtime) nor the libraries SDL loads by name (SDL_VULKAN_LIBRARY, SDL_OPENGL_LIBRARY, SDL_VIDEO_GL_DRIVER,
-       SDL_VIDEO_EGL_DRIVER...): a bare file name is looked for beside the game and in the current folder on Windows */
-    if (!strncmp(name, "SDL_", 4) && (strstr(name, "_LIB") || strstr(name, "GL_DRIVER"))) return 0;
-    for (const char *p = name; *p; p++)
-        if (!((*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') || *p == '_')) return 0;
-    /* (runtime) the switches that name a file to write or a folder take no value here, not even a bare name: one
-       resolves in the game's folder (a dump file named ounce_renderer.so emptied the renderer) */
-    const size_t nl = strlen(name);
-    int names_file = (nl > 5 && (!strcmp(name + nl - 5, "_FILE") || !strcmp(name + nl - 4, "_DIR"))) ||
-                     !strcmp(name, "RX_VK_FRAME_LOG") || !strcmp(name, "HOS_PRESENT_TRACE");
-    /* (runtime) and the test switches whose value is a file or folder under another name (HOS_AUDIO_DUMP=image.bin
-       overwrote the game's image), or that press buttons and menu keys on a timer (a shared file erased a save from
-       the file select) */
-    static const char *const by_name[] = {
-        "HOS_AUDIO_DUMP", "HOS_AUDIO_WB_DUMP", "HOS_SHADER_DUMP", "HOS_FS_OVERLAY", "HOS_MODS", "HOS_INPUT_LIVE",
-        "HOS_INPUT_SCRIPT", "HOS_INPUT_RECORD",
-        "HOS_INPUT_REPLAY", "RX_VK_SHOTS", "RX_VK_SHOT_GO",
-        "RX_VK_FRAMELOG", "RX_VK_HANG_DUMP", "RX_VK_DUMP", "RX_VK_DUMP_SPV", "RX_VK_DUMP_MESH_SPV", "RX_VK_DUMP_STAGES",
-        "RX_VK_DUMP_FAILED", "RX_VK_IR", "RX_VK_MENU_SCRIPT", "RX_DUMP_WGSL", "RX_DUMP_SLOW_WGSL", "RX_DUMP_TICS",
-        "RX_WGSL_OVERRIDE"};
-    for (size_t i = 0; i < sizeof by_name / sizeof *by_name; i++) names_file |= !strcmp(name, by_name[i]);
-    if (names_file) return 0;
-    return !strchr(value, '/') && value[0] != '~' && strcmp(value, ".") && strcmp(value, "..");
-}
-static void load_ounce_env(void) {
-    char path[OS_PATH_MAX + 32];
-    const char *other = getenv("HOS_ENV_FILE");
-    if (other && *other) {
-        snprintf(path, sizeof path, "%s", other);
-    } else {
-        uint32_t n = hos_game_path_a(path, OS_PATH_MAX);
-        while (n && path[n - 1] != '/') n--;
-        memcpy(path + n, "ounce_env.txt", 17);
-    }
-    FILE *f = fopen(path, "r");
-    if (!f) return;
-    char line[512];
-    while (fgets(line, sizeof line, f)) {
-        char *s = line;
-        if ((unsigned char)s[0] == 0xEF && (unsigned char)s[1] == 0xBB && (unsigned char)s[2] == 0xBF) s += 3;   /* (Notepad's BOM) */
-        while (*s == ' ' || *s == 9) s++;
-        size_t len = strlen(s);
-        while (len && (s[len - 1] == 10 || s[len - 1] == 13 || s[len - 1] == ' ' || s[len - 1] == 9)) s[--len] = 0;
-        if (!len || *s == '#' || !strchr(s, '=')) continue;
-        char *eq = strchr(s, '=');
-        *eq = 0;
-        if (!(other && *other) && !env_line_allowed(s, eq + 1)) {
-            fprintf(stderr, "env: ounce_env.txt: %s left out (only the game's switches, and no paths, are taken from it)\n", s);
-            continue;
-        }
-        setenv(s, eq + 1, 1);
-    }
-    fclose(f);
-}
-
 float hos_aspect_ratio = 0;   /* (the window's default shape: runtime/display.c) */
 /* (games/oot/patches/oot_probes.c, the widescreen rows) read by the widescreen patches in the game's code; 0: the game's own 16:9 */
 volatile uint64_t hos_wide_out, hos_wide_scene;
-/* (games/oot/patches/oot_probes.c) mode 1's scene base scale 1.0 instead of 0.8: Resolution 100% (runtime/nn_vi.c keeps it current),
-   HOS_SCENE_NATIVE=0/1 over it */
+/* (games/oot/patches/oot_probes.c) mode 1's scene base scale 1.0 instead of 0.8 (scene_native) */
 volatile int hos_native_scene;
-volatile int hos_fix_res;   /* (games/oot/patches/oot_probes.c's cached-scale refresh: HOS_FIX_RES=1; #849's fixed-scale patch does it by default) */
+volatile int hos_fix_res;   /* (games/oot/patches/oot_probes.c's cached-scale refresh: fix_res; #849's fixed-scale patch does it by default) */
 volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_margin;
-/* (games/oot/patches/oot_probes.c hos_oot_occlusion_flag) read by the game's code where it decides to make occlusion queries: 1, none (OUNCE_OCCLUSION_OFF=1) */
+/* (games/oot/patches/oot_probes.c hos_oot_occlusion_flag) read by the game's code where it decides to make occlusion queries: 1, none (the occlusion_off setting) */
 volatile int hos_occlusion_off;
 static void occlusion_switch(void) {
-    const char *e = getenv("OUNCE_OCCLUSION_OFF");
-    hos_occlusion_off = e && e[0] == '1';
-    if (hos_occlusion_off) hos_log("occlusion off: the game makes no occlusion queries (OUNCE_OCCLUSION_OFF=1)");
+    hos_occlusion_off = setting_bool(SET_OCCLUSION_OFF);
+    if (hos_occlusion_off) hos_log("occlusion off: the game makes no occlusion queries (occlusion_off)");
 }
 /* (runtime, issue 1241) The game needs about 10 GB of memory and swap together (the page file on Windows): on 8 GB of RAM
    and no swap it closed before the title with no word of why, and adding swap let it play. Below that, the log says so and
@@ -264,7 +192,7 @@ static void memory_notice(void) {
         return;
     }
     hos_log("boot: LOW MEMORY: %llu MB of memory, %llu MB of swap, below the ~%llu MB the game needs", ram, swap, HOS_MEMORY_NEEDED_MB);
-    if (getenv("HOS_HEADLESS")) return;
+    if (setting_bool(SET_HEADLESS)) return;
     hos_sdl_message_box("OunceRecomp", text);
 }
 #endif
@@ -289,11 +217,11 @@ static int game_main(int argc, char **argv) {
         }
     }
     hos_log("runtime %s", OUNCE_VERSION);   /* (the log's first line: which build a report comes from) */
+    settings_report();
     const char *image = NULL;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--romfs") && i + 1 < argc) hos_romfs_dir = argv[++i];
         else if (!strcmp(argv[i], "--user") && i + 1 < argc) hos_user_dir = argv[++i];
-        else if (!strcmp(argv[i], "--trace")) hos_trace = 1;
         else if (!image) image = argv[i];
     }
     static char beside_image[OS_PATH_MAX], beside_romfs[OS_PATH_MAX], beside_user[OS_PATH_MAX];
@@ -315,16 +243,16 @@ static int game_main(int argc, char **argv) {
         }
     }
     if (!image) {
-        fprintf(stderr, "usage: %s [image.bin] [--romfs <dir>] [--user <dir>] [--trace] | --precompile\n",
+        fprintf(stderr, "usage: %s [image.bin] [--romfs <dir>] [--user <dir>] [--options <file>] [--set <key>=<value>]... [--list-settings] | --precompile\n",
                 argv[0]);
         return 2;
     }
-    if (getenv("HOS_TRACE")) hos_trace = 1;
+    hos_trace = setting_bool(SET_TRACE);
     if (!hos_user_dir) hos_user_dir = "user";
     os_mkdir(hos_user_dir);
-    {   /* HOS_INPUT_RECORD=<dir>: the save folder as the game starts with it, to <dir>/user (a replay starts from it;
+    {   /* input.record=<dir>: the save folder as the game starts with it, to <dir>/user (a replay starts from it;
            nn_hid.c writes <dir>/input.rec) */
-        const char *rec = getenv("HOS_INPUT_RECORD");
+        const char *rec = setting_str(SET_INPUT_RECORD);
         if (rec && *rec) {
             char dir[OS_PATH_MAX], user[OS_PATH_MAX];
             snprintf(dir, sizeof dir, "%s", rec);
@@ -378,22 +306,22 @@ static int game_main(int argc, char **argv) {
            3840 x 2160's count, the shape kept) and the main camera, HUD and movies take its shape; a resize, once settled,
            sizes the frame again (runtime/media/display_sdl.c). The game draws its frame into a corner of its picture (the window
            textures), so the picture is made once as large as any frame: the monitor's size, at least 3840 x 2160. With
-           HOS_ASPECT=<ratio> or an explicit Output resolution (HOS_OUTPUT_RES, output_res) the frame is the game's instead:
+           an aspect setting or an explicit Output resolution (output_res) the frame is the game's instead:
            its picture takes that shape (or the window's) at the output's height, and a resize letterboxes it.
            Wider than 16:9 the HUD, menus and movies keep the middle 16:9; narrower they fill the frame's width. */
-        const char *e = getenv("HOS_ASPECT");
+        const int e = setting_float(SET_ASPECT) > 0;
         int ww = 0, wh = 0, dw = 0, dh = 0;
         hos_screen_size(&dw, &dh);   /* (0 x 0 headless) */
-        if (getenv("HOS_WINDOW_SIZE") && sscanf(getenv("HOS_WINDOW_SIZE"), "%dx%d", &ww, &wh) == 2 && ww >= 64 && wh >= 64) {
+        if (sscanf(setting_str(SET_WINDOW_SIZE), "%dx%d", &ww, &wh) == 2 && ww >= 64 && wh >= 64) {
         } else if (dh > 0) {
             wh = 720, ww = (int)(720.0 * dw / dh + 0.5);   /* (the window display_sdl.c opens) */
         } else {
             ww = 1920, wh = 1080;   /* (the headless image's) */
         }
-        float want = e ? (float)atof(e) : (float)ww / (float)wh;
-        if (getenv("HOS_SCENE_NATIVE")) hos_native_scene = atoi(getenv("HOS_SCENE_NATIVE")) != 0;
-        if (getenv("HOS_FIX_RES")) hos_fix_res = atoi(getenv("HOS_FIX_RES")) != 0;
-        if (hos_native_scene) hos_log("boot: HOS_SCENE_NATIVE=1: the scene's base scale 1.0 (the game's 0.8 otherwise)");
+        float want = e ? (float)setting_float(SET_ASPECT) : (float)ww / (float)wh;
+        hos_native_scene = setting_bool(SET_SCENE_NATIVE);
+        hos_fix_res = setting_bool(SET_FIX_RES);
+        if (hos_native_scene) hos_log("boot: scene_native: the scene's base scale 1.0 (the game's 0.8 otherwise)");
         extern volatile uint64_t hos_wide_out, hos_wide_scene;
         extern volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_margin;
         int hos_output_res_set(void);   /* (runtime/nn_applet.c: an Output resolution was chosen) */
@@ -445,7 +373,7 @@ static int game_main(int argc, char **argv) {
     Ctx *c = hos_boot_main_thread(hos_main_stack_size);
     uint64_t sp = c->x[31];
     void hos_display_start(void);
-    hos_display_start();  /* the game's window; HOS_HEADLESS=1 for none */
+    hos_display_start();  /* the game's window; the headless setting for none */
     /* nn::init::Start's order (sdk+0xfa060), with rtld's three callbacks done here: f1 only marks rtld initialized,
        f2 is every module's DT_INIT, f3 the DT_FINIs (not needed: we never return from nnMain to unload). */
     call_guest(c, hos_entry_init_libc0, sp, "_init_libc0");
@@ -480,14 +408,13 @@ static void game_thread(void *p) {
 int main(int argc, char **argv) {
     int hos_display_init(void);
     void hos_display_loop(void);
-    load_ounce_env();
+    game_argc = settings_init(argc, argv), game_argv = argv;   /* (the settings first: --options and --set taken out) */
     /* --precompile: the builder's last step, the shader pack beside the executable into its shader caches (rx_backend.c);
        no window, nothing of the game runs */
-    if (argc == 2 && !strcmp(argv[1], "--precompile")) {
+    if (game_argc == 2 && !strcmp(argv[1], "--precompile")) {
         int rx_precompile(void);
         return rx_precompile();
     }
-    game_argc = argc, game_argv = argv;
     const int window = hos_display_init();
     if (window < 0) {
         hos_log_flush();

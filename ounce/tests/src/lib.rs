@@ -187,20 +187,18 @@ pub fn text(b: &[u8]) -> String {
     String::from_utf8_lossy(b).into_owned()
 }
 
-/// compiles with compiler and args (sources, flags) into exe, panicking with the compiler's messages; exe
+/// compiles with compiler and args (sources, flags) into exe, panicking with the compiler's messages; exe. Every fixture
+/// gets the settings' accessors (fixtures/settings_fixture.h: the defaults, or FIXTURE_SET's values)
 pub fn compile<S: AsRef<std::ffi::OsStr>>(compiler: &str, args: &[S], exe: &Path) -> PathBuf {
-    run(Command::new(compiler).args(args).arg("-o").arg(exe));
+    let settings = [inc("renderer/api"), "-include".into(), fixture_path("settings_fixture.h").display().to_string()];
+    run(Command::new(compiler).args(settings).args(args).arg("-o").arg(exe));
     exe.to_path_buf()
 }
 
-/// a command of exe with no HOS_ variable of the test's environment (the switches a fixture is given are its own)
+/// a command of exe with no FIXTURE_SET of the test's environment (the settings a fixture is given are its own)
 pub fn clean(exe: &Path) -> Command {
     let mut c = Command::new(exe);
-    for (k, _) in std::env::vars_os() {
-        if k.to_string_lossy().starts_with("HOS_") {
-            c.env_remove(k);
-        }
-    }
+    c.env_remove("FIXTURE_SET");
     c
 }
 
