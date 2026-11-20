@@ -43,6 +43,9 @@ int os_guest_reserve(void *base, uint64_t size) {
         if (p == base) {
             memfd = fd;
             madvise(base, size, MADV_NOHUGEPAGE);
+            /* (out of a core dump: writing one reads every page of the window, and a read of a page never touched makes
+               it, so an abort grew the memfd by gigabytes a second, to the whole memory of the PC) */
+            madvise(base, size, MADV_DONTDUMP);
             return 0;
         }
         if (p != MAP_FAILED) munmap(p, size);

@@ -237,6 +237,21 @@ PATCH_AT(0x812f0f98, word(0xbd000902), after, none, pools_vfx_set3, as(x8, at)) 
 PATCH_AT(0x812f1000, word(0x2d010d02), after, none, pools_vfx_set4, as(x8, at)) { nvn_claim_write(at, 16); }
 PATCH_AT(0x812f1100, word(0x2d075d16), after, none, pools_vfx_set16, as(x8, at)) { nvn_claim_write(at, 0x40); }
 PATCH_AT(0x812efbd8, word(0x94a5c9e2), after, none, pools_vfx_fill, as(x24, buf), as(x23, size)) { nvn_claim_write(buf, size); }
+/* vfx_particle_stream_write (the emitters' stream buffers each frame, ModuleSystemWorker): three memcpys into the resource
+   pool (0x812606b4: the dirty range [+0x140, +0x144) of [+0x1d8]; 0x81260840: [+0x1f8]'s dirty records or all of it;
+   0x81260898: count [+0xd0] x 16 bytes) and a 0x1d0-byte record at x24 (a memset of 0x140, then its fields, the last at
+   0x81260e6c). Their grains are partly GPU-written (debug.poolcensus): each reported */
+static _Thread_local uint64_t vfx_dst, vfx_n;
+PATCH_AT(0x812606b4, word(0x94a8072f), before, none, pools_vfx_stream_a, as(x0, dst), as(x2, n)) { vfx_dst = dst, vfx_n = (uint32_t)n; }
+PATCH_AT(0x812606b4, word(0x94a8072f), after, none, pools_vfx_stream_a_end) { nvn_claim_write(vfx_dst, vfx_n); }
+PATCH_AT(0x81260838, word(0x14000002), before, none, pools_vfx_stream_b, as(x0, dst), as(x2, n)) { vfx_dst = dst, vfx_n = n; }
+PATCH_AT(0x8126083c, word(0xa95f8a81), after, none, pools_vfx_stream_b_all, as(x0, dst), as(x2, n)) { vfx_dst = dst, vfx_n = n; }
+PATCH_AT(0x81260840, word(0x94a806cc), after, none, pools_vfx_stream_b_end) { nvn_claim_write(vfx_dst, vfx_n); }
+PATCH_AT(0x81260898, word(0x94a806b6), after, none, pools_vfx_stream_c, as(x0, dst), as(x20, emitter)) {
+    const int32_t n = (int32_t)G32(emitter + 0xd0);
+    if (n > 0) nvn_claim_write(dst, (uint64_t)n << 4);
+}
+PATCH_AT(0x81260e6c, word(0x4d008100), after, none, pools_vfx_stream_record, as(x24, rec)) { nvn_claim_write(rec, 0x1d0); }
 PATCH_AT(0x81268558, word(0x94a7e786), after, none, pools_vfx_copy, as(x0, dst), as(x19, o)) {
     const uint64_t n = G32(o + 0x1d0) >= 2 ? G64(o + 0x1b8) * (uint64_t)((int32_t)G32(o + 0x1cc) - (int32_t)G32(o + 0x1c8) + 1)
                                            : G64(o + 0x1b0);

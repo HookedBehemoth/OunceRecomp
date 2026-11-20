@@ -234,11 +234,21 @@ rules decide the pools no maker claims, by their flags, from the census of those
 Any other flags are unclaimed: an error that names the call. OoT's other makers: NDSR's networks' pool (VRAM: the set-up
 writes and reads it inside its scope) and `job_list_build_b`'s 16.5 MB scratch (VRAM, the CPU's zeroing reported).
 
-DKB (its headless run reaches only the title menus; `games/dkb/patches/pools.c`): `f_80743ba8`'s, `f_80732960`'s,
-`f_804ab060`'s and `f_807935d8`'s blocks are Host and `f_805723e8`'s general pool Upload. GeometryCullingMgr
-(`cull_geometry_mgr_memory`) stays on layer 0: its small pool is shared by other ubo objects, and the address store,
-inlined in DKB, has no report yet. The pools of `f_808ec234` (0x22, 24 MB and 13 MB, never bound at the title) and the
-144 MB `f_8074431c` are not reached at the title, nor `f_807ac5e8`'s data pool.
+DKB's claims (`games/dkb/patches/pools.c`) come from the census of `ounce test dkb` (the tunnel test: a new game
+through the mode select and the punching tutorial into the mining tunnel):
+
+| Maker | Kind | Evidence |
+|---|---|---|
+| GeometryCullingMgr: the views' arrays, the block | Readback, VRAM | as OoT's; the address store, inlined in `cull_geometry_slot_alloc`, reported |
+| `f_807935d8`'s block | Upload | the scene drawers write about 100 pages a present, draws read it as vertex and storage data |
+| `f_804ab060`'s block, agl::driver::GraphicsDriverMgr's results block | Readback | GPU work writes them, the CPU reads them |
+| Vfx2's pools (`f_808ec234`, `f_808da640`) | Readback | the CPU writes particles, GPU work writes them too and the CPU reads those writes |
+| `f_804a0944`'s named blocks | by flags: 0x22 Upload, 0x24 VRAM, 0x12 Upload | 0x22: written every frame, bound; 0x24: 450 MB only GPU work writes; 0x12: unused (unverified) |
+| `ndsr_network_setup` | VRAM | as OoT's |
+| GraphicsDriverMgr's display lists, `f_8074431c`'s RenderDLBuffer, `f_80743ba8`'s and `f_80732960`'s blocks | Host | never bound |
+| `f_807ac5e8`'s data pool | Upload | from the code: mapped and filled buffers (not reached: unverified) |
+
+The rules: the gsys heap's 0x22 and 0x24 pools Upload, nn::gfx 0x22 Upload and 0x24 load once, and the access rules.
 
 ## The agl texture takeover
 

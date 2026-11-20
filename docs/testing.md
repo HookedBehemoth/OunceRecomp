@@ -101,7 +101,8 @@ larger file overflows it.
 
 The smoke test answers one question: did anything break? It stands in one scene and prints a verdict of about ten
 lines. The tests are in `games/<game>/tests.toml`; each names its length and its settings, and a test that starts in a
-scene keeps its overlay beside its golden data.
+scene keeps its overlay beside its golden data. DKB's test drives a new game with scripted input (`input.script`):
+A at the mode select, then Y through the punching tutorial into the mining tunnel.
 
 1. Once per build, with no switches, record a golden run. Record two or three for a scene that moves while you stand
    still.
