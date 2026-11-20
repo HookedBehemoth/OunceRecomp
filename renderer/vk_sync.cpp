@@ -67,7 +67,7 @@ struct Sub {
     std::vector<DumpItem*> dumps;
     uint64_t frame = 0;   // (presents before its hand-in)
     std::vector<ReadbackItem> readbacks;   // (the GPU's writes copied into guest memory once it completes)
-    ClaimSub* claims = nullptr;   // (debug.claimcheck: its ranges' check)
+    ClaimSub* claims = nullptr;   // (its copies into the claims' regions, prepared by the sender just before it submits them)
     // (a present: its GPU work runs here, in its queue's order)
     bool present = false;
     nvn_tex tex{};
@@ -412,6 +412,7 @@ void send_chunk(Queue& q, Sub& s, bool last) {
     }
     st_age_sent[std::min<uint64_t>(present_count() - std::min(present_count(), s.frame), 3)].fetch_add(1, std::memory_order_relaxed);
     s.last_value = batch_add(wait_value, s.wait_next && !s.pending.empty(), s.pending.data(), (uint32_t)s.pending.size());
+    if (s.claims && !s.chunks) claims_sub_prepare(s.claims, s.last_value);   // (its copies, in its first chunk: recorded now)
     if (s.wait_next && s.pending.empty()) return;   // (nothing after the wait yet: the barrier goes with the next chunk)
     st_cbs += (int64_t)s.pending.size(), st_chunks++;
     s.pending.clear();
@@ -428,8 +429,8 @@ bool run(Queue& q, Sub& s, bool& moved) {
             return false;
         }
     }
-    if (s.claims && !s.chunks && !s.at)   // (the check's copies before its first work)
-        if (VkCommandBuffer cb = claims_sub_run(s.claims)) s.pending.push_back(cb);
+    if (s.claims && !s.chunks && !s.at && s.pending.empty())   // (its copies before its first work)
+        s.pending.push_back(claims_sub_buffer(s.claims));
     for (; s.at < s.items.size(); s.at++, moved = true) {
         const SubItem& it = s.items[s.at];
         if (it.cb) {
@@ -718,7 +719,7 @@ extern "C" MKWVK_EXPORT void gpu_submit(uint64_t queue, void* const* lists, uint
         list_items(l, s.items, s.slots, dump_recording() ? &s.dumps : nullptr);
     }
     s.frame = present_count();
-    if (claims_tracking()) s.claims = claims_gather(s.lists.data(), s.lists.size());
+    s.claims = claims_sub_new(s.lists.data(), s.lists.size());
     {
         auto lk = lock_mu();
         Queue* q = queue_of(queue);

@@ -105,7 +105,7 @@ void nvn_claim_begin_rule(nvn_claim_rule rule, const char *by) {
 void nvn_claim_end(void) {
     if (tl_claim.depth > 0 && !--tl_claim.depth) tl_claim.kind = NVN_CLAIM_NONE, tl_claim.rule = NULL, tl_claim.by = NULL;
 }
-static const char *const kClaimNames[NVN_CLAIM_KINDS] = {"none", "textures", "targets", "host", "vram", "upload", "readback", "layer 0"};
+static const char *const kClaimNames[NVN_CLAIM_KINDS] = {"none", "textures", "targets", "host", "vram", "upload", "readback", "load once", "layer 0"};
 /* An NVN memory call the back end does not serve: one loud error with the guest's call chain, and a strict event */
 static void guest_chain(Ctx *c, char *b, size_t cap);
 static void pool_error(Ctx *c, const char *reason, const char *fmt, ...) {

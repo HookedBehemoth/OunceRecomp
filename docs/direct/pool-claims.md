@@ -26,6 +26,7 @@ error: a log line that names the guest call, and a strict event.
 | VRAM | device-local memory the back end owns | GPU only: the GPU's copies fill it | pools the CPU cannot access, GPU scratch |
 | Upload | device-local memory the back end owns | staged copies of the ranges the CPU wrote, at the guest's submit (see below) | uniform rings, vertex and index data, per-frame CPU data |
 | Readback | device-local memory the back end owns | a staged copy-out of the GPU's writes into the game's memory when their submit completes, before any wait on it returns | report and query memory, GPU results the CPU reads |
+| Load once | device-local memory the back end owns | each page copied from the game's memory the first time a submission uses it, then never again | the in-place files' vertex and index data |
 
 Every kind the GPU reads is device-local. Host-visible memory keeps the cost layer 0 has on NVIDIA, where the GPU reads
 system memory: Kokiri runs at 5 fps there. Upload and Readback pay a staging copy instead.
@@ -44,9 +45,10 @@ default Upload signal: their granules are marked when bound and copied in at the
 reads them. The game's flush and invalidate calls are never a signal. Patches report writes only where binds cannot:
 
 - data shaders reach through stored pointers (storage buffers by address), reported by the writer or its allocator;
-- load-once data, such as the in-place files' vertex and index pools, copied once at the end of the claim that made
-  them (the loader's body) and then excluded from the per-submit copies. A copy at first use would hitch and race
-  streaming.
+- load-once data, such as the in-place files' vertex and index pools (a Load once claim), copied a page at a time
+  at the first submission that uses it and then excluded from the per-submit copies. In OoT some of those pages
+  change 46 to 55 presents after their pool is made, all before their first use (the check finds no write after it in
+  Kokiri and Market), so a copy when the pool is made would be stale; no loader-end signal is known yet.
 
 **How the copies run.** An Upload or Readback claim's region is device-local, in the same arenas as VRAM claims, and is
 copied whole from guest memory at the first submission after its pool is made. At each submission, when its first

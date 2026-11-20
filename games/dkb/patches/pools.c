@@ -22,6 +22,11 @@ static int gpu_only_vram(uint32_t flags, uint64_t size) {
 static int gsys_rule(uint32_t flags, uint64_t size) {
     return (flags & 0xff) == 0x22 ? NVN_CLAIM_UPLOAD : gpu_only_vram(flags, size);
 }
+/* nn::gfx in-place files' pools: their vertex and index data (0x24) is written before the GPU first uses it, then
+   never again: load once; the rest stay layer 0's until their claims move */
+static int gfx_rule(uint32_t flags, uint64_t size) {
+    return (flags & 0xff) == 0x24 ? NVN_CLAIM_LOAD_ONCE : gpu_only_vram(flags, size);
+}
 #define CLAIM_RULE(fn)                        \
     nvn_claim_begin_rule(gpu_only_vram, fn);  \
     const uint64_t r = guest_orig(orig);      \
@@ -69,7 +74,10 @@ PATCH_FUNC(0x80577b30, word(0xd503237f), body(0xc69d2d96f5b1a11a), aapcs, x0, po
 }
 /* nn::gfx MemoryPool for in-place files */
 PATCH_FUNC(0x8052f8a8, word(0xd503237f), body(0x716734f6519dbfb9), aapcs, x0, pools_gfx, orig) {
-    CLAIM_RULE("gfx_memory_pool_init");
+    nvn_claim_begin_rule(gfx_rule, "gfx_memory_pool_init");
+    const uint64_t r = guest_orig(orig);
+    nvn_claim_end();
+    return r;
 }
 /* f_805e7a88 (sead's graphics system) makes the command memory (0x12, 16 MB; the host translates it, at 0x805e7dbc) and
    the shader scratch memory (0x21, GPU only, at 0x805e7fac), each call claimed; the display's buffers it makes through

@@ -1182,3 +1182,4 @@
 8093e7c0 tera_unit_textures_init          # games/oot/patches/tex_cpu.c: 1x1 format 0x25 textures by dta_alloc_b, cleared with memset at 0x8093ea3c # ?
 80f6a7e0 memory_pool_allocator_heap_init  # games/oot/patches/pools.c survey: "MemoryPoolAllocatorMgrHeap": a gfx_memory_pool_init pool (0xa2, 8 MB) under a NumberLineAllocator
 81277330 vfx3_pools_create                # games/oot/patches/pools.c survey: NintendoWare Vfx3's pools through f_812bb860 (0x22 88 MB, 0xa4, 0xa)
+8087b9b0 gsys_vfx_mgr_init                # games/oot/patches/pools.c: "gsysVfxMgr": makes an "EffectModel" heap and NintendoWare vfx3's system (f_81236160), whose pools (vfx3_pools_create) hold six dynamic 2 MB buffers (0x24) and an 88 MB pool (0x22)

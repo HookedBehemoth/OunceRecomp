@@ -196,6 +196,7 @@ struct BoundRange {
     uint64_t lo;
     uint32_t size;
     ClaimUse use;
+    const void* region;   // (vk_claims.cpp's, as the range was noted)
 };
 struct List;
 /// Guest [gpu, gpu + size) as its region's buffer and offset, noted as list l's use; false: not in one region (not memory
@@ -204,15 +205,16 @@ bool claims_span(List* l, ClaimUse use, uint64_t gpu, uint64_t size, VkBuffer& b
 bool claims_address(List* l, ClaimUse use, uint64_t gpu, uint64_t size, VkDeviceAddress& a);   // (the same, as a device address)
 bool claims_holds(uint64_t gpu, uint64_t size);   // (guest [gpu, gpu + size) is in one region; no error when not)
 void claims_stats(char* out, size_t cap);
-/// (debug.claimcheck, debug.claimuse) the guest ranges a submission's lists use: noted while either runs
-bool claims_tracking();
+/// A submission's copies into the claims' regions (Upload, load once) and the check's: made at the guest's submit, its
+/// lists referenced until they are prepared
 struct ClaimSub;
-/// At the guest's submit: the lists' ranges merged by region, measured (claimuse); the check's part, or null
-ClaimSub* claims_gather(List* const* lists, size_t n);
-/// When the submission's first chunk goes (vk_sync.cpp's mu held): the guest bytes now, and a command buffer that copies
-/// what its regions hold before its work (null: nothing to check)
-VkCommandBuffer claims_sub_run(ClaimSub* s);
-/// Its last timeline value: compared once it completes, then freed
+ClaimSub* claims_sub_new(List* const* lists, size_t n);
+/// The command buffer its first chunk starts with (vk_sync.cpp's mu held)
+VkCommandBuffer claims_sub_buffer(ClaimSub* s);
+/// When its first chunk (value first) goes into the batch (vk_sync.cpp's mu held): the lists' ranges merged by region,
+/// the guest bytes copied to staging, and the buffer recorded
+void claims_sub_prepare(ClaimSub* s, uint64_t first);
+/// Its last timeline value: the check compared once it completes, then freed
 void claims_sub_sent(ClaimSub* s, uint64_t value);
 /// (claimuse) a shader reaches guest addr through an address stored in a buffer (how: where the address was)
 void claims_pointer(uint64_t addr, uint64_t program, const char* how);

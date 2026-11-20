@@ -86,8 +86,10 @@ What a translated program expects at a draw is in [the shader contract](shader-c
 
 Every memory pool the game makes is claimed by a game patch at the engine function that makes it, and the claim says
 whether the GPU reads it and how its data moves ([pool claims](pool-claims.md)). A pool the GPU reads has a region: a
-buffer over the pool's guest range, in an arena of its kind. A VRAM claim's region is device-local memory of the back
-end's own; a layer-0 claim's, until its pools move to their own kinds, is the pool's guest pages imported (dma-bufs of
+buffer over the pool's guest range, in an arena of its kind. A VRAM, Upload, Readback or Load once claim's region is
+device-local memory of the back end's own: Upload ranges a submission reads are copied in through staging when its
+first chunk goes, Load once pages at their first use, and the GPU's reports are copied out when their submission
+completes. A layer-0 claim's, until its pools move to their own kinds, is the pool's guest pages imported (dma-bufs of
 the window's memfd pages on Linux, made through `/dev/udmabuf`; host pointers on Windows) in 64 MB arenas. Shaders,
 vertex and index buffers, copies and reports find a region by its guest address. A use outside every region is an
 error.

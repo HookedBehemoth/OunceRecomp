@@ -22,6 +22,11 @@ static int gpu_only_vram(uint32_t flags, uint64_t size) {
 static int gsys_rule(uint32_t flags, uint64_t size) {
     return (flags & 0xff) == 0x22 ? NVN_CLAIM_UPLOAD : gpu_only_vram(flags, size);
 }
+/* nn::gfx in-place files' pools: their vertex and index data (0x24) is written before the GPU first uses it, then
+   never again: load once; the rest stay layer 0's until their claims move */
+static int gfx_rule(uint32_t flags, uint64_t size) {
+    return (flags & 0xff) == 0x24 ? NVN_CLAIM_LOAD_ONCE : gpu_only_vram(flags, size);
+}
 #define CLAIM_RULE(fn)                        \
     nvn_claim_begin_rule(gpu_only_vram, fn);  \
     const uint64_t r = guest_orig(orig);      \
@@ -57,9 +62,23 @@ PATCH_FUNC(0x809de920, word(0xd503237f), body(0x02d1932cc850ce16), aapcs, x0, po
 PATCH_FUNC(0x80f6c9d0, word(0xd503237f), body(0x698a26829c189947), aapcs, x0, pools_agl, orig) {
     CLAIM_RULE("agl_memory_pool_create");
 }
+/* gsys_vfx_mgr_init: NintendoWare vfx3's pools, through gfx_memory_pool_init: six dynamic buffers (0x24, 2 MB each) and
+   its resource pool (0x22, 88 MB) the CPU writes every frame: Upload; the GPU-only ones VRAM */
+static int vfx_rule(uint32_t flags, uint64_t size) {
+    return (flags & 0xff) == 0x24 || (flags & 0xff) == 0x22 ? NVN_CLAIM_UPLOAD : gpu_only_vram(flags, size);
+}
+PATCH_FUNC(0x8087b9b0, word(0xd503237f), body(0xd9c91fdd5e60c7e2), aapcs, x0, pools_vfx, orig) {
+    nvn_claim_begin_rule(vfx_rule, "gsys_vfx_mgr_init");
+    const uint64_t r = guest_orig(orig);
+    nvn_claim_end();
+    return r;
+}
 /* nn::gfx MemoryPool for in-place files: BFRES vertex and index data (0x24), shader binaries (0x64), ui2d (0x21) */
 PATCH_FUNC(0x80792e30, word(0xd503237f), body(0xba09850595f0fa65), aapcs, x0, pools_gfx, orig) {
-    CLAIM_RULE("gfx_memory_pool_init");
+    nvn_claim_begin_rule(gfx_rule, "gfx_memory_pool_init");
+    const uint64_t r = guest_orig(orig);
+    nvn_claim_end();
+    return r;
 }
 /* sead_device_queue_pools' pools, each claimed at its nvnMemoryPoolInitialize: the events' words (0x12, 4 KB; written by
    the host), the command memory (0x12; the host translates it) and the shader scratch memory (0x21, GPU only). The

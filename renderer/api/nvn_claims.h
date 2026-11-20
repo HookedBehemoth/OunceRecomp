@@ -13,6 +13,7 @@ enum {
     NVN_CLAIM_VRAM,       /* GPU-only memory the back end owns */
     NVN_CLAIM_UPLOAD,     /* CPU writes the GPU reads, handed over by patches that report them */
     NVN_CLAIM_READBACK,   /* GPU writes the CPU reads, copied back when their submit completes */
+    NVN_CLAIM_LOAD_ONCE,  /* CPU data written before the GPU first uses it, then never again: each page copied at its first use */
     NVN_CLAIM_LAYER0,     /* (temporary, until its pools move) guest memory imported as it is */
     NVN_CLAIM_KINDS
 };
