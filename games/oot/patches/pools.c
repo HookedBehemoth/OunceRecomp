@@ -204,7 +204,7 @@ PATCH_AT_SITE(0x82c1ded8, word(0xb8286abf), after, none, pools_actor_count_zeroe
 
 /* ---- gsys::GeometryCullingMgr (gpu_result_block_a_create, docs/direct/pool-users.md): per view, an array of the units'
    GPU addresses that the calc jobs write each frame (cull_geometry_store_address, the only CPU write) and a draw binds as
-   storage (its program declares the binding written, so the grains are the GPU's): Upload, each store reported; the block
+   storage (its program declares the binding written, so the grains are the GPU's): Readback, each store reported; the block
    the GPU writes through those addresses (ubo_object_block_alloc_b at 0x80ecdd24): VRAM. The first view's allocation makes
    the small pool other ubo objects share: exposure_light_readback's 0x90 exposure record lives there, its CPU writes
    reported below */
@@ -306,7 +306,7 @@ PATCH_FUNC(0x80711820, word(0xd503237f), body(0x73bee5ec6ea59328), aapcs, x0, po
 
 /* ---- the rest of the gsys object blocks and agl pools the census names (debug.poolcensus, Kokiri and Market), each at the
    call that makes it ---- */
-/* terrain: terrain_streams_create's streams (the CPU writes some pages a present, binds read them): Upload; the tile
+/* terrain: terrain_streams_create's streams (written before their first use, then bound): Load once; the tile
    cache terrain_tile_load fills and reads (agl_memory_pool_create_b in terrain_tera_mgr_init) and f_80f6dc20's 202 MB pool
    are never bound: Host */
 PATCH_AT(0x809e3990, word(0x97fc7af4), before, none, pools_terrain_streams) { nvn_claim_begin(NVN_CLAIM_LOAD_ONCE, "terrain_streams_create"); }
