@@ -86,6 +86,23 @@ The descriptor heap does not change: textures and samplers were never in pool me
 | CPU_NO_ACCESS pools | layer 0's VRAM class | VRAM claims |
 | The texture heap, shader code | already left unbound | Textures and Host claims |
 
+## What the GPU writes and the CPU reads
+
+Measured in OoT's Kokiri test (`debug.replog`, `nvn.log_pools`):
+
+- **Event words** are written by the host, in submission order, not by the GPU: no readback.
+- **Reports and queries** live in the gsys heap's general pools (flags 0x22, six pools in Kokiri), between other
+  allocations. The back end writes each report itself and knows its 16 bytes, so it copies those slots out when
+  their submission completes. No claim is needed for them.
+- **GPU results through storage buffers** (the exposure light sums, the light visibility counters) are allocations
+  inside the same heap. Their makers (`exposure_light_buffers_create`, `render_light_visibility_buffer`) claim them as
+  Readback ranges by allocation. The light visibility counters are also zeroed by the CPU each frame
+  (`render_light_visibility_readback`), so their reader is patched to report that write as an upload, and a copy-out
+  from a submission recorded before it must not land after it.
+
+Readback is therefore by range, not by pool: a registry of guest ranges, each copied from its region to staging after
+the submissions that may write it and into guest memory once they complete, before any wait on them returns.
+
 ## Engine allocators
 
 The three games share agl, sead and gsys. A claim patch goes on the shared engine function, at its address in each
@@ -128,7 +145,7 @@ Each step is one commit. Each one passes `ounce test oot`, a 60-second DKB run, 
 | 1 | (done) The claim API: kinds in `nvn_claims.h`, the claim stored on the pool, an unclaimed pool an error. Every OoT and DKB pool claimed at its engine function; GPU-visible pools on a temporary `Layer0` kind | 400 lines, mostly patches |
 | 2 | (done) Host and Textures claims leave layer 0: shader code, command memory, descriptor pools, texture heaps, in-place texture files. The back end's texture-data-pool and shader-code special cases go | 200 lines, deletes about as many |
 | 3 | (done) Regions for every claim the GPU reads, in arenas per kind; the sparse windows go. The address table's entries point into the regions, and the CPU lookup replaces `layer0_span`. VRAM claims move first (CPU_NO_ACCESS pools) | 500 lines, deletes about 700 |
-| 4 | Readback: GPU writes copied into guest memory when their submit completes, before the guest's wait returns. Reports, queries and the light-sum buffers move. Then an NVIDIA Kokiri run (below) | 400 lines |
+| 4 | Readback by range: the report slots the back end writes, and the light-sum and light-visibility allocations their makers claim, copied into guest memory when their submissions complete, before the guest's wait returns. Lands with step 6, when their pools become device-local; until then the import keeps them coherent. Then an NVIDIA Kokiri run (below) | 400 lines |
 | 5 | The verifier, and the measurement: bytes bound per frame per pool, and the data reached through stored pointers | 250 lines |
 | 6 | Upload as bound-range copies at the guest's submit, load-once copies at their claim's end, and writer patches for the exceptions the measurement names | 600 lines, plus the patches |
 | 7 | Remove layer 0: the imports, udmabuf and the host-pointer path, `os_guest`'s export, the import probe, their settings and docs | deletes about 800 lines |

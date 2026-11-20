@@ -6,7 +6,7 @@ new to the code.
 ## Get started
 
 - [Development guide](development.md): install, configure, build and run, and where things go.
-- [Windows](windows.md): building and running on Windows, and what differs there (the OS layer, layer 0's regions).
+- [Windows](windows.md): building and running on Windows, and what differs there (the OS layer, the claims' regions).
 - [Rules for agents](agents.md): `--exclusive`, one build or game run at a time, and landing a branch.
 - [Design](design.md): how the parts fit, and the rules every change keeps.
 

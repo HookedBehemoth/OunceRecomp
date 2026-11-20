@@ -50,15 +50,11 @@ goldens, recordings) `%LOCALAPPDATA%\ounce\data`. The game folder holds `<exe>.e
 - **The guest window.** `runtime/os/os_guest_windows.c` reserves the 512 GB window and commits what the runtime hands
   out (`os_guest_commit`, from `hos_commit`) or what the game touches first (a fault handler). Ranges reach the GPU as
   host pointers (`VK_EXT_external_memory_host`) and stay committed once exported.
-- **Layer 0's regions.** NVIDIA's Windows driver binds only device-local memory into sparse buffers, so the 4 GB
-  windows cannot hold the game's memory, and it refuses device addresses chosen by the application. Layer 0 then holds
-  each GPU-readable pool in a *region* of its own: a plain buffer over the pool's pages, bound into a 64 MB *arena* of the
-  guest window imported once (an import costs about 11 ms however small), or device-local memory for a `CPU_NO_ACCESS`
-  pool (the VRAM class). The back end chooses the backing once per device, on every system: at start it imports 64 KB of
-  guest memory and tries to bind it into a sparse window, and takes the regions when that fails. The log says what it
-  chose (`direct: layer 0: backing:` and `direct: layer 0: placement:`). The translated shaders' address table
-  (`bda_emit.h`) has an entry per 64 KB granule, the distance from guest to device address; a granule that pools share
-  (the game leaves one page between them) is split into 16 page entries. Both backings fill the same table.
+- **The claims' regions.** As on Linux, each pool the GPU reads has a region: a plain buffer over the pool's range in
+  an arena ([pool claims](direct/pool-claims.md)). A layer-0 claim's region binds into a 64 MB arena of the guest window
+  imported once as a host pointer (an import costs about 11 ms however small); a VRAM claim's is device-local memory.
+  NVIDIA's Windows driver gives host-pointer imports system memory, which is why the 3D scenes are slow there until
+  the pools move off layer 0.
 - **The renderer's calls into the game.** A DLL cannot import from an executable it does not know by name, so
   `renderer/api/host_exports.h` lists what the renderer calls; the executable exports exactly those
   (`runtime/os/os_exports_windows.c`) and the renderer finds them by name (`renderer/vk_host_windows.cpp`).
