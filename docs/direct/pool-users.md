@@ -138,7 +138,7 @@ traced yet.
 1. **The culling lists:** the CPU's resets are made on the GPU (`nvn_claim_fill`), and only the records the CPU reads are
    copied out (`nvn_claim_read`): object a is VRAM. Object b is claimed by maker, its task blocks VRAM (above).
 2. **GeometryCullingMgr split:** the views' arrays are Readback with each address store reported (their small pool also
-   holds the exposure record, whose tint is reported), the block VRAM.
+   holds the exposure record, written on the GPU only), the block VRAM.
 3. **Vfx3:** the plugin setters, the new-buffer fill and the dirty-range copy report their writes.
 4. **The probe module:** the storage block and both calc blocks are VRAM, their writers reported.
 5. **The depth grid:** its slots are Readback with the camera copy reported; the query's records and per-id state VRAM.

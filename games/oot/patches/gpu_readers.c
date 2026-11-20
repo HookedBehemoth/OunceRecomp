@@ -8,7 +8,6 @@
 #include <string.h>
 #include "hos.h"
 #include "patches.h"
-#include "nvn_claims.h"
 
 /* the game's objects in guest memory; a uint64_t field holds a guest address */
 typedef struct { uint32_t count, offset, size; } Member;
@@ -159,6 +158,33 @@ static void average(Average *a, float v, uint64_t len_at) {
     a->at = (uint8_t)(len ? next - next / len * len : next);
 }
 
+/* The exposure record's tint (+0x10, twice), as the reader last computed it. The reader runs on a job thread
+   (ModuleSystemWorker or sead::MainThread), exposure_record_reset on the thread recording exposure_record_pass; nothing
+   orders the two within a frame, so the tint is a sequence lock (one writer): the reset takes the last whole tint */
+static struct { uint32_t seq, bits[4]; } tint;
+static void tint_put(const float v[4]) {
+    const uint32_t s = tint.seq;
+    __atomic_store_n(&tint.seq, s + 1, __ATOMIC_RELAXED);
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    for (int i = 0; i < 4; i++) {
+        uint32_t b;
+        memcpy(&b, &v[i], 4);
+        __atomic_store_n(&tint.bits[i], b, __ATOMIC_RELAXED);
+    }
+    __atomic_store_n(&tint.seq, s + 2, __ATOMIC_RELEASE);
+}
+/* 0 before the reader's first tint */
+static int tint_get(uint32_t bits[4]) {
+    for (;;) {
+        const uint32_t s = __atomic_load_n(&tint.seq, __ATOMIC_ACQUIRE);
+        if (!s) return 0;
+        if (s & 1) continue;
+        for (int i = 0; i < 4; i++) bits[i] = __atomic_load_n(&tint.bits[i], __ATOMIC_RELAXED);
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        if (__atomic_load_n(&tint.seq, __ATOMIC_RELAXED) == s) return 1;
+    }
+}
+
 /* exposure_light_readback (x0 the exposure object, w1 bit 0: read), once a frame: the three sums into their averages, the
    exposure record and the light block */
 PATCH_FUNC(0x80357060, word(0xd503237f), body(0x913d2f9eccdb34d6), aapcs, none, exposure_light_readback,
@@ -202,13 +228,12 @@ PATCH_FUNC(0x80357060, word(0xd503237f), body(0x913d2f9eccdb34d6), aapcs, none, 
         o->fixed &= ~0x20;
     }
 
-    /* the exposure record's tint, twice at +0x10; its other words are the GPU's (exposure_record_reset) */
+    /* the exposure record's tint: host state, written into the record by exposure_record_reset */
     {
-        const uint64_t gl = G64(G64(G64(0x84c9e740)) + 0x1e8), rec = first(&o->record.u);
-        const float k = getf(gl + 0xdb0);
-        float *r = at(rec, 0x90);
-        for (int i = 0; i < 4; i++) r[4 + i] = r[8 + i] = o->tint[i] * k;
-        nvn_claim_write(rec + 0x10, 0x20);
+        const float k = getf(G64(G64(G64(0x84c9e740)) + 0x1e8) + 0xdb0);
+        float v[4];
+        for (int i = 0; i < 4; i++) v[i] = o->tint[i] * k;
+        tint_put(v);
     }
 
     /* C: a sum of 256ths */
@@ -291,12 +316,17 @@ PATCH_AT(0x8029410c, word(0x94000ac9), before, none, gpu_sum_reset, guest(comput
 PATCH_AT_SITE(0x80294978, word(0x940008ae), before, none, gpu_sum_reset, guest(computed), sp, x0, x1, k(16));
 PATCH_AT_SITE(0x802b6b38, word(0x97ff803e), before, none, gpu_sum_reset, guest(computed), sp, x0, x1, k(4));
 PATCH_AT_SITE(0x80658d44, word(0x97f0f7bb), before, none, gpu_sum_reset, guest(computed), sp, x0, x1, k(4));
-/* the exposure record: its words +0x30..+0x70 are written by GPU work, first by exposure_record_pass (f_80291ab0, from
-   pass_vegetation_compute: it binds the light block and the record, x0 the block, x1 the pass context, then one 1x1x1
-   dispatch), then by env_cube_exposure_pass (f_802952b0); +0..+0x10 and +0x30..+0x90 are cleared before the first */
+/* the exposure record, written on the GPU only: its words +0x30..+0x70 by GPU work, first by exposure_record_pass
+   (f_80291ab0, from pass_vegetation_compute: it binds the light block and the record, x0 the block, x1 the pass context,
+   then one 1x1x1 dispatch), then by env_cube_exposure_pass (f_802952b0); exposure_pass_sum_b reads the tint. Before the
+   first, +0..+0x10 and +0x30..+0x90 are cleared and the tint is written at +0x10 and +0x20, a 4-byte clear for each
+   float's bits */
 PATCH_AT(0x80291b30, word(0x94001440), before, none, exposure_record_reset, guest(computed), sp, as(x0, buf), as(x1, ctx)) {
     const uint64_t rec = first(at(buf, sizeof(UniformBlock))), cmd = G64(ctx + 0xd8);
     guest_call(g, sp, clear_proc(), cmd, rec, 0x10, 0, 0);
     guest_call(g, sp, clear_proc(), cmd, rec + 0x30, 0x60, 0, 0);
+    uint32_t bits[4];
+    if (!tint_get(bits)) return;
+    for (int i = 0; i < 8; i++) guest_call(g, sp, clear_proc(), cmd, rec + 0x10 + 4ull * i, 4, bits[i & 3], 0);
 }
 

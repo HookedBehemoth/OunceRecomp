@@ -66,7 +66,7 @@ The other flushes are not reports, for three reasons:
   `probe_bake_records_write` 156 MB per bake, before it writes. As reports, they would copy about 24 MB a frame.
 - **They cover grains the GPU writes.** The culling lists, `f_80c576b0`'s lists, the depth grid's slots (with the
   camera copy in them), the exposure light buffers, the exposure record and the light visibility counters. Their
-  writes stay reported or filled by store-level patches, which hand only the CPU's bytes over.
+  writes are reported or filled by store-level patches, which hand only the CPU's bytes over, or made on the GPU.
 - **They do not exist.** Vfx3's resource pool and the gsys general pools (flags 0x22) are not CPU-cached, so nothing
   flushes them. The claim could report such a pool as CPU-cached so that agl's writers flush what they wrote, but
   that changes what the game sees; it is a separate experiment.
@@ -127,8 +127,8 @@ not a general mapped-pool programme.
   visibility** (`render_light_visibility_buffer`, `render_light_visibility_readback`): game-side classes in OoT only.
   Both readers are host code that reads the copied-out sums and writes, invalidates and flushes nothing; the sums and
   the exposure record's GPU words are cleared on the GPU before their passes ([pool claims](pool-claims.md), "Resets
-  the GPU makes in list order"). The exposure record's tint, CPU data in grains the record's binding marks written,
-  stays reported, as do the maker claims.
+  the GPU makes in list order"); the record's tint is host state written into it by clears at the same pass. The maker
+  claims stay.
 - **agl::utl::DepthBufferEx** (`depth_grid_slots_create`, `report_reader_a`, `depth_grid_camera_write`): in all three
   games. DKB's voxel culling also reads a coarse depth grid on the CPU. The camera copy lies in grains the GPU writes, so its
   report stays; its four allocations are rows of the allocation table. The TOTK export does not describe the class.
