@@ -33,10 +33,9 @@ system memory: Kokiri runs at 5 fps there. Upload and Readback pay a staging cop
 
 A pool can need two kinds for parts of it, for example an object block the CPU fills from a template and the GPU then
 adds to. The claim is then made on the allocation: the callers of a generic allocator (OoT's `gpu_pool_create`) claim
-their own kind, and claim nesting (the outermost claim holds) gives the caller's kind to the pools made for it. A block
-that is both Upload and written by the GPU is claimed Readback with an upload at its fill: the CPU's template is copied
-in once, when the patch on its filler reports it, and never again from bound ranges, so a later copy cannot overwrite
-what the GPU added.
+their own kind. Claims nest: a kind a patch names holds over a generic allocator's rule, and the innermost kind holds
+over the kinds around it, so a maker's exception (a Readback buffer among GPU scratch) sits inside its caller's claim.
+Between rules, the outermost holds.
 
 ## Where Upload data comes from
 
@@ -71,22 +70,30 @@ in the game itself: they come from the next frame's calc jobs (`job_calc_runner`
 parameter writer), which run while the GPU draws the frame. The console GPU reads the new value only if its draw comes
 after the write. The next frame's submit copies them, so they need no patch.
 
-**Pools both uploaded and written by the GPU.** A page that any GPU work writes (a storage buffer the program writes,
-a copy's or a fill's destination, a report) belongs to the GPU from the submission that first writes it: bound
-ranges never copy it again, so a re-upload cannot overwrite what the GPU added. The CPU's writes there reach the GPU only
-through a writer's report, and the CPU reads the GPU's only through a Readback range.
+**Pools both uploaded and written by the GPU.** A 16-byte grain that any GPU work writes (a storage buffer the program
+writes, a copy's or a fill's destination) belongs to the GPU from the submission that first writes it: bound ranges
+never copy it again, so a re-upload cannot overwrite what the GPU wrote. The CPU's writes there reach the GPU only
+through a writer's report (`nvn_claim_write`), and the CPU reads the GPU's only through a Readback claim.
 
-A report from a ring or an allocator arrives before the write. With two guest queues, an async-compute submit can fall
-between the allocation and the write, so a report is kept live until its ring flips, not consumed by the next submit.
+**Reported writes.** A writer patch reports a CPU write after it. The next submission's first copy copies the range in
+before its work, whatever the GPU owns, and the copies out of submissions whose first copy came before the report drop
+that range: an older GPU value never lands over the CPU's write. OoT's light readers zero the sums they read this way.
+
+**Copies out.** A Readback claim's region takes the CPU's writes like an Upload region. The ranges its submission's GPU
+work writes (storage written, copy and fill destinations) are copied into staging by a command buffer after the
+submission's last work, and into guest memory when it completes, before any CPU wait on it returns (`nvn_wait`,
+`nvn_finish`, the sync waits: `vk_readback.cpp`'s order).
 
 **The verifier.** An Upload write nothing reports leaves stale bytes on the GPU, silently. With `debug.claimcheck`,
 each submission's lists note the guest ranges they use (uniform, vertex, index, indirect, storage, copies), merged by
 region. When its first chunk goes, the guest bytes of the ranges the GPU only reads are kept, and a copy of what
 their regions hold runs before its work; once it completes the two are compared, and a mismatch is an error line and a
 strict event that names the range, its use, the pool with its claim and claiming patch, and the lists. It uses no page
-protection. It also confirms the load-once copies. Ranges in layer-0 claims that any GPU work writes are left out. Once
-the submission completes, the check also compares the bytes it copied with guest memory and logs the first ranges the
-CPU wrote meanwhile, with their count in its summary line.
+protection. It also confirms the load-once copies. Ranges that any GPU work writes are left out. Once the submission
+completes, the check also compares the bytes it copied with guest memory and logs the first ranges the CPU wrote
+meanwhile, with their count in its summary line. Every 600 presents it also hashes the pages the GPU owns (a CPU-visible
+VRAM claim's, and the GPU-written grains of Upload and Readback claims): a change no report or copy out explains is a
+CPU write the GPU never sees, counted as a mismatch and named by pool.
 
 **The measurement.** `debug.claimuse` prints, every 600 presents, the bytes bound a frame per pool group (claiming
 patch, flags, claim) and per use, the largest ranges, the pages that changed since their pool was made and between
@@ -136,12 +143,16 @@ Measured in OoT's Kokiri test (`debug.replog`, `nvn.log_pools`):
   them.
 - **GPU results through storage buffers** (the exposure light sums, the light visibility counters) are allocations
   inside the same heap. Their makers (`exposure_light_buffers_create`, `render_light_visibility_buffer`) claim them as
-  Readback ranges by allocation. The light visibility counters are also zeroed by the CPU each frame
-  (`render_light_visibility_readback`), so their reader is patched to report that write as an upload, and a copy-out
-  from a submission recorded before it must not land after it.
+  Readback (each allocation is a pool of its own). Their readers zero the sums each frame, and patches report those
+  stores.
+- **Which pools the CPU reads.** A pool the game allocates CPU-cached (0x24) and invalidates before it reads is one whose
+  GPU writes the CPU reads. The invalidate is never a signal, but a survey of the invalidates per pool (a 600-present
+  run) names the Readback candidates; the claim then goes on their maker.
 
-Readback is therefore by range, not by pool: a registry of guest ranges, each copied from its region to staging after
-the submissions that may write it and into guest memory once they complete, before any wait on them returns.
+**Known gap: Vfx3's particle streams.** NintendoWare Vfx3's resource pool (`gsys_vfx_mgr_init`, 0x22, Upload) holds
+particle records (0x100 bytes each) that draws bind as storage the program writes, and that the CPU also rewrites every
+frame (the check finds about 0.4 pages a frame in Kokiri). Since the grains are the GPU's, those CPU writes do not
+reach the GPU. The writer (`vfx_particle_stream_write` or a neighbour) needs a report, or the program's real write range.
 
 ## Engine allocators
 
@@ -185,14 +196,29 @@ Each step is one commit. Each one passes `ounce test oot`, a 60-second DKB run, 
 | 1 | (done) The claim API: kinds in `nvn_claims.h`, the claim stored on the pool, an unclaimed pool an error. Every OoT and DKB pool claimed at its engine function; GPU-visible pools on a temporary `Layer0` kind | 400 lines, mostly patches |
 | 2 | (done) Host and Textures claims leave layer 0: shader code, command memory, descriptor pools, texture heaps, in-place texture files. The back end's texture-data-pool and shader-code special cases go | 200 lines, deletes about as many |
 | 3 | (done) Regions for every claim the GPU reads, in arenas per kind; the sparse windows go. The address table's entries point into the regions, and the CPU lookup replaces `layer0_span`. VRAM claims move first (CPU_NO_ACCESS pools) | 500 lines, deletes about 700 |
-| 4 | Readback by range: the report slots the back end writes, and the light-sum and light-visibility allocations their makers claim, copied into guest memory when their submissions complete, before the guest's wait returns. Lands with step 6, when their pools become device-local; until then the import keeps them coherent. Then an NVIDIA Kokiri run (below) | 400 lines |
+| 4 | (done) Readback: copies out of the ranges GPU work writes, reported CPU writes, the light-sum and light-visibility claims; the check's owned pages | 400 lines |
 | 5 | (done) The verifier, and the measurement: bytes bound per frame per pool, and the data reached through stored pointers | 250 lines |
 | 6 | Upload as bound-range copies at the guest's submit, load-once copies at their claim's end, and writer patches for the exceptions the measurement names | 600 lines, plus the patches |
 | 7 | Remove layer 0: the imports, udmabuf and the host-pointer path, `os_guest`'s export, the import probe, their settings and docs | deletes about 800 lines |
 | 8 | The agl texture takeover, then MKW's pools on the same patches | 600 lines across the games |
+| 9 | Write-once uniform rings (below) | to be sized |
 
 Steps 3 to 6 keep the remaining pools on `Layer0` until their claims move, so each step lands with both games
 running. Expect a small regression on AMD, where layer 0 was zero-copy: Upload and Readback add copies.
+
+### Step 9: write-once uniform rings
+
+The game's per-frame uniform ring allocators, the gsys heap's general pools (0x22, Upload) in the first place, are
+patched so the game writes straight into a persistently mapped buffer the back end owns: device-local and host-visible
+on ReBAR, host-visible otherwise. That removes the staging copy and the dirty marking for that data, as desktop engines
+do it. The goal is to win back the host-draw time Upload cost in Kokiri (about 0.5 to 0.7 ms).
+
+Open questions:
+
+- the allocator patch points;
+- how the guest's addresses map to that memory: the guest's pointers must stay valid in the fixed 0x1000_0000_0000
+  window, or the ring patch hands out addresses that the address table maps to the buffer;
+- Windows, which has no placed mapping (`VK_EXT_map_memory_placed`).
 
 ### The NVIDIA check
 

@@ -67,8 +67,8 @@ struct Sub {
     std::vector<DumpItem*> dumps;
     uint64_t frame = 0;   // (presents before its hand-in)
     std::vector<ReadbackItem> readbacks;   // (the GPU's writes copied into guest memory once it completes)
-    ClaimSub* claims = nullptr;   // (its copies into the claims' regions, prepared by the sender just before it submits them)
-    bool claims_due = false;   // (a copy's command buffer leads the pending chunk: its first, or one after a held wait)
+    ClaimSub* claims = nullptr;   // (its copies into and out of the claims' regions, prepared by the sender just before it submits them)
+    std::vector<ClaimPrep> due;   // (the copies whose command buffers are null slots of the pending chunk, in order)
     bool wait_held = false;    // (held at the event wait it is at)
     // (a present: its GPU work runs here, in its queue's order)
     bool present = false;
@@ -139,11 +139,11 @@ struct Chunk {
     uint64_t wait = 0, value = 0;
     size_t first = 0, n = 0;
 };
-/// a submission's copy into the claims' regions, prepared by the sender just before it submits the chunk that starts with
-/// it: in queue order, off the game's threads. Its command buffer is the sender's, in the place of a null one
+/// a submission's copy into or out of the claims' regions, prepared by the sender just before it submits the chunk that
+/// holds it: in queue order, off the game's threads. Its command buffer is the sender's, in the place of a null one
 struct Prep {
     ClaimSub* s;
-    bool after_wait;
+    ClaimPrep what;
 };
 struct Batch {
     std::unique_lock<std::mutex> lk;
@@ -171,7 +171,7 @@ void submit_handed(Handed& h) {
     size_t at = 0;
     for (const Prep& p : h.preps) {
         while (h.cbs[at]) at++;
-        h.cbs[at] = claims_sub_prepare(p.s, p.after_wait);
+        h.cbs[at] = claims_sub_prepare(p.s, p.what);
     }
     const size_t k = h.chunks.size();
     std::vector<VkSubmitInfo2> si(k, VkSubmitInfo2{VK_STRUCTURE_TYPE_SUBMIT_INFO_2});
@@ -427,7 +427,8 @@ void send_chunk(Queue& q, Sub& s, bool last) {
     }
     st_age_sent[std::min<uint64_t>(present_count() - std::min(present_count(), s.frame), 3)].fetch_add(1, std::memory_order_relaxed);
     s.last_value = batch_add(wait_value, s.wait_next && !s.pending.empty(), s.pending.data(), (uint32_t)s.pending.size());
-    if (s.claims && s.claims_due) batch.preps.push_back({s.claims, s.chunks > 0}), s.claims_due = false;   // (its copies, in this chunk)
+    for (ClaimPrep w : s.due) batch.preps.push_back({s.claims, w});   // (its copies, in this chunk)
+    s.due.clear();
     if (s.wait_next && s.pending.empty()) return;   // (nothing after the wait yet: the barrier goes with the next chunk)
     st_cbs += (int64_t)s.pending.size(), st_chunks++;
     s.pending.clear();
@@ -444,8 +445,8 @@ bool run(Queue& q, Sub& s, bool& moved) {
             return false;
         }
     }
-    if (s.claims && !s.chunks && !s.at && s.pending.empty() && !s.claims_due)   // (its copies before its first work: see Prep)
-        s.pending.push_back(VK_NULL_HANDLE), s.claims_due = true;
+    if (s.claims && !s.chunks && !s.at && s.pending.empty() && s.due.empty())   // (its copies before its first work: see Prep)
+        s.pending.push_back(VK_NULL_HANDLE), s.due.push_back(CLAIM_PREP_FIRST);
     for (; s.at < s.items.size(); s.at++, moved = true) {
         const SubItem& it = s.items[s.at];
         if (it.cb) {
@@ -478,7 +479,7 @@ bool run(Queue& q, Sub& s, bool& moved) {
             send_chunk(q, s, false);
             // (held until the CPU's signal met it now: what the CPU wrote since the first copy, before its signal, copied before
             // the work after it. A wait another queue's work meets orders nothing for the CPU)
-            if (s.wait_held && in_cpu_signal && s.claims && s.chunks) s.pending.push_back(VK_NULL_HANDLE), s.claims_due = true;
+            if (s.wait_held && in_cpu_signal && s.claims && s.chunks) s.pending.push_back(VK_NULL_HANDLE), s.due.push_back(CLAIM_PREP_AFTER_WAIT);
             s.wait_held = false;
             s.wait_next = true;
             break;
@@ -515,6 +516,8 @@ void progress() {
                     (in_cpu_signal ? st_freed_cpu : st_freed_queue)++;
                 }
                 const bool dumped = dump_claim(s.dumps, s.frame);
+                // (the Readback ranges its work wrote, copied out after it: see Prep)
+                if (s.claims && claims_sub_outs(s.claims)) s.pending.push_back(VK_NULL_HANDLE), s.due.push_back(CLAIM_PREP_OUTS);
                 send_chunk(*q, s, true);   // (the last, even with no command buffer: its value is the submission's fence)
                 const uint64_t v = s.last_value;
                 for (CmdSlot* c : s.slots) cmd_slot_sent(c, v);

@@ -180,6 +180,7 @@ const gpu_fns *rx_direct(void) {
         DIRECT_FN(texture_cached, "gpu_texture_cached")
         DIRECT_FN(vram_free, "gpu_vram_free")
         DIRECT_FN(measure, "gpu_measure")
+        DIRECT_FN(claim_write, "gpu_claim_write")
 #undef DIRECT_FN
         hos_log("rx: the direct back end: %s", path);
         {   /* (debug.crit= the calls timed, crit.c) */

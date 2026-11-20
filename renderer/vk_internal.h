@@ -205,17 +205,29 @@ bool claims_span(List* l, ClaimUse use, uint64_t gpu, uint64_t size, VkBuffer& b
 bool claims_address(List* l, ClaimUse use, uint64_t gpu, uint64_t size, VkDeviceAddress& a);   // (the same, as a device address)
 bool claims_holds(uint64_t gpu, uint64_t size);   // (guest [gpu, gpu + size) is in one region; no error when not)
 void claims_stats(char* out, size_t cap);
-/// A submission's copies into the claims' regions (Upload, load once) and the check's: made at the guest's submit, its
-/// lists referenced until it completes
+/// A submission's copies into the claims' regions (Upload, Readback, load once), out of them (Readback) and the check's:
+/// made at the guest's submit, its lists referenced until it completes
 struct ClaimSub;
 ClaimSub* claims_sub_new(List* const* lists, size_t n);
-/// Just before the chunk it leads is submitted, by the sender in queue order: the command buffer of a copy, recorded. At
-/// its first chunk, the ranges its lists read, their guest bytes through staging; after an event wait it was held at
-/// (after_wait), the ranges of those whose guest bytes changed since, so the CPU's writes before the signal that met the
-/// wait reach the work after it, as on the console
-VkCommandBuffer claims_sub_prepare(ClaimSub* s, bool after_wait);
-/// Its last timeline value: the check compared once it completes, then freed
+/// its lists' commands write Readback ranges: its last chunk ends with their copy out (CLAIM_PREP_OUTS)
+bool claims_sub_outs(const ClaimSub* s);
+/// The copies a submission's chunk holds, in the place the sender fills just before it submits that chunk:
+/// - FIRST, before its first work: the ranges its lists read and the ranges the CPU reported (claims_cpu_write), their
+///   guest bytes through staging;
+/// - AFTER_WAIT, after an event wait it was held at: the ranges of those whose guest bytes changed since, so the CPU's
+///   writes before the signal that met the wait reach the work after it, as on the console;
+/// - OUTS, after its last work: the Readback ranges its work wrote, into staging, copied into guest memory once it
+///   completes, before any wait on it returns
+enum ClaimPrep : uint8_t { CLAIM_PREP_FIRST, CLAIM_PREP_AFTER_WAIT, CLAIM_PREP_OUTS };
+VkCommandBuffer claims_sub_prepare(ClaimSub* s, ClaimPrep what);
+/// Its last timeline value: its copy out and the check run once it completes, then it is freed
 void claims_sub_sent(ClaimSub* s, uint64_t value);
+/// The CPU wrote guest [lo, lo + size) where no bind hands it over (a range the GPU writes, a pool only shaders reach):
+/// copied into its region by the next submission's first copy, and dropped from the copies out of submissions whose first
+/// copy came before (nvn_claim_write)
+void claims_cpu_write(uint64_t lo, uint64_t size);
+/// A copy out into guest memory (the reports' and the Readback ranges'), which the check's view of guest memory follows
+void claims_guest_write(uint64_t guest, const void* src, uint64_t n);
 /// (claimuse) a shader reaches guest addr through an address stored in a buffer (how: where the address was)
 void claims_pointer(uint64_t addr, uint64_t program, const char* how);
 void claims_use_log();   // (the check's and the measurement's lines, every 600 presents)

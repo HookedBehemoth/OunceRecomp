@@ -29,7 +29,7 @@ void drain_locked() {
         Pending& p = queue.front();
         for (const ReadbackItem& it : p.items) {
             if (it.mem != last) mem_invalidate(it.mem), last = it.mem;
-            host->gpu_write(it.guest, it.src, it.size);
+            claims_guest_write(it.guest, it.src, it.size);
             st_bytes += it.size;
         }
         st_items += (int64_t)p.items.size(), st_subs += !p.items.empty();

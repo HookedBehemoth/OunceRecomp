@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <tuple>
 #include <map>
 #include <memory>
@@ -168,6 +169,9 @@ struct Region {
     // set, a bit each; listed: in dirty_regions)
     std::unique_ptr<std::atomic<uint64_t>[]> dirty, dirty_sum;
     uint64_t dirty_words = 0;
+    // (its 16-byte grains that GPU work writes, a bit each, made at the first such write: the GPU's from the first
+    // submission that writes them. Bound ranges never copy them again, so a copy cannot overwrite what the GPU wrote)
+    std::atomic<std::atomic<uint64_t>*> gpu{nullptr};
     std::atomic<bool> listed{false};
 };
 /// the bits [a, b) of a 64-bit word (b <= 64)
@@ -241,7 +245,7 @@ struct Pool {
 };
 std::multimap<uint64_t, Pool> pools;   // (mu; every pool the game has, by base)
 uint32_t vram_type = UINT32_MAX;
-std::vector<Region*> whole_uploads;   // (mu; Upload and Readback regions made since the last submit: copied whole then)
+std::vector<Region*> whole_uploads;   // (mu; regions whose bytes come from guest memory, made since the last submit: copied whole then)
 uint64_t vram_live = 0, import_live = 0;
 int64_t st_regions = 0, st_failed = 0, st_freed = 0, st_split_full = 0, st_arenas = 0, st_own_imports = 0;
 int64_t st_by_claim[NVN_CLAIM_KINDS] = {};
@@ -472,6 +476,13 @@ const char* const kUseNames[CU_KINDS] = {"uniform", "vertex", "index", "indirect
                                          "fill", "texel copy", "condition", "task record"};
 /// the uses after which the GPU may have written the range
 constexpr uint32_t kGpuWrites = 1u << CU_STORAGE_WRITTEN | 1u << CU_COPY_DST | 1u << CU_FILL | 1u << CU_CONDITION;
+/// the uses that write the range: a Readback claim's are copied out after the submission
+constexpr uint32_t kOutUses = 1u << CU_STORAGE_WRITTEN | 1u << CU_COPY_DST | 1u << CU_FILL;
+/// a region of the back end's own memory whose bytes come from guest memory: copies move the CPU's writes in
+bool local_copied(const Region* r) {
+    return r->claim == NVN_CLAIM_UPLOAD || r->claim == NVN_CLAIM_READBACK || r->claim == NVN_CLAIM_LOAD_ONCE ||
+           (r->claim == NVN_CLAIM_VRAM && !(r->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS));
+}
 
 uint64_t hash_bytes(const uint8_t* p, uint64_t n) {   // (a page's: the measurement's change test)
     uint64_t h = 0x9e3779b97f4a7c15ull ^ n;
@@ -512,7 +523,7 @@ struct SubRange {
     Region* r;
     uint32_t uses;   // (bit ClaimUse)
 };
-/// Upload staging: host-visible chunks, each holding one copy's bytes until its submission completes (check_mu)
+/// Staging: host-visible chunks, each holding one copy's bytes (in or out) until its submission completes (check_mu)
 struct Staging {
     VkBuffer buf = VK_NULL_HANDLE;
     Mem* mem = nullptr;
@@ -530,7 +541,8 @@ int64_t staging_take(uint64_t n) {   // (check_mu held: a chunk of at least n by
         Staging c;
         c.size = std::max<uint64_t>(16ull << 20, (n + (1 << 20) - 1) & ~((1ull << 20) - 1));
         void* map = nullptr;
-        if (!mem_buffer(c.size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true, c.buf, c.mem, &map, MO_UPLOAD) || !map) return -1;
+        if (!mem_buffer(c.size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, c.buf, c.mem, &map, MO_UPLOAD) || !map)
+            return -1;
         c.map = (uint8_t*)map;
         staging.push_back(c);
         best = (int)staging.size() - 1;
@@ -546,7 +558,17 @@ struct Up {
 };
 struct ClaimSubImpl {
     std::vector<Up> once;   // (the load-once ranges the lists marked now read, not all copied)
-    std::vector<std::pair<uint64_t, uint64_t>> gpu_writes;   // (the ranges their GPU work writes: the GPU's pages from now on)
+    std::vector<Up> outs;   // (the Readback ranges its work writes)
+    // (its copy out: each range's place in its staging chunk, copied into guest memory once it completes)
+    struct Out {
+        uint64_t lo, hi;
+        int64_t chunk;
+        uint64_t at;
+    };
+    std::vector<Out> out_sent;
+    uint64_t seq = 0;       // (its first copy's number: the CPU's reports after it drop their ranges from its copy out)
+    bool has_outs = false;
+    std::vector<Up> gpu_writes;   // (the ranges their GPU work writes: the GPU's grains from now on)
     std::vector<SubRange> ranges;   // (the check and the measurement: the marked lists' ranges merged by region)
     uint64_t frame = 0, run_frame = 0, run_behind = 0;   // (presents at its submit and at its first chunk; values the GPU was behind)
     // (the check, a part per copy: the guest bytes when the copy was made, and the region's bytes the GPU copied before the
@@ -675,16 +697,29 @@ std::string pool_name(uint64_t g) {
         }
     return "no pool";
 }
-/// (debug.claimcheck) pages the GPU may write (a use in kGpuWrites, in a claim the GPU writes): their guest bytes and their
-/// region's differ while that work is in flight, so the check leaves them out
-std::vector<std::atomic<uint64_t>> gpu_written;
-void mark_gpu_written(uint64_t lo, uint64_t hi) {
-    for (uint64_t p = lo >> kPageShift; p <= (hi - 1) >> kPageShift && (p >> 6) < gpu_written.size(); p++)
-        if (!(gpu_written[p >> 6].load(std::memory_order_relaxed) >> (p & 63) & 1)) gpu_written[p >> 6].fetch_or(1ull << (p & 63), std::memory_order_relaxed);
+/// r's grains [lo, hi) the GPU's (see Region::gpu)
+void mark_gpu_written(Region* r, uint64_t lo, uint64_t hi) {
+    std::atomic<uint64_t>* g = r->gpu.load(std::memory_order_acquire);
+    if (!g) {
+        auto* made = new std::atomic<uint64_t>[((((r->hi - r->lo) >> kGrainShift) + 63) >> 6)]();
+        if (r->gpu.compare_exchange_strong(g, made, std::memory_order_acq_rel)) g = made;
+        else delete[] made;
+    }
+    const uint64_t g0 = (lo - r->lo) >> kGrainShift, g1 = ((hi - r->lo - 1) >> kGrainShift) + 1;
+    for (uint64_t w = g0 >> 6; w <= (g1 - 1) >> 6; w++) {
+        const uint64_t m = bits(w == g0 >> 6 ? g0 & 63 : 0, w == (g1 - 1) >> 6 ? ((g1 - 1) & 63) + 1 : 64);
+        if ((g[w].load(std::memory_order_relaxed) & m) != m) g[w].fetch_or(m, std::memory_order_relaxed);
+    }
 }
-bool any_gpu_written(uint64_t lo, uint64_t hi) {
-    for (uint64_t p = lo >> kPageShift; p <= (hi - 1) >> kPageShift && (p >> 6) < gpu_written.size(); p++)
-        if (gpu_written[p >> 6].load(std::memory_order_relaxed) >> (p & 63) & 1) return true;
+/// any grain of r's [lo, hi) the GPU's
+bool any_gpu_written(const Region* r, uint64_t lo, uint64_t hi) {
+    const std::atomic<uint64_t>* g = r->gpu.load(std::memory_order_acquire);
+    if (!g) return false;
+    const uint64_t g0 = (lo - r->lo) >> kGrainShift, g1 = ((hi - r->lo - 1) >> kGrainShift) + 1;
+    for (uint64_t w = g0 >> 6; w <= (g1 - 1) >> 6; w++) {
+        const uint64_t m = bits(w == g0 >> 6 ? g0 & 63 : 0, w == (g1 - 1) >> 6 ? ((g1 - 1) & 63) + 1 : 64);
+        if (g[w].load(std::memory_order_relaxed) & m) return true;
+    }
     return false;
 }
 std::mutex miss_mu;
@@ -783,8 +818,12 @@ void note_list(ClaimSub* s, DirtyAcc& acc, const List* l, int depth) {
         Region* r = (Region*)b.region;
         if (!r->pages) continue;   // (retired)
         const uint64_t hi = std::min<uint64_t>(b.lo + b.size, r->hi);
-        if ((1u << b.use) & kGpuWrites) s->gpu_writes.push_back({b.lo, hi});
-        else if (r->claim == NVN_CLAIM_UPLOAD) mark_dirty(acc, r, b.lo, hi);
+        if ((1u << b.use) & kGpuWrites) {
+            s->gpu_writes.push_back({r, b.lo, hi});
+            if (r->claim == NVN_CLAIM_READBACK && (1u << b.use) & kOutUses) s->outs.push_back({r, b.lo, hi});
+        } else if (r->claim == NVN_CLAIM_UPLOAD || r->claim == NVN_CLAIM_READBACK) {
+            mark_dirty(acc, r, b.lo, hi);
+        }
         else if (r->claim == NVN_CLAIM_LOAD_ONCE && !all_copied(r, b.lo, hi)) s->once.push_back({r, b.lo, hi});
     }
     if (depth > 16) return;
@@ -794,14 +833,28 @@ void note_list(ClaimSub* s, DirtyAcc& acc, const List* l, int depth) {
 }
 }  // namespace
 
+namespace {
+bool any_outs(const List* l, int depth) {
+    if (l->outs) return true;
+    if (depth > 16) return false;
+    for (const Seg& g : l->segs)
+        if (g.callee && any_outs(g.callee, depth + 1)) return true;
+    for (const List* j : l->executed)
+        if (any_outs(j, depth + 1)) return true;
+    return false;
+}
+}  // namespace
+
 ClaimSub* claims_sub_new(List* const* lists, size_t n) {
     if (!tracking) return nullptr;
     auto* s = new ClaimSub;
     for (size_t i = 0; i < n; i++)
-        if (lists[i]) list_ref(lists[i]), s->lists.push_back(lists[i]);
+        if (lists[i]) list_ref(lists[i]), s->lists.push_back(lists[i]), s->has_outs = s->has_outs || any_outs(lists[i], 0);
     s->frame = present_count();
     return s;
 }
+
+bool claims_sub_outs(const ClaimSub* s) { return s->has_outs; }
 
 
 
@@ -830,24 +883,27 @@ void gather(ClaimSub* s) {
 }  // namespace
 
 namespace {
-/// guest [lo, hi) of Upload region r into ups, its pages the GPU writes left out: those are the GPU's from the first
-/// submission that writes them, and the CPU's writes there reach the GPU only through a writer's report
+/// guest [lo, hi) of region r (grain-aligned) into ups, the grains the GPU writes left out: those are the GPU's, and the
+/// CPU's writes there reach the GPU only through a writer's report
 void up_add(std::vector<Up>& ups, Region* r, uint64_t lo, uint64_t hi) {
-    if (!any_gpu_written(lo, hi)) {   // (the common case: no page of it is the GPU's)
-        if (!ups.empty() && ups.back().r == r && ups.back().hi >= lo) ups.back().hi = std::max(ups.back().hi, hi);
-        else ups.push_back({r, lo, hi});
-        return;
-    }
-    for (uint64_t a = lo; a < hi;) {   // (the pages no GPU work writes, in runs)
-        const uint64_t pe = std::min(hi, (a & ~(kPage - 1)) + kPage);
-        if (any_gpu_written(a, pe)) {
-            st_up_skipped_gpu.fetch_add(1, std::memory_order_relaxed);
-        } else if (!ups.empty() && ups.back().r == r && ups.back().hi == a) {
-            ups.back().hi = pe;
-        } else {
-            ups.push_back({r, a, pe});
+    auto add = [&](uint64_t a, uint64_t b) {
+        if (!ups.empty() && ups.back().r == r && ups.back().hi >= a) ups.back().hi = std::max(ups.back().hi, b);
+        else ups.push_back({r, a, b});
+    };
+    const std::atomic<uint64_t>* g = r->gpu.load(std::memory_order_acquire);
+    if (!g) return add(lo, hi);   // (the common case: no grain of it is the GPU's)
+    const uint64_t g0 = (lo - r->lo) >> kGrainShift, g1 = ((hi - r->lo - 1) >> kGrainShift) + 1;
+    for (uint64_t w = g0 >> 6; w <= (g1 - 1) >> 6; w++) {   // (the grains no GPU work writes, in runs)
+        const uint64_t m = bits(w == g0 >> 6 ? g0 & 63 : 0, w == (g1 - 1) >> 6 ? ((g1 - 1) & 63) + 1 : 64);
+        const uint64_t gw = g[w].load(std::memory_order_relaxed);
+        if (gw & m) st_up_skipped_gpu.fetch_add(1, std::memory_order_relaxed);
+        for (uint64_t x = ~gw & m; x;) {
+            const uint32_t b = (uint32_t)__builtin_ctzll(x);
+            const uint64_t y = ~(x >> b);
+            const uint32_t e = y ? std::min<uint32_t>(64, b + (uint32_t)__builtin_ctzll(y)) : 64;
+            add(r->lo + ((w << 6 | b) << kGrainShift), std::min(hi, r->lo + (((w << 6) + e) << kGrainShift)));
+            x &= e == 64 ? 0 : ~0ull << e;
         }
-        a = pe;
     }
 }
 /// Upload region r's marked grains, cleared, into ups in runs (see mark_dirty)
@@ -937,15 +993,221 @@ VkCommandBuffer refresh(ClaimSub* s) {
 }
 }  // namespace
 
-VkCommandBuffer claims_sub_prepare(ClaimSub* s, bool after_wait) {
-    if (after_wait) return refresh(s);
+namespace {
+// ---- the CPU's reported writes (claims_cpu_write) and the copies out of Readback ranges ----
+std::mutex report_mu;
+std::vector<std::pair<uint64_t, uint64_t>> reported;   // (report_mu: the CPU's writes for the next first copy)
+/// a range the CPU wrote after the first copy of submissions up to `upto` was made: dropped from their copies out, so the
+/// GPU's older value does not land over the CPU's write (report_mu; in order of upto)
+struct Cancel {
+    uint64_t lo, hi, upto;
+};
+std::deque<Cancel> cancels;
+uint64_t first_seq = 0;   // (report_mu: first copies made)
+std::atomic<int64_t> st_reports{0}, st_report_bytes{0}, st_out_subs{0}, st_out_ranges{0}, st_out_bytes{0}, st_out_dropped{0};
+
+// (debug.claimcheck) the pages the GPU owns that the CPU can write: a VRAM claim's from its copy, and those of Upload and
+// Readback claims that GPU work writes. Their guest bytes change only through a reported write or a copy out; any other
+// change is a CPU write the GPU never sees, found every 600 presents
+std::mutex owned_mu;
+struct Owned {
+    uint64_t hash, mask;   // (its owned bytes' hash, and which grains those were)
+};
+std::unordered_map<uint64_t, Owned> owned;   // (by page)
+std::atomic<int64_t> st_owned_writes{0};
+/// page p's bytes the GPU owns, hashed: a VRAM claim's whole page, else the grains GPU work writes
+Owned owned_hash(uint64_t p) {
+    const Region* r = region_at(p);
+    uint8_t b[kPage];
+    if (!r || !host->gpu_read(p, b, kPage)) return {0, 0};
+    if (r->claim == NVN_CLAIM_VRAM) return {hash_bytes(b, kPage), ~0ull};
+    const std::atomic<uint64_t>* g = r->gpu.load(std::memory_order_acquire);
+    uint64_t mask = 0x9e3779b97f4a7c15ull;
+    const uint64_t g0 = (p - r->lo) >> kGrainShift;   // (a page's 256 grains: 4 words, word-aligned)
+    for (uint32_t k = 0; k < (kPage >> kGrainShift) / 64; k++) {
+        const uint64_t m = g ? g[(g0 >> 6) + k].load(std::memory_order_relaxed) : 0;
+        mask = (mask ^ m) * 0xff51afd7ed558ccdull;
+        for (uint32_t i = 0; i < 64; i++)
+            if (!(m >> i & 1)) std::memset(b + ((k * 64 + i) << kGrainShift), 0, 1u << kGrainShift);
+    }
+    return {hash_bytes(b, kPage), mask};
+}
+void own_pages(uint64_t lo, uint64_t hi) {
+    std::lock_guard lk(owned_mu);
+    for (uint64_t p = lo & ~(kPage - 1); p < hi; p += kPage)
+        if (const Region* r = region_at(p); r && local_copied(r)) {
+            auto it = owned.find(p);
+            if (it == owned.end()) owned.emplace(p, owned_hash(p));
+            else if (const Owned now = owned_hash(p); now.mask != it->second.mask) it->second = now;   // (more grains the GPU's)
+        }
+}
+void owned_rehash(uint64_t lo, uint64_t hi) {   // (owned_mu held)
+    for (uint64_t p = lo & ~(kPage - 1); p < hi; p += kPage)
+        if (auto it = owned.find(p); it != owned.end()) it->second = owned_hash(p);
+}
+void owned_scan() {
+    std::lock_guard lk(owned_mu);
+    int64_t found = 0;
+    for (auto& [p, o] : owned) {
+        const Owned now = owned_hash(p);
+        const bool changed = now.mask == o.mask && now.hash != o.hash;   // (grains the GPU took since are not judged)
+        o = now;
+        if (!changed) continue;
+        found++;
+        int64_t seen;
+        {
+            const Region* r = region_at(p);
+            std::lock_guard mk(miss_mu);
+            char key[160];
+            std::snprintf(key, sizeof key, "%s flags %#x (a CPU write to a page the GPU owns)", r && r->by ? r->by : "?", r ? r->flags : 0);
+            seen = misses[key]++;
+        }
+        st_owned_writes.fetch_add(1, std::memory_order_relaxed);
+        if (seen < 4) {
+            logf("direct: claims: ERROR: check: page %#llx the GPU owns written by the CPU with no report: %s", (unsigned long long)p,
+                 pool_name(p).c_str());
+            strict_event("a CPU write the GPU does not see", "page %#llx: %s", (unsigned long long)p, pool_name(p).c_str());
+        }
+    }
+    if (found) st_mismatches.fetch_add(found, std::memory_order_relaxed);
+}
+
+/// the CPU's reported ranges into ups, a run per region of the back end's own copied memory
+void take_reported(ClaimSub* s, std::vector<Up>& ups) {
+    std::vector<std::pair<uint64_t, uint64_t>> mine;
+    {
+        std::lock_guard lk(report_mu);
+        s->seq = ++first_seq;
+        mine.swap(reported);
+    }
+    for (const auto& [lo, hi] : mine)
+        for (uint64_t a = lo; a < hi;) {
+            const uint64_t e = std::min(hi, (a & ~(kPage - 1)) + kPage);
+            Region* r = region_at(a);
+            if (r && r->pages && local_copied(r)) {
+                if (!ups.empty() && ups.back().r == r && ups.back().hi == a) ups.back().hi = e;
+                else ups.push_back({r, a, e});
+            }
+            a = e;
+        }
+}
+
+/// After its last work: the Readback ranges s's work wrote, copied into staging
+VkCommandBuffer record_outs(ClaimSub* s) {
+    VkCommandBuffer cb = check_buffer();
+    s->cbs.push_back(cb);
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cb, &bi);
+    auto& o = s->outs;
+    std::sort(o.begin(), o.end(), [](const Up& a, const Up& b) { return a.r != b.r ? a.r < b.r : a.lo < b.lo; });
+    size_t k = 0;
+    for (size_t i = 0; i < o.size(); i++) {
+        if (!o[i].r->pages) continue;   // (retired)
+        if (k && o[k - 1].r == o[i].r && o[i].lo <= o[k - 1].hi) o[k - 1].hi = std::max(o[k - 1].hi, o[i].hi);
+        else o[k++] = o[i];
+    }
+    o.resize(k);
+    uint64_t total = 0;
+    for (const Up& u : o) total += u.hi - u.lo;
+    Staging* st = nullptr;
+    int64_t chunk = -1;
+    if (total) {
+        std::lock_guard lk(check_mu);
+        chunk = staging_take(total);
+        if (chunk >= 0) st = &staging[chunk], s->chunks.push_back(chunk);
+    }
+    if (total && !st) logf("direct: claims: ERROR: no readback staging of %llu bytes", (unsigned long long)total);
+    if (st) {
+        record_dep(cb, Dep{VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+                           VK_ACCESS_2_TRANSFER_READ_BIT, 0});
+        uint64_t at = 0;
+        std::vector<VkBufferCopy> cs;
+        for (size_t i = 0; i < o.size(); i++) {
+            const Up& u = o[i];
+            cs.push_back({u.lo - u.r->lo, at, u.hi - u.lo});
+            s->out_sent.push_back({u.lo, u.hi, chunk, at});
+            at += u.hi - u.lo;
+            if (i + 1 == o.size() || o[i + 1].r != u.r) copy_buffer(cb, u.r->buffer, st->buf, (uint32_t)cs.size(), cs.data()), cs.clear();
+        }
+        record_dep(cb, Dep{VK_PIPELINE_STAGE_2_COPY_BIT, VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           VK_ACCESS_2_HOST_READ_BIT, 0});
+        st_out_subs.fetch_add(1, std::memory_order_relaxed), st_out_ranges.fetch_add((int64_t)o.size(), std::memory_order_relaxed);
+        st_out_bytes.fetch_add((int64_t)total, std::memory_order_relaxed);
+    }
+    o.clear();
+    vkEndCommandBuffer(cb);
+    return cb;
+}
+
+/// s complete: its copied-out ranges into guest memory, but the parts the CPU reported writing after its first copy
+void copy_out(ClaimSub& s) {
+    if (s.out_sent.empty()) return;
+    std::vector<Cancel> cs;
+    {
+        std::lock_guard lk(report_mu);
+        while (!cancels.empty() && cancels.front().upto < s.seq) cancels.pop_front();   // (no later submission is that old)
+        cs.assign(cancels.begin(), cancels.end());
+    }
+    Staging* st;
+    {
+        std::lock_guard lk(check_mu);
+        st = &staging[s.out_sent[0].chunk];
+    }
+    mem_invalidate(st->mem);
+    std::unique_lock<std::mutex> ok;
+    if (track_check) ok = std::unique_lock<std::mutex>(owned_mu);
+    for (const ClaimSubImpl::Out& x : s.out_sent) {
+        for (uint64_t a = x.lo; a < x.hi;) {   // (the parts no report covers, in runs)
+            uint64_t e = x.hi;
+            bool dropped = false;
+            for (const Cancel& c : cs) {
+                if (c.hi <= a || c.lo >= e) continue;
+                if (c.lo <= a) dropped = true, e = std::min(e, c.hi);
+                else e = c.lo;
+            }
+            if (dropped) st_out_dropped.fetch_add((int64_t)(e - a), std::memory_order_relaxed);
+            else host->gpu_write(a, st->map + x.at + (a - x.lo), e - a);
+            a = e;
+        }
+        if (track_check) owned_rehash(x.lo, x.hi);
+    }
+}
+}  // namespace
+
+void claims_cpu_write(uint64_t lo, uint64_t size) {
+    if (!size || state.load(std::memory_order_acquire) != 1) return;
+    {
+        std::lock_guard lk(report_mu);
+        reported.push_back({lo, lo + size});
+        cancels.push_back({lo, lo + size, first_seq});
+    }
+    st_reports.fetch_add(1, std::memory_order_relaxed), st_report_bytes.fetch_add((int64_t)size, std::memory_order_relaxed);
+    if (track_check) {
+        std::lock_guard lk(owned_mu);
+        owned_rehash(lo, lo + size);
+    }
+}
+
+void claims_guest_write(uint64_t guest, const void* src, uint64_t n) {
+    if (!track_check) return void(host->gpu_write(guest, src, n));
+    std::lock_guard lk(owned_mu);
+    host->gpu_write(guest, src, n);
+    owned_rehash(guest, guest + n);
+}
+
+VkCommandBuffer claims_sub_prepare(ClaimSub* s, ClaimPrep what) {
+    if (what == CLAIM_PREP_AFTER_WAIT) return refresh(s);
+    if (what == CLAIM_PREP_OUTS) return record_outs(s);
     const auto t0 = std::chrono::steady_clock::now();
     {
         DirtyAcc acc;
         for (List* l : s->lists) note_list(s, acc, l, 0);
     }
     st_note_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count(), std::memory_order_relaxed);
-    for (const auto& [lo, hi] : s->gpu_writes) mark_gpu_written(lo, hi);   // (their pages the GPU's from now on: see up_add)
+    for (const Up& w : s->gpu_writes) mark_gpu_written(w.r, w.lo, w.hi);   // (their grains the GPU's from now on: see up_add)
+    if (track_check)
+        for (const Up& w : s->gpu_writes) own_pages(w.lo, w.hi);
     if (track_all) gather(s);
     s->run_frame = present_count(), s->run_behind = sync_pushed() - sync_completed();
     // (Upload and Readback regions made since the last submit: whole; the load-once pages its lists read not copied yet;
@@ -957,6 +1219,9 @@ VkCommandBuffer claims_sub_prepare(ClaimSub* s, bool after_wait) {
             if (r->pages) ups.push_back({r, r->lo, r->hi}), st_up_whole.fetch_add(1, std::memory_order_relaxed);
         whole_uploads.clear();
     }
+    if (track_check)
+        for (const Up& u : ups)
+            if (u.r->claim == NVN_CLAIM_VRAM) own_pages(u.lo, u.hi);
     const size_t whole_n = ups.size();   // (copies no work of it reads: left out of the check of CPU writes during flight)
     for (const Up& x : s->once)
         for (uint64_t a = x.lo & ~(kPage - 1); a < x.hi; a += kPage) {
@@ -975,6 +1240,7 @@ VkCommandBuffer claims_sub_prepare(ClaimSub* s, bool after_wait) {
     for (Region* r : regions)
         if (r->pages) take_dirty(r, ups);
         else r->listed.store(false);
+    take_reported(s, ups);
     uint64_t up_total = 0;
     for (const Up& u : ups) up_total += u.hi - u.lo;
     std::vector<uint64_t> up_at(ups.size());   // (each upload's place in the staging chunk)
@@ -983,8 +1249,8 @@ VkCommandBuffer claims_sub_prepare(ClaimSub* s, bool after_wait) {
     ClaimSubImpl::Part* part = track_check ? &s->parts.emplace_back() : nullptr;
     if (part)
         for (const SubRange& x : s->ranges) {
-            if (x.r->claim != NVN_CLAIM_LAYER0 && x.r->claim != NVN_CLAIM_UPLOAD && x.r->claim != NVN_CLAIM_LOAD_ONCE) continue;
-            if (x.uses & kGpuWrites || any_gpu_written(x.lo, x.hi)) {
+            if (x.r->claim != NVN_CLAIM_LAYER0 && !local_copied(x.r)) continue;
+            if (x.uses & kGpuWrites || any_gpu_written(x.r, x.lo, x.hi)) {
                 st_skipped_gpu_written.fetch_add(1, std::memory_order_relaxed);
                 continue;
             }
@@ -1070,6 +1336,7 @@ VkCommandBuffer claims_sub_prepare(ClaimSub* s, bool after_wait) {
 void claims_sub_sent(ClaimSub* s, uint64_t value) {
     if (!s) return;
     readback_then(value, [s] {
+        copy_out(*s);
         compare(*s);
         for (List* l : s->lists) list_unref(l);
         std::lock_guard lk(check_mu);
@@ -1098,12 +1365,14 @@ void claims_pointer(uint64_t addr, uint64_t program, const char* how) {
 }
 
 void claims_use_log() {
+    if (track_check) owned_scan();
     if (track_check) {
-        char b[480];
+        char b[640];
         std::snprintf(b, sizeof b, "direct: claims: check since the start: %lld ranges, %lld MB compared, %lld mismatches, %lld ranges left out "
-                      "(the GPU may write them); uploaded ranges the CPU wrote before their submission completed: %lld",
+                      "(the GPU may write them); uploaded ranges the CPU wrote before their submission completed: %lld; CPU writes no report "
+                      "hands over to pages the GPU owns: %lld (in the mismatches)",
                       (long long)st_checked_ranges.load(), (long long)(st_checked_bytes.load() >> 20), (long long)st_mismatches.load(),
-                      (long long)st_skipped_gpu_written.load(), (long long)st_late_writes.load());
+                      (long long)st_skipped_gpu_written.load(), (long long)st_late_writes.load(), (long long)st_owned_writes.load());
         logf("%s", b);
         std::lock_guard lk(miss_mu);
         std::string t;
@@ -1178,7 +1447,6 @@ bool claims_on() {
                 vram_type = i;
         }
     track_check = dbg(SET_DBG_CLAIMCHECK), track_use = dbg(SET_DBG_CLAIMUSE), tracking = true, track_all = track_check || track_use;
-    gpu_written = std::vector<std::atomic<uint64_t>>((guest_bytes >> kPageShift >> 6) + 1);
     granule_region.reset(new std::atomic<uintptr_t>[(guest_bytes >> kGranuleShift) + 1]);
     for (uint64_t j = 0; j <= guest_bytes >> kGranuleShift; j++) granule_region[j].store(0, std::memory_order_relaxed);
     logf("direct: claims on: a region per pool the GPU reads; VRAM claims in memory type %d, layer-0 claims imported as type %u",
@@ -1207,9 +1475,11 @@ void claims_pool(uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, co
     if (claim == NVN_CLAIM_LAYER0 && gpu_reads) r = region_import(lo, hi);
     else if (claim == NVN_CLAIM_VRAM || claim == NVN_CLAIM_UPLOAD || claim == NVN_CLAIM_READBACK || claim == NVN_CLAIM_LOAD_ONCE)
         r = region_local(lo, hi, claim);
-    if (r && (claim == NVN_CLAIM_UPLOAD || claim == NVN_CLAIM_READBACK)) whole_uploads.push_back(r);   // (its contents now: at the next submit)
+    // (its contents now, at the next submit: the claims whose bytes come from guest memory)
+    if (r && (claim == NVN_CLAIM_UPLOAD || claim == NVN_CLAIM_READBACK || (claim == NVN_CLAIM_VRAM && !(flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS))))
+        whole_uploads.push_back(r);
     if (r && claim == NVN_CLAIM_LOAD_ONCE) r->copied.reset(new std::atomic<uint64_t>[(((hi - lo) >> kPageShift) + 63) >> 6]());
-    if (r && claim == NVN_CLAIM_UPLOAD) {
+    if (r && (claim == NVN_CLAIM_UPLOAD || claim == NVN_CLAIM_READBACK)) {
         r->dirty_words = (((hi - lo) >> kGrainShift) + 63) >> 6;
         r->dirty.reset(new std::atomic<uint64_t>[r->dirty_words]());
         r->dirty_sum.reset(new std::atomic<uint64_t>[(r->dirty_words + 63) >> 6]());
@@ -1291,7 +1561,9 @@ Region* claim_use(List* l, ClaimUse use, uint64_t gpu, uint64_t size) {
     }
     // (noted where a copy needs it: Upload and load-once claims; every claim while the check or the measurement runs. A
     // range that overlaps or follows the list's last one of the same region and use extends it, but for the measurement)
-    if (l && (track_all || r->claim == NVN_CLAIM_UPLOAD || (r->claim == NVN_CLAIM_LOAD_ONCE && !all_copied(r, gpu, hi)))) {
+    if (l && r->claim == NVN_CLAIM_READBACK && (1u << use) & kOutUses) l->outs = true;
+    if (l && (track_all || r->claim == NVN_CLAIM_UPLOAD || r->claim == NVN_CLAIM_READBACK ||
+              (r->claim == NVN_CLAIM_LOAD_ONCE && !all_copied(r, gpu, hi)))) {
         const uint32_t n = (uint32_t)std::min<uint64_t>(size, UINT32_MAX);
         if (!l->bound.empty()) {
             BoundRange& b = l->bound.back();
@@ -1334,10 +1606,13 @@ void claims_stats(char* out, size_t cap) {
                   (long long)st_own_imports, (long long)st_span_missed.load());
     const size_t k = std::strlen(out);
     std::snprintf(out + k, cap - k, "; uploads since the start: %lld submissions, %lld ranges, %lld MB, %lld whole regions, %.1f ms on the "
-                  "submitting threads, %lld ranges or pages left to the GPU (it writes them); load-once pages copied %lld; staging %zu chunks; noted in %.1f ms; guest reads %.1f ms; after held event waits %lld refreshes, %lld KB again in %.1f ms",
+                  "submitting threads, %lld ranges or pages left to the GPU (it writes them); load-once pages copied %lld; staging %zu chunks; noted in %.1f ms; guest reads %.1f ms; after held event waits %lld refreshes, %lld KB again in %.1f ms; "
+                  "copied out %lld submissions, %lld ranges, %lld MB, %lld KB of them dropped for the CPU's later writes; CPU writes reported %lld, %lld KB",
                   (long long)st_up_subs.load(), (long long)st_up_ranges.load(), (long long)(st_up_bytes.load() >> 20), (long long)st_up_whole.load(),
                   st_up_ns.load() / 1e6, (long long)st_up_skipped_gpu.load(), (long long)st_up_once.load(), staging.size(), st_note_ns.load() / 1e6, st_memcpy_ns.load() / 1e6, (long long)st_refreshes.load(),
-                  (long long)(st_refreshed.load() >> 10), st_refresh_ns.load() / 1e6);
+                  (long long)(st_refreshed.load() >> 10), st_refresh_ns.load() / 1e6, (long long)st_out_subs.load(), (long long)st_out_ranges.load(),
+                  (long long)(st_out_bytes.load() >> 20), (long long)(st_out_dropped.load() >> 10), (long long)st_reports.load(),
+                  (long long)(st_report_bytes.load() >> 10));
 }
 
 }  // namespace hsd

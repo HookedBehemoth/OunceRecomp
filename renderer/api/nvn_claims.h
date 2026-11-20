@@ -1,7 +1,8 @@
 /* Pool claims (docs/direct/pool-claims.md): a game patch names what the memory pools an engine function makes hold,
    around that function's body. The back end serves only claimed pools; nvnMemoryPoolInitialize with no claim is an
-   error (runtime/nvn_native.c). A claim covers every pool the claiming thread makes between begin and end; claims
-   nest, and the outermost one holds (the most specific caller of a generic allocator decides). */
+   error (runtime/nvn_native.c). A claim covers every pool the claiming thread makes between begin and end. Claims nest:
+   a kind a patch names holds over any rule, the innermost kind holds over the kinds around it (a maker's exception
+   inside its caller's claim), and between rules the outermost holds (a generic allocator's rule is its callers' default). */
 #pragma once
 #include <stdint.h>
 
@@ -25,3 +26,7 @@ void nvn_claim_begin(int kind, const char *by);
 typedef int (*nvn_claim_rule)(uint32_t flags, uint64_t size);
 void nvn_claim_begin_rule(nvn_claim_rule rule, const char *by);
 void nvn_claim_end(void);
+/* The CPU wrote [addr, addr + size) of a claimed pool where no bind hands it to the GPU: a range GPU work writes (a
+   counter the reader zeroes), or data only shaders reach. A writer patch reports it after the write; the next submission
+   copies it in, and a copy out of the GPU's older value does not land over it */
+void nvn_claim_write(uint64_t addr, uint64_t size);

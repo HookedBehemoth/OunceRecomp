@@ -311,6 +311,7 @@ extern "C" MKWVK_EXPORT uint64_t gpu_image_need(const void* desc, uint64_t* alig
     return hsd::image_need((const nvn_texdesc*)desc, align);
 }
 extern "C" MKWVK_EXPORT void gpu_target_given(const void* t) { hsd::image_target_given((const nvn_tex*)t); }
+extern "C" MKWVK_EXPORT void gpu_claim_write(uint64_t addr, uint64_t size) { hsd::claims_cpu_write(addr, size); }
 extern "C" MKWVK_EXPORT void gpu_host_event(const char* reason, const char* what) {
     hsd::strict_event(reason, "%s", what ? what : "");
 }

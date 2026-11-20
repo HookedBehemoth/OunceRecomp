@@ -97,3 +97,23 @@ PATCH_FUNC(0x80966440, word(0xd503237f), body(0x2abbf2d96dca7f84), aapcs, x0, po
 PATCH_FUNC(0x8114e4f0, word(0xd503237f), body(0xb3560c600e03da68), aapcs, x0, pools_display, orig) {
     CLAIM("display_buffers_pool_init", NVN_CLAIM_TARGETS);
 }
+
+/* ---- Readback claims: GPU results the CPU reads (docs/direct/pool-claims.md, "What the GPU writes and the CPU reads") ----
+   exposure_light_buffers_create: the three light-sum buffers (0x1010 bytes each, a pool each; GPU atomic adds) that
+   exposure_light_readback reads a float of every frame and zeroes, and the exposure and light blocks the CPU fills every
+   frame. Its readback invalidates them (nvn.log_pools survey: 0.4 a frame each) */
+PATCH_FUNC(0x80c54290, word(0xd503237f), body(0x0513d52b2b7b7e43), aapcs, x0, pools_exposure, orig) {
+    CLAIM("exposure_light_buffers_create", NVN_CLAIM_READBACK);
+}
+/* render_light_visibility_buffer: an object's 0x40 counter buffer (a pool of 0x2000 each, 29 in Kokiri) that a program's
+   atomic adds write and render_light_visibility_readback reads and zeroes every frame */
+PATCH_FUNC(0x831e5dd0, word(0xd503237f), body(0xf29cda637aa262e9), aapcs, x0, pools_light_visibility, orig) {
+    CLAIM("render_light_visibility_buffer", NVN_CLAIM_READBACK);
+}
+/* the readers' zeroing stores, reported: the next submission's GPU work adds to zero, and no copy out of an older sum lands
+   over it. exposure_light_readback zeroes the +0x30 and +0x268 buffers' sum (str wzr, [base, off]) and the +0x1d8 buffer's
+   16 bytes (stp xzr, xzr, [x20]); render_light_visibility_readback zeroes its float +0 */
+PATCH_AT(0x803571f4, word(0xb8286abf), after, none, pools_zeroed_word, as(x21, base), as(x8, off)) { nvn_claim_write(base + off, 4); }
+PATCH_AT(0x803577a4, word(0xb8286a9f), after, none, pools_zeroed_word_b, as(x20, base), as(x8, off)) { nvn_claim_write(base + off, 4); }
+PATCH_AT(0x803574a8, word(0xa9007e9f), after, none, pools_zeroed_pair, as(x20, base)) { nvn_claim_write(base, 16); }
+PATCH_AT(0x803541e4, word(0xb8286abf), after, none, pools_light_visibility_zeroed, as(x21, base), as(x8, off)) { nvn_claim_write(base + off, 4); }
