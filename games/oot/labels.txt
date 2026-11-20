@@ -1225,3 +1225,10 @@
 80c5f870 cull_records_block_create        # games/oot/patches/pools.c: two CPU-written record blocks (+0x2c4, +0x318) that actor_records_read_b writes and binds read: Upload
 80c576b0 cull_gather_lists_create         # games/oot/patches/pools.c: object b's "GatherLeaf", "GatherUndergrowth", "GatherTurf" lists (ubo blocks 0x1e000 and 0x2000) the GPU appends to and actor_records_read_a reads and zeroes
 80c59c30 cull_heap_slots_init             # games/oot/patches/pools.c: object b's 0x100-byte slots from a general heap (may grow it by a pool) # ?
+812f0eb0 vfx_particle_set_f32             # games/oot/patches/pools.c: an emitter plugin's per-particle float setter: base + stride x index + offset, stored when changed, the dirty index range at +0x20 widened
+812f0f00 vfx_particle_set_vec2            # games/oot/patches/pools.c: the same for two floats
+812f0f60 vfx_particle_set_vec3            # games/oot/patches/pools.c: the same for three floats
+812f0fc0 vfx_particle_set_vec4            # games/oot/patches/pools.c: the same for four floats
+812f1030 vfx_particle_set_mat4            # games/oot/patches/pools.c: the same for 0x40 bytes
+812efb80 vfx_attr_buffer_init             # games/oot/patches/pools.c: fills a new attribute buffer with 0x6f (memset at 0x812efbd8) # ?
+81267bc0 vfx_attr_buffer_copy_dirty       # games/oot/patches/pools.c: (at 0x81268558) copies a CPU buffer's dirty index range (+0x1c8..+0x1cc, stride +0x1b8; all of +0x1b0 bytes otherwise) into the resource pool # ? the rest of it

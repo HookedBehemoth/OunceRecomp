@@ -1273,7 +1273,7 @@ void claims_cpu_reads(uint64_t lo, uint64_t size) {
     if (!track_check || !size || state.load(std::memory_order_acquire) != 1) return;
     Region* r = region_at(lo);
     if (!r || r->claim == NVN_CLAIM_READBACK || r->claim == NVN_CLAIM_LAYER0 || r->claim == NVN_CLAIM_VRAM) {
-        if (!r || r->claim != NVN_CLAIM_VRAM) return;
+        if (!r || r->claim != NVN_CLAIM_VRAM || !any_gpu_written(r, lo, std::min(lo + size, r->hi))) return;   // (nothing the GPU wrote yet)
         if (r->has_reads.load(std::memory_order_acquire)) {   // (the game invalidates a list to read its header: a range it copies out)
             std::lock_guard lk(reads_mu);
             for (const auto& [a, e] : r->reads)

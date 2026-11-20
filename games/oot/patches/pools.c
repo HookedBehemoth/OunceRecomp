@@ -158,12 +158,20 @@ PATCH_FUNC(0x80c58a80, word(0xd503237f), body(0xd48e5979b49a3213), aapcs, x0, po
 PATCH_FUNC(0x80c5f870, word(0xd503237f), body(0x98f5d55e007fed32), aapcs, x0, pools_80c5f870, orig) {
     CLAIM("f_80c5f870", NVN_CLAIM_UPLOAD);
 }
-/* f_80c5da90: a generic maker (object b's task records, f_80cb2a40's, ...). As Upload the grass goes (shaders reach object
-   b's pools through stored addresses, one is never bound), as VRAM the leaves too (other systems' CPU writes): open */
-PATCH_FUNC(0x80c5da90, word(0xd503237f), body(0x36562b018a365991), aapcs, x0, pools_80c5da90, orig) {
-    CLAIM("f_80c5da90", NVN_CLAIM_LAYER0);
-}
-/* f_80365950 (veg_task_records_write, from f_80586fd0 on the main thread) writes f_80c5da90's task records each frame: the
+/* cull_task_block_create (f_80c5da90) is a generic block maker, claimed at its calls. Object b's two (its task records and
+   the gather programs' data, 0x12000 x2 each) stay on layer 0: as Upload the grass goes, as VRAM the leaves too, with
+   cull_veg_task_records_write's writes reported (below) and whole-block reports after the maker; the check then finds its
+   storage reads differing from guest memory from the first frames, which suggests GPU writes through stored addresses that
+   the CPU reads. Open. f_80cb2a40's two (CPU-written, bound read) the same: as Upload the grass goes */
+PATCH_AT(0x80c5960c, word(0x94001121), before, none, pools_veg_tasks) { nvn_claim_begin(NVN_CLAIM_LAYER0, "cull_gpu_object_b_create tasks"); }
+PATCH_AT(0x80c59610, word(0xb945aa88), before, none, pools_veg_tasks_end) { nvn_claim_end(); }
+PATCH_AT(0x80c59670, word(0x94001108), before, none, pools_veg_tasks_b) { nvn_claim_begin(NVN_CLAIM_LAYER0, "cull_gpu_object_b_create tasks"); }
+PATCH_AT(0x80c59674, word(0xb945f288), before, none, pools_veg_tasks_b_end) { nvn_claim_end(); }
+PATCH_AT(0x80cb2b20, word(0x97feabdc), before, none, pools_cb2a40_tasks) { nvn_claim_begin(NVN_CLAIM_LAYER0, "f_80cb2a40 tasks"); }
+PATCH_AT(0x80cb2b24, word(0xb9401e68), before, none, pools_cb2a40_tasks_end) { nvn_claim_end(); }
+PATCH_AT(0x80cb2ff4, word(0x97feaaa7), before, none, pools_cb2a40_tasks_b) { nvn_claim_begin(NVN_CLAIM_LAYER0, "f_80cb2a40 tasks"); }
+PATCH_AT(0x80cb2ff8, word(0xb9401e68), before, none, pools_cb2a40_tasks_b_end) { nvn_claim_end(); }
+/* f_80365950 (cull_veg_task_records_write, from f_80586fd0 on the main thread) writes f_80c5da90's task records each frame: the
    count at the list's first record (`str w24, [x23, x8]`) and count x 0x40 bytes of records (a memcpy). Shaders reach
    them through stored addresses, not binds (one of the two pools is never bound): reported */
 PATCH_AT(0x803659fc, word(0xb8286af8), after, none, pools_veg_count, as(x23, list), as(x8, off)) { nvn_claim_write(list + off, 4); }
@@ -193,3 +201,39 @@ PATCH_AT_SITE(0x82c1de34, word(0xb8286abf), after, none, pools_actor_count_zeroe
 PATCH_AT_SITE(0x82c1de64, word(0xb8286abf), after, none, pools_actor_count_zeroed, x21, x8);
 PATCH_AT_SITE(0x82c1dea8, word(0xb8286abf), after, none, pools_actor_count_zeroed, x21, x8);
 PATCH_AT_SITE(0x82c1ded8, word(0xb8286abf), after, none, pools_actor_count_zeroed, x21, x8);
+
+/* ---- gsys::GeometryCullingMgr (gpu_result_block_a_create, docs/direct/pool-users.md): per view, an array of the units'
+   GPU addresses that the calc jobs write each frame (cull_geometry_store_address, the only CPU write) and a draw binds as
+   storage (its program declares the binding written, so the grains are the GPU's): Upload, each store reported; the block
+   the GPU writes through those addresses (ubo_object_block_alloc_b at 0x80ecdd24): VRAM. The first view's allocation makes
+   the small pool other ubo objects share: exposure_light_readback's 0x90 exposure record lives there, its CPU writes
+   reported below */
+PATCH_AT(0x80ecdcc0, word(0x97d94e3c), before, none, pools_geocull_views) { nvn_claim_begin(NVN_CLAIM_READBACK, "GeometryCullingMgr views"); }
+PATCH_AT(0x80ecdcc4, word(0xb9400aa8), before, none, pools_geocull_views_end) { nvn_claim_end(); }
+PATCH_AT(0x80ecdd24, word(0x97d952fb), before, none, pools_geocull_block) { nvn_claim_begin(NVN_CLAIM_VRAM, "GeometryCullingMgr block"); }
+PATCH_AT(0x80ecdd28, word(0xd10083a0), before, none, pools_geocull_block_end) { nvn_claim_end(); }
+PATCH_AT(0x834bfb24, word(0xf9000008), after, none, pools_geocull_address, as(x0, at)) { nvn_claim_write(at, 8); }
+/* exposure_light_readback's exposure record: 0x30 bytes of stores (0x80357608..0x80357618) then a 0x60-byte memset, at
+   [x19 + 0xd8] + layout[+4] ([[x19 + 0xd0]] + 4): reported after the memset */
+PATCH_AT(0x8035761c, word(0x94e42b51), after, none, pools_exposure_record, as(x19, obj), as(x22, base)) {
+    nvn_claim_write(base + G32(G64(G64(obj + 0xd0)) + 4), 0x90);
+}
+
+/* ---- NintendoWare Vfx3's resource pool (gsys_vfx_mgr_init, Upload): particle attribute buffers the draws bind as storage
+   their programs write (the grains are the GPU's), which the CPU also writes (debug.poolcensus, Kokiri): reported.
+   - the emitter plugins' per-particle setters (called through vtable slots from vfx_particle_init_callbacks), one per type:
+     float, vec2, vec3, vec4, mat4, each storing into base + stride x index + offset when the value changed (and widening the
+     buffer's dirty index range at +0x20);
+   - f_812efb80's fill of a new buffer (memset 0x6f, x24 the buffer, x23 its size);
+   - f_81267bc0's copy of a CPU buffer's dirty range (or all of it) into the pool (BaseProcCreateAndDeleteThread) */
+PATCH_AT(0x812f0ed0, word(0xbc286920), after, none, pools_vfx_set1, as(x9, rec), as(x8, off)) { nvn_claim_write(rec + off, 4); }
+PATCH_AT(0x812f0f30, word(0x2d000500), after, none, pools_vfx_set2, as(x8, at)) { nvn_claim_write(at, 8); }
+PATCH_AT(0x812f0f98, word(0xbd000902), after, none, pools_vfx_set3, as(x8, at)) { nvn_claim_write(at, 12); }
+PATCH_AT(0x812f1000, word(0x2d010d02), after, none, pools_vfx_set4, as(x8, at)) { nvn_claim_write(at, 16); }
+PATCH_AT(0x812f1100, word(0x2d075d16), after, none, pools_vfx_set16, as(x8, at)) { nvn_claim_write(at, 0x40); }
+PATCH_AT(0x812efbd8, word(0x94a5c9e2), after, none, pools_vfx_fill, as(x24, buf), as(x23, size)) { nvn_claim_write(buf, size); }
+PATCH_AT(0x81268558, word(0x94a7e786), after, none, pools_vfx_copy, as(x0, dst), as(x19, o)) {
+    const uint64_t n = G32(o + 0x1d0) >= 2 ? G64(o + 0x1b8) * (uint64_t)((int32_t)G32(o + 0x1cc) - (int32_t)G32(o + 0x1c8) + 1)
+                                           : G64(o + 0x1b0);
+    nvn_claim_write(dst, n);
+}
