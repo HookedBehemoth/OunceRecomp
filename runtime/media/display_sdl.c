@@ -1,6 +1,7 @@
 /* The game's window on SDL (runtime/media/hos_sdl.c: SDL3, Wayland when there is one, else X11; or SDL2). The window lives on the process's main thread, as SDL wants it (hos_main.c runs the
    game on a thread of its own); the Vulkan back end makes its surface through SDL (renderer/api/vk_api.h
-   MkwVkWindow), on a thread of its own so the window keeps answering while the shaders are prepared.
+   MkwVkWindow). The game's thread starts the back end before any guest code runs (hos_display_start), after the main
+   thread made the window, which answers its events meanwhile.
 
    The keyboard's state, the window's focus and the screen's size are kept here for nn_hid.c (hos_key_down,
    hos_window_focused, hos_screen_size: hos_sdl.h).
@@ -96,8 +97,8 @@ static void keys_update(void) {
 }
 
 /* ---- the window ---- */
-static volatile int renderer;   /* the renderer presents into the window */
-static os_event renderer_up = OS_EVENT_INIT(true);   /* (set once rx_start has returned, ready or not: hos_renderer_wait) */
+static os_event window_made = OS_EVENT_INIT(true);   /* (the main thread made the window: the back end can start) */
+static os_event renderer_up = OS_EVENT_INIT(true);    /* (the game's thread started the back end: the window's events reach it) */
 static int fullscreen;
 
 static int create_surface(void *w, void *instance, void *surface) { return hos_sdl_vulkan_surface(w, instance, surface); }
@@ -120,25 +121,6 @@ static void set_fullscreen(int on) {
     fullscreen = on;
     hos_sdl_fullscreen(window, on);
     hos_log("display: %s", on ? "fullscreen (F11 for a window)" : "windowed");
-}
-
-static void renderer_main(void *p) {
-    (void)p;
-    const int ok = rx_start(&vk_window);
-    if (!ok) hos_log("display: the renderer did not start: the window stays black");
-    renderer = ok;
-    if (ok) {   /* (a size change while it started) */
-        int w = 0, h = 0;
-        hos_sdl_pixel_size(window, &w, &h);
-        if (w > 0 && h > 0) rx_resize(w, h);
-    }
-    os_event_set(&renderer_up);
-}
-
-/* The game's first work for the GPU waits for the renderer (nvn_native.c), so nothing it submits while
-   the shaders are prepared is lost. Without a window the renderer starts on the game's own thread, before this is asked */
-void hos_renderer_wait(void) {
-    os_event_wait(&renderer_up, OS_FOREVER);
 }
 
 /* ---- the game's frame follows the window. SDL sends resize events all through a drag and has no event for its end,
@@ -227,14 +209,20 @@ int hos_display_init(void) {
     return 1;
 }
 
-/* the game's thread, when NVN is up (hos_main.c): the window is made on the main thread, which waits for this */
+/* the game's thread, before any guest code (hos_main.c): the back end started, with a window or without one, so every
+   call the game makes reaches it (rx_backend.c). The window is made on the main thread, which waits for this */
 void hos_display_start(void) {
     if (setting_bool(SET_HEADLESS) || !sdl_ready) {   /* no window: the renderer still draws, offscreen (screenshots) */
         rx_start(NULL);
-        os_event_set(&renderer_up);
         return;
     }
     __atomic_store_n(&start_asked, 1, __ATOMIC_RELEASE);
+    os_event_wait(&window_made, OS_FOREVER);
+    rx_start(&vk_window);
+    int w = 0, h = 0;   /* (a size change while it started) */
+    hos_sdl_pixel_size(window, &w, &h);
+    if (w > 0 && h > 0) rx_resize(w, h);
+    os_event_set(&renderer_up);
 }
 
 /* the main thread's loop, until the process ends: the window once asked for, then its events */
@@ -275,7 +263,15 @@ void hos_display_loop(void) {
     }
     if (setting_bool(SET_FULLSCREEN)) set_fullscreen(1);
     __atomic_store_n(&refresh_now, hos_sdl_refresh_mhz(window), __ATOMIC_RELAXED);
-    os_thread_release(os_thread_start(renderer_main, NULL, 0, NULL));
+    os_event_set(&window_made);
+    while (os_event_wait(&renderer_up, 0)) {   /* (the back end starting on the game's thread: only a close is answered) */
+        if (hos_sdl_wait_event(&e, 4) && (e.type == HOS_SDL_EV_QUIT || e.type == HOS_SDL_EV_CLOSE)) {
+            rx_close_asked();   /* (a start still preparing the shaders keeps what it made) */
+            hos_log("display: window closed while the back end started, exiting");
+            hos_log_flush();
+            os_exit(0);
+        }
+    }
     uint32_t refresh_asked = (uint32_t)(os_now_ns() / 1000000);
     for (;;) {
         hos_sdl_pads_pump();
@@ -293,7 +289,7 @@ void hos_display_loop(void) {
                     hos_log_flush();
                     os_exit(0);
                 case HOS_SDL_EV_RESIZED:
-                    if (renderer) {
+                    {
                         int w = 0, h = 0;
                         hos_sdl_pixel_size(window, &w, &h);
                         rx_resize(w, h);
@@ -326,7 +322,7 @@ void hos_display_loop(void) {
                 case HOS_SDL_EV_MOUSE_DOWN:
                     ptr_x = (int32_t)e.x, ptr_y = (int32_t)e.y, ptr_in = 1;
                     os_atomic_fetch_or(&ptr_held, (int32_t)sdl_button_bit(e.button));
-                    if (renderer && !mouse_captured) mouse_capture(1);
+                    if (!mouse_captured) mouse_capture(1);
                     break;
                 case HOS_SDL_EV_MOUSE_UP:
                     ptr_x = (int32_t)e.x, ptr_y = (int32_t)e.y;

@@ -2624,7 +2624,6 @@ static void resolve_deferred(uint8_t *p) {
     }
 }
 NV(nvnQueueSubmitCommands) {
-    { void hos_renderer_wait(void); static volatile int32_t up; if (!up) { hos_renderer_wait(); up = 1; } }   /* (display.c) */
     nvn_queue *q = (nvn_queue *)P(0);
     int n = I(1);
     uint64_t h[64];

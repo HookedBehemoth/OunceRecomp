@@ -366,7 +366,7 @@ static int game_main(int argc, char **argv) {
     Ctx *c = hos_boot_main_thread(hos_main_stack_size);
     uint64_t sp = c->x[31];
     void hos_display_start(void);
-    hos_display_start();  /* the game's window; the headless setting for none */
+    hos_display_start();  /* the back end started, in the game's window or (headless) without one, before any guest code */
     /* nn::init::Start's order (sdk+0xfa060), with rtld's three callbacks done here: f1 only marks rtld initialized,
        f2 is every module's DT_INIT, f3 the DT_FINIs (not needed: we never return from nnMain to unload). */
     call_guest(c, hos_entry_init_libc0, sp, "_init_libc0");
