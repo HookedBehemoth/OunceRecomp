@@ -100,7 +100,7 @@ static volatile uint32_t ring_head;
 static uint32_t ring_tail;
 static int64_t start_present = -1;
 
-static void parse(void) {
+static void pc_parse(void) {
     char v[512];
     snprintf(v, sizeof v, "%s", setting_str(SET_DBG_POOLCENSUS));
     static const char *const names[NVN_CLAIM_KINDS] = {"", "textures", "targets", "host", "vram", "upload", "readback", "loadonce", "layer0"};
@@ -121,7 +121,7 @@ int poolcensus_on(void) {
     if (on < 0) {
         on = *setting_str(SET_DBG_POOLCENSUS) != 0;
         if (on) {
-            parse();
+            pc_parse();
             page_pool = (uint16_t *)calloc(NPAGES, sizeof *page_pool);
             if (!page_pool) on = 0;
         }
@@ -129,27 +129,27 @@ int poolcensus_on(void) {
     return on;
 }
 
-static int phase(uint64_t seq) {
+static int pc_phase(uint64_t seq) {
     if (!seq) return PH_NONE;
     if (seq_next - seq >= NSEQ - 4096) return PH_DONE;
     return seq_phase[seq & (NSEQ - 1)];
 }
-static void push(uint64_t page) {
+static void pc_push(uint64_t page) {
     const uint32_t i = os_atomic_fetch_add(&ring_head, 1);
     if (i - ring_tail >= NRING - 1) { os_atomic_inc(&ring_lost); return; }
     __atomic_store_n(&ring[i & (NRING - 1)], page + 1, __ATOMIC_RELEASE);
 }
-static Pool *pool_at(uint64_t a) {
+static Pool *pc_pool_at(uint64_t a) {
     if (!page_pool || a >= HOS_GUEST_SPACE) return NULL;
     const uint32_t i = __atomic_load_n(&page_pool[a / PAGE], __ATOMIC_ACQUIRE);
     if (!i) return NULL;
     Pool *p = &pools[i - 1];
     return a >= p->lo && a < p->hi && !p->dead ? p : NULL;
 }
-static int prot_of(uint8_t armed) { return armed & 2 ? OS_PROT_NONE : armed & 1 ? OS_PROT_R : OS_PROT_RW; }
+static int pc_prot_of(uint8_t armed) { return armed & 2 ? OS_PROT_NONE : armed & 1 ? OS_PROT_R : OS_PROT_RW; }
 
 /* (the fault handler) one record per (pool group, host pc, guest lr, write or read) */
-static int record(Pool *p, uint64_t a, int write, uintptr_t pc, int cls, int gpu_page, int gpu_grain) {
+static int pc_record(Pool *p, uint64_t a, int write, uintptr_t pc, int cls, int gpu_page, int gpu_grain) {
     HosThread *th = hos_self();
     Ctx *c = th ? hos_ctx() : NULL;
     const uint64_t lr = c ? c->x[30] : 0;
@@ -164,10 +164,10 @@ static int record(Pool *p, uint64_t a, int write, uintptr_t pc, int cls, int gpu
                 r->group = p->group, r->write = write, r->pc = pc, r->lr = lr, r->f1 = r->f2 = 0, r->off = a - p->base;
                 r->thread = th ? hos_thread_name(th) : "(host)";
                 uint64_t fp = c ? c->x[29] : 0;
-                if (fp && !(fp & 7) && hos_guest_range(fp, 16) && !pool_at(fp)) {   /* (never a watched page: no fault in here) */
+                if (fp && !(fp & 7) && hos_guest_range(fp, 16) && !pc_pool_at(fp)) {   /* (never a watched page: no fault in here) */
                     r->f1 = G64(fp + 8);
                     const uint64_t up = G64(fp);
-                    if (up > fp && !(up & 7) && hos_guest_range(up, 16) && !pool_at(up)) r->f2 = G64(up + 8);
+                    if (up > fp && !(up & 7) && hos_guest_range(up, 16) && !pc_pool_at(up)) r->f2 = G64(up + 8);
                 }
                 __atomic_store_n(&r->key, key, __ATOMIC_RELEASE);
                 k = key;
@@ -190,12 +190,12 @@ static int record(Pool *p, uint64_t a, int write, uintptr_t pc, int cls, int gpu
     return -1;
 }
 
-static int handler(const os_fault *f) {
+static int pc_handler(const os_fault *f) {
     if (f->kind != OS_FAULT_ACCESS) return OS_FAULT_PASS;
     const uint8_t *base = (const uint8_t *)GP(0);
     if (f->addr < (uintptr_t)base || f->addr >= (uintptr_t)base + HOS_GUEST_SPACE) return OS_FAULT_PASS;
     const uint64_t a = (uint64_t)(f->addr - (uintptr_t)base);
-    Pool *p = pool_at(a);
+    Pool *p = pc_pool_at(a);
     if (!p) return OS_FAULT_PASS;
     PageSt *s = &p->pg[(a - p->lo) / PAGE];
     void *page = (void *)(base + (a & ~(PAGE - 1)));
@@ -206,13 +206,13 @@ static int handler(const os_fault *f) {
         os_mem_protect(page, PAGE, OS_PROT_RW);
         if (!old) return OS_FAULT_RESUME;
         os_atomic_fetch_or(&s->ever, 4);
-        const int ph = phase(s->use_seq), cls = ph == PH_QUEUED ? 1 : ph == PH_FLIGHT ? 2 : 0;
+        const int ph = pc_phase(s->use_seq), cls = ph == PH_QUEUED ? 1 : ph == PH_FLIGHT ? 2 : 0;
         const uint64_t g = (a - p->lo) >> 4;
         const int gpu_page = s->write_seq != 0, gpu_grain = gpu_page && (p->grains[g >> 6] >> (g & 63) & 1);
         os_atomic_inc(&p->st[host ? HOST_W : W_IDLE + cls]);
         if (!host && gpu_page) os_atomic_inc(&p->st[W_GPU_PAGE]);
         if (!host && gpu_grain) os_atomic_inc(&p->st[W_GPU_GRAIN]);
-        const int ri = record(p, a, 1, f->pc, cls, gpu_page, gpu_grain);
+        const int ri = pc_record(p, a, 1, f->pc, cls, gpu_page, gpu_grain);
         s->rec = (uint16_t)(ri + 1);
     } else {
         const uint8_t old = os_atomic_fetch_and(&s->armed, (uint8_t)~2);
@@ -220,25 +220,25 @@ static int handler(const os_fault *f) {
         if (!(old & 2)) return OS_FAULT_RESUME;
         os_atomic_fetch_or(&s->ever, 8);
         const uint64_t w = s->write_seq;
-        const int ph = phase(w);
+        const int ph = pc_phase(w);
         const int cls = !w ? 4 : ph == PH_QUEUED ? 0 : ph == PH_FLIGHT ? 1 : seq_present[w & (NSEQ - 1)] == hos_present_count && seq_next - w < NSEQ - 4096 ? 2 : 3;
         os_atomic_inc(&p->st[host ? HOST_R : R_QUEUED + cls]);
-        record(p, a, 0, f->pc, cls, 0, 0);
+        pc_record(p, a, 0, f->pc, cls, 0, 0);
     }
-    push(a / PAGE);
+    pc_push(a / PAGE);
     return OS_FAULT_RESUME;
 }
 
-static void start(void) {
+static void pc_start(void) {
     static volatile int32_t done;
     if (os_atomic_xchg(&done, 1)) return;
     start_present = hos_present_count;
-    os_fault_add(handler, true);
+    os_fault_add(pc_handler, true);
     hos_log("poolcensus: CPU writes and reads of the GPU's pools are watched (debug.poolcensus=%s): poolcensus.txt",
             setting_str(SET_DBG_POOLCENSUS));
 }
 
-static int picked(uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, const char *by) {
+static int pc_picked(uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, const char *by) {
     if (claim < NVN_CLAIM_KINDS && pick_claim[claim] && !(claim == NVN_CLAIM_LAYER0 && (flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS)))
         return 1;
     for (int i = 0; i < n_by; i++)
@@ -250,8 +250,8 @@ static int picked(uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, c
 
 /* nvnMemoryPoolInitialize: a pool made, on the making thread (its guest call chain names the maker) */
 void poolcensus_pool(Ctx *c, uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, const char *by) {
-    if (!poolcensus_on() || !size || !picked(gpu, size, flags, claim, by)) return;
-    start();
+    if (!poolcensus_on() || !size || !pc_picked(gpu, size, flags, claim, by)) return;
+    pc_start();
     uint64_t chain[CHAIN] = {c->x[30]}, fp = c->x[29];
     for (int k = 1; k < CHAIN && fp && !(fp & 7) && hos_guest_range(fp, 16); k++) chain[k] = G64(fp + 8), fp = G64(fp);
     const uint64_t lo = gpu & ~(PAGE - 1), hi = (gpu + size + PAGE - 1) & ~(PAGE - 1);
@@ -301,16 +301,16 @@ void poolcensus_pool_gone(uint64_t gpu, uint64_t size) {
 void poolcensus_kernel_write(uint64_t guest, uint64_t n) {
     if (on <= 0) return;
     for (uint64_t a = guest & ~(PAGE - 1); a < guest + n; a += PAGE) {
-        Pool *p = pool_at(a);
+        Pool *p = pc_pool_at(a);
         if (!p) continue;
         PageSt *s = &p->pg[(a - p->lo) / PAGE];
-        if (os_atomic_xchg(&s->armed, 0)) os_mem_protect(GP(a), PAGE, OS_PROT_RW), push(a / PAGE);
+        if (os_atomic_xchg(&s->armed, 0)) os_mem_protect(GP(a), PAGE, OS_PROT_RW), pc_push(a / PAGE);
     }
 }
 /* (nvn_claim_write) a writer patch's report */
 void poolcensus_reported(uint64_t addr, uint64_t size) {
     if (on <= 0) return;
-    Pool *p = pool_at(addr);
+    Pool *p = pc_pool_at(addr);
     if (!p) return;
     os_atomic_inc(&p->st[REPORTED]), os_atomic_add(&p->st[REPORTED_BYTES], (int64_t)size);
     PageSt *s = &p->pg[(addr - p->lo) / PAGE];
@@ -332,7 +332,7 @@ void poolcensus_phase(uint64_t seq, int ph) {
 /* a submission's use of guest [lo, lo + size): its pages armed, GPU-written ones against reads too */
 void poolcensus_use(uint64_t seq, uint64_t lo, uint64_t size, int use, int writes) {
     if (on <= 0 || !seq || !size) return;
-    Pool *p = pool_at(lo);
+    Pool *p = pc_pool_at(lo);
     if (!p) return;
     const uint64_t hi = lo + size < p->hi ? lo + size : p->hi;
     os_atomic_add(&p->st[writes ? B_WRITE : B_READ], (int64_t)(hi - lo));
@@ -355,7 +355,7 @@ void poolcensus_use(uint64_t seq, uint64_t lo, uint64_t size, int use, int write
         } else if (!(s->ever & 1)) {
             os_atomic_fetch_or(&s->ever, 1);
             const uint8_t was = os_atomic_fetch_or(&s->armed, 1);
-            if (!(was & 1)) prot = prot_of((uint8_t)(was | 1));
+            if (!(was & 1)) prot = pc_prot_of((uint8_t)(was | 1));
         }
         if (prot != run_prot || a != run_end) {
             if (run_prot >= 0) os_mem_protect(GP(run), run_end - run, run_prot);
@@ -369,15 +369,15 @@ void poolcensus_use(uint64_t seq, uint64_t lo, uint64_t size, int use, int write
 /* ---- the summary ---- */
 typedef struct { uintptr_t ptr; uint32_t addr; } ByPtr;
 static ByPtr *by_ptr;
-static int by_ptr_cmp(const void *a, const void *b) {
+static int pc_by_ptr_cmp(const void *a, const void *b) {
     const uintptr_t x = ((const ByPtr *)a)->ptr, y = ((const ByPtr *)b)->ptr;
     return x < y ? -1 : x > y;
 }
 /* a host pc as the lifted function holding it (f_<guest address>+<host offset>), else its module and offset */
-static void pc_name(uintptr_t pc, char *out, size_t cap) {
+static void pc_pc_name(uintptr_t pc, char *out, size_t cap) {
     if (!by_ptr && (by_ptr = (ByPtr *)malloc(sizeof *by_ptr * a64_fn_count))) {
         for (uint32_t i = 0; i < a64_fn_count; i++) by_ptr[i].ptr = (uintptr_t)a64_fn_ptr[i], by_ptr[i].addr = a64_fn_addr[i];
-        qsort(by_ptr, a64_fn_count, sizeof *by_ptr, by_ptr_cmp);
+        qsort(by_ptr, a64_fn_count, sizeof *by_ptr, pc_by_ptr_cmp);
     }
     char mod[512];
     const uintptr_t mb = os_module_of((const void *)pc, mod, sizeof mod);
@@ -400,7 +400,7 @@ static void pc_name(uintptr_t pc, char *out, size_t cap) {
 
 static const char *const kClaim[NVN_CLAIM_KINDS] = {"none", "textures", "targets", "host", "vram", "upload", "readback", "load once", "layer 0"};
 
-static void summary(void) {
+static void pc_summary(void) {
     FILE *f = fopen("poolcensus.txt", "w");
     if (!f) return;
     const int64_t frames = hos_present_count - start_present > 0 ? hos_present_count - start_present : 1;
@@ -458,7 +458,7 @@ static void summary(void) {
                 const uint64_t k = r->key;
                 if (!k || k == ~0ull || r->group != g || r->write != w) continue;
                 char pc[96];
-                pc_name(r->pc, pc, sizeof pc);
+                pc_pc_name(r->pc, pc, sizeof pc);
                 if (w)
                     fprintf(f, "  W %s lr %llx < %llx < %llx \"%s\": idle %lld, queued %lld, flight %lld; gpu-page %lld, gpu-grain %lld; reported %lld; %lld presents; +%#llx\n",
                             pc, (unsigned long long)r->lr, (unsigned long long)r->f1, (unsigned long long)r->f2, r->thread,
@@ -484,12 +484,12 @@ void poolcensus_frame(void) {
         for (int spin = 0; spin < 1000 && !(v = os_atomic_xchg(&ring[ring_tail & (NRING - 1)], 0)); spin++) {}
         if (!v) continue;
         const uint64_t a = (v - 1) * PAGE;
-        Pool *p = pool_at(a);
+        Pool *p = pc_pool_at(a);
         if (!p) continue;
         PageSt *s = &p->pg[(a - p->lo) / PAGE];
         const uint8_t armed = s->ever & 2 || whole ? 3 : 1;
         os_atomic_xchg(&s->armed, armed);
-        os_mem_protect(GP(a), PAGE, prot_of(armed));
+        os_mem_protect(GP(a), PAGE, pc_prot_of(armed));
     }
-    if ((hos_present_count - start_present) % 300 == 299) summary();
+    if ((hos_present_count - start_present) % 300 == 299) pc_summary();
 }
