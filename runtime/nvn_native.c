@@ -99,6 +99,9 @@ enum { CLAIM_DEPTH = 8 };
 static _Thread_local struct {
     int depth;
     struct { int kind; nvn_claim_rule rule; const char *by; } at[CLAIM_DEPTH];
+    /* the pools made since the outermost scope began: told to the back end when it ends (its maker's writes are done) */
+    struct { uint64_t gpu, size; } *made;
+    int made_n, made_cap;
 } tl_claim;
 void nvn_claim_begin(int kind, const char *by) {
     if (tl_claim.depth < CLAIM_DEPTH) tl_claim.at[tl_claim.depth].kind = kind, tl_claim.at[tl_claim.depth].rule = NULL, tl_claim.at[tl_claim.depth].by = by;
@@ -110,6 +113,20 @@ void nvn_claim_begin_rule(nvn_claim_rule rule, const char *by) {
 }
 void nvn_claim_end(void) {
     if (tl_claim.depth > 0) tl_claim.depth--;
+    if (tl_claim.depth || !tl_claim.made_n) return;
+    const gpu_fns *d = rx_direct();
+    for (int i = 0; i < tl_claim.made_n; i++)
+        if (d) d->claim_made(tl_claim.made[i].gpu, tl_claim.made[i].size);
+    tl_claim.made_n = 0;
+}
+static void claim_made_now(uint64_t gpu, uint64_t size) {   /* (a pool made inside the current scope) */
+    if (tl_claim.made_n == tl_claim.made_cap) {
+        tl_claim.made_cap = tl_claim.made_cap ? 2 * tl_claim.made_cap : 8;
+        tl_claim.made = realloc(tl_claim.made, (size_t)tl_claim.made_cap * sizeof *tl_claim.made);
+        if (!tl_claim.made) die("claims: out of memory");
+    }
+    tl_claim.made[tl_claim.made_n].gpu = gpu, tl_claim.made[tl_claim.made_n].size = size;
+    tl_claim.made_n++;
 }
 /* The claim of a pool made now: the innermost kind a patch named, else the outermost rule's; by: its patch */
 static uint32_t claim_now(uint32_t flags, uint64_t size, const char **by) {
@@ -342,6 +359,7 @@ NV(nvnMemoryPoolInitialize,
                 (unsigned long long)o->size, o->flags, kClaimNames[o->claim], by, b);
     }
     rx_nvn_pool_native(o->gpu, o->size, o->flags, o->claim, by, 1);   /* (the back end serves it by its claim, before any binding) */
+    if (tl_claim.depth) claim_made_now(o->gpu, o->size);
     rx_nvn_pool_created(o->gpu, o->size);
     void poolcensus_pool(Ctx *c, uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, const char *by);   /* poolcensus.c */
     poolcensus_pool(c, o->gpu, o->size, o->flags, o->claim, by);

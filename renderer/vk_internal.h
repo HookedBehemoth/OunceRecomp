@@ -226,6 +226,9 @@ void claims_sub_sent(ClaimSub* s, uint64_t value);
 /// copied into its region by the next submission's first copy, and dropped from the copies out of submissions whose first
 /// copy came before (nvn_claim_write)
 void claims_cpu_write(uint64_t lo, uint64_t size);
+/// The claim scope that made the pool at gpu ended: when a submission's first copy came between the pool's making and now,
+/// the pool's bytes (a claim copied from guest memory) are copied again, so the writes its maker made after it arrive
+void claims_made(uint64_t gpu, uint64_t size);
 /// A CPU reset of memory the GPU owns, made by a fill before the next submission's work (nvn_claim_fill)
 void claims_gpu_fill(uint64_t lo, uint64_t size, uint32_t value);
 /// The CPU reads guest [lo, lo + size) of a VRAM pool: copied out after each submission that writes the pool (nvn_claim_read)

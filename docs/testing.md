@@ -123,7 +123,8 @@ in the test's `known.txt`. It ends with `VERDICT: PASS` or `VERDICT: FAIL (<why>
 failure. Read the verdict, not the log. The colours catch a layer that goes without changing the
 picture's shapes, such as Kokiri's grass, which the hash misses; golden runs recorded before the thumbnails have none
 and are compared by hash only. `--keep-shots` keeps the screenshots, and `--golden-reset` starts the golden
-set anew. The golden data is in `~/.local/share/ounce/<game>/golden/<test>/`.
+set anew. When a run fails on a view the golden set lacks (the scene moved another way) and its screenshots are right,
+`ounce test <game> --golden-kept` adds that kept run to the set without a new run. The golden data is in `~/.local/share/ounce/<game>/golden/<test>/`.
 
 ### Benchmark a scene
 

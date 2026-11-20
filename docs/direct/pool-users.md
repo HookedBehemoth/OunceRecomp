@@ -68,6 +68,25 @@ DKB has the same object: `cull_geometry_mgr_memory` (0x804c0d84), made by 0x804b
 | Desktop match | No. The CPU resets data the GPU owns, and the CPU reads 0x40 bytes out of lists of up to 4.4 MB. Change the game: replace the resets with GPU fills ({0, 1, 1, 0} per first record) at the start of the culling, and copy the six headers into a small Readback ring after the culling, which `report_reader_b` reads. The lists then become VRAM. |
 | Confidence and census | High for the flow (the existing patches in `mesh_lists.c`, `mesh_args.c` and `pools.c` document the stores). The foliage pass's 6.1 ms under VRAM is not explained: the resets are reported, and reports reach CPU-visible VRAM. The likely cause is order: a reported reset is copied at the next submission, which may be the previous frame's. Count resets and culling dispatches per submission, and compare the appended counts with layer 0. |
 
+## The vegetation task blocks (`cull_task_block_create`)
+
+`cull_task_block_create` makes a gsys ubo object block: a double-buffered parameter layout (a count at layout +4,
+0x40-byte records at +0x4c, strided arrays at +0x10, +0x40, +0x58, +0x70) in a pool it grows from the gsys heap. It has
+four calls: two in `cull_gpu_object_b_create` (object b's task records) and two in `cull_task_block_fill`, which
+`cull_scene_blocks_init` runs on SceneLowPriority at a scene's load.
+
+| Question | Answer |
+|---|---|
+| System and data | Object b's blocks: the task count and records of the vegetation culling. `cull_task_block_fill`'s: per-scene vegetation parameters, written once. The heap pool `cull_task_block_fill` grows is shared: `cull_address_block_create`'s one-word block (an 8-byte GPU address) lands in it later. |
+| CPU users | `cull_veg_task_records_write` (main thread, each frame) writes object b's count and count x 0x40 bytes of records, both reported. `cull_task_block_fill` writes its block once, after making it, in the same call. `cull_address_block_create` (SceneLowPriority, after `cull_task_block_fill`) stores a ubo object's GPU address into its one-word block (0x80c64a28). No CPU reader: the census under layer 0 and under VRAM counts no CPU read of either block. |
+| GPU users | Compute only. `a54f19e927d8faef` and `383a566958350efe` reach object b's blocks as storage buffers whose address and size words sit in a uniform buffer (c4+0x40 and c4+0x80), both declared written. Programs that store to global memory (`3e6fe279463b020e`, `4247f1b4c3ce6cf3`, `5b9ba94d1c822e80`, `78ccf14779ec3efb` and others) hold the blocks' base addresses in their small storage buffers, and `cull_address_block_create`'s word is one of those addresses. |
+| Flow per frame | CPU writes object b's count and records, the culling dispatches read them and write the GPU's part of the block, and later dispatches read that. `cull_task_block_fill`'s block is read only, through the stored address. |
+| Desktop match | VRAM for all four, with the CPU's writes reported. |
+| What broke before, and the changes | As Upload or VRAM, the scene's address word never reached the GPU: it is written outside the maker's scope, into a pool another maker grew, so shaders read address 0 and drew no grass or leaves. It is now reported. The storage buffers addressed through a uniform buffer were not counted as GPU writes. They are now counted for draws and dispatches, so Upload would no longer copy over what the GPU wrote. The check compared VRAM ranges, which global stores change rightly. It now leaves them to the owned-page scan, which finds the CPU writes no report hands over. |
+
+`cull_scene_blocks_init`'s own two block sets (VRAM) are filled 16 bytes an entry after the claim's scope. The patch
+gathers each loop's range and reports it where the loop's paths meet.
+
 ## The dedicated-pool path (lr 0x809df2ac)
 
 | Question | Answer |
@@ -118,8 +137,7 @@ traced yet.
 ## Game patches made, and what is open
 
 1. **The culling lists:** the CPU's resets are made on the GPU (`nvn_claim_fill`), and only the records the CPU reads are
-   copied out (`nvn_claim_read`): object a is VRAM. Object b is claimed by maker; its task blocks (`cull_task_block_create`)
-   stay on layer 0 (see [pool claims](pool-claims.md)).
+   copied out (`nvn_claim_read`): object a is VRAM. Object b is claimed by maker, its task blocks VRAM (above).
 2. **GeometryCullingMgr split:** the views' arrays are Readback with each address store reported (their small pool also
    holds the exposure record, whose writes are reported), the block VRAM.
 3. **Vfx3:** the plugin setters, the new-buffer fill and the dirty-range copy report their writes.

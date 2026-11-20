@@ -43,11 +43,13 @@ struct DrawProg {
     uint64_t task_code = 0;   // (a task+mesh program's task stage code key)
     uint16_t ssbo_slots[8]{};   // (M4b: by NVN stage, the storage buffer slots its stages read through the driver bank's table)
     uint16_t ssbo_written[8]{};   // (of them, the ones its stages write)
-    /// (debug.claimuse) storage buffers whose address is a word outside the driver bank's binding table (a stored address),
-    /// and the stages that reach global memory by addresses the translation cannot name
+    /// storage buffers whose address and size are words outside the driver bank's binding table (stored by the game), and
+    /// (debug.claimuse) the stages that reach global memory by addresses the translation cannot name
     struct PtrWord {
         uint8_t stage, bank;
         uint16_t offset;
+        bool written;
+        bool table;   // (one of a table's entries, which the stage picks among at run time)
     };
     std::vector<PtrWord> ptr_words;
     uint8_t global_stages = 0;   // (bit: NVN stage)

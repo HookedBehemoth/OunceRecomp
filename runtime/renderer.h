@@ -40,6 +40,7 @@ typedef struct {
     void (*claim_write)(uint64_t addr, uint64_t size);   /* a CPU write a patch reports (nvn_claims.h nvn_claim_write) */
     void (*claim_fill)(uint64_t addr, uint64_t size, uint32_t value);   /* a reset made on the GPU (nvn_claim_fill) */
     void (*claim_read)(uint64_t addr, uint64_t size);   /* a range of a VRAM pool the CPU reads (nvn_claim_read) */
+    void (*claim_made)(uint64_t gpu, uint64_t size);   /* the claim scope that made the pool at gpu ended (nvn_claim_end) */
     void (*measure)(uint32_t presents);   /* the GPU's time by pass over the next presents (renderer/vk_passtime.h) */
     int64_t (*vram_free)(void);   /* free VRAM, the driver's figure */   /* a texture released to agl's LRU cache (1), taken back (0) */
 } gpu_fns;

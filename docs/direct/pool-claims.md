@@ -93,9 +93,18 @@ submission's work, with a report's protection against older copies out. OoT's cu
 list's header in a list of megabytes. After each submission whose work writes the pool, that range alone is copied out
 into guest memory, as a Readback claim's ranges are.
 
+**The maker's scope.** The pools a claim's scope makes are copied whole at the first submission after their making.
+When a submission's first copy came before the outermost scope ended, they are copied again then, so a maker that fills
+its pool after making it (the claim around the whole function) needs no report.
+
+**Storage buffers by stored address.** A program's storage buffer whose address and size are words the game stored in a
+uniform buffer, or in the driver bank outside its binding table, counts as bound, read or written as the program
+declares it. Global memory a program reaches through an address it loaded is not seen.
+
 **The verifier.** An Upload write nothing reports leaves stale bytes on the GPU, silently. With `debug.claimcheck`,
 each submission's lists note the guest ranges they use (uniform, vertex, index, indirect, storage, copies), merged by
-region. When its first chunk goes, the guest bytes of the ranges the GPU only reads are kept, and a copy of what
+region. When its first chunk goes, the guest bytes of the ranges the GPU only reads are kept (VRAM claims' ranges aside:
+shaders write those through addresses no binding names, and the owned-page scan below checks them), and a copy of what
 their regions hold runs before its work; once it completes the two are compared, and a mismatch is an error line and a
 strict event that names the range, its use, the pool with its claim and claiming patch, and the lists. It uses no page
 protection. It also confirms the load-once copies. Ranges that any GPU work writes are left out. Once the submission
@@ -200,6 +209,7 @@ CPU's invalidates (a CPU-cached pool the CPU invalidates is one whose GPU writes
 | the GPU culling object a (`cull_gpu_object_a_create`) | VRAM | the CPU's resets made on the GPU, the counts it reads copied out of their records |
 | object b's task records (`f_80c5f870`), gather lists (`f_80c576b0`) and result blocks | Upload, Readback, Readback | the gather lists' zeroing made on the GPU |
 | GeometryCullingMgr: the views' arrays, the block | Readback, VRAM | each address store reported; the exposure record in the views' pool reported |
+| the vegetation task blocks (`cull_task_block_create`, object b's and `cull_task_block_fill`'s) | VRAM | the CPU's writes reported, among them a GPU address stored later into the shared pool ([pool users](pool-users.md)) |
 | the depth grid: constants, slots, the 0x5b40 block | Upload, Readback, VRAM | the per-frame camera copy into the slots reported |
 | the probe storage block, `f_80c5c450`'s calc block | VRAM | bake::ModuleMgr's records and the calc fields reported |
 | the save picture (`texdata_serialize_jpg`) | Readback | a copy the CPU waits for, then encodes |
@@ -212,10 +222,6 @@ CPU's invalidates (a CPU-cached pool the CPU invalidates is one whose GPU writes
 The census (`debug.poolcensus`) and `games/oot/patches/pools.c` give each maker's claim and its writer patches. Still on
 layer 0 in OoT, each for a reason a run showed:
 
-- The vegetation's task blocks (`cull_task_block_create`, at its four calls in `cull_gpu_object_b_create` and
-  `f_80cb2a40`). As Upload the grass goes; as VRAM the leaves go too, with the task writer's reports, and the check finds
-  storage reads that differ from guest memory from the first frames: shaders likely write them through stored addresses
-  and the CPU reads them.
 - The probe module's 150 MB calc block (`probe_calc_block_init`). Its writers report, but `gpu_calc_block_create` writes
   the pool again at a scene's load, after its first copy and outside the scope that made it.
 - The occlusion query's records and per-id state (`depth_grid_buffers_create`). As VRAM the occlusion culling culls less

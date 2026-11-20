@@ -163,6 +163,7 @@ struct Region {
     uint64_t block_off = 0, block_size = 0;
     const char* by = nullptr;      // (its pool's claiming patch and flags: the check's and the measurement's names)
     uint32_t flags = 0;
+    uint64_t made_seq = 0;         // (first copies made when its pool was made: see claims_made)
     struct Track* track = nullptr; // (debug.claimuse: its pages' hashes)
     std::unique_ptr<std::atomic<uint64_t>[]> copied;   // (a load-once claim's pages copied so far, a bit each: set by the preparing thread)
     // (an Upload claim's 16-byte grains that submitted lists read since its last copy, a bit each, and its words with any
@@ -1074,7 +1075,8 @@ struct Fill {
     uint32_t value;
 };
 std::vector<Fill> fills;   // (report_mu: the resets for the next first copy, in their order)
-uint64_t first_seq = 0;   // (report_mu: first copies made)
+uint64_t first_seq = 0;
+std::atomic<int64_t> st_made_again{0};   // (pools copied again at their making scope's end)   // (report_mu: first copies made)
 std::atomic<int64_t> st_fills{0}, st_fill_bytes{0}, st_read_windows{0};
 std::atomic<int64_t> st_reports{0}, st_report_bytes{0}, st_out_subs{0}, st_out_ranges{0}, st_out_bytes{0}, st_out_dropped{0};
 
@@ -1417,7 +1419,9 @@ VkCommandBuffer claims_sub_prepare(ClaimSub* s, ClaimPrep what) {
     ClaimSubImpl::Part* part = track_check ? &s->parts.emplace_back() : nullptr;
     if (part)
         for (const SubRange& x : s->ranges) {
-            if (x.r->claim != NVN_CLAIM_LAYER0 && !local_copied(x.r)) continue;
+            // (a VRAM claim's pages are the GPU's from their copy: shaders write them through addresses no binding names,
+            // so its bytes may differ from guest memory rightly; a CPU write the GPU never sees is the owned scan's to find)
+            if ((x.r->claim != NVN_CLAIM_LAYER0 && !local_copied(x.r)) || x.r->claim == NVN_CLAIM_VRAM) continue;
             if (x.uses & kGpuWrites || any_gpu_written(x.r, x.lo, x.hi)) {
                 st_skipped_gpu_written.fetch_add(1, std::memory_order_relaxed);
                 continue;
@@ -1539,9 +1543,9 @@ void claims_pointer(uint64_t addr, uint64_t program, const char* how) {
     }
     UseAgg& a = agg_of(r);
     a.pointed++;
-    if (a.pointer_sites.size() < 4) {
-        char b[80];
-        std::snprintf(b, sizeof b, "%016llx %s", (unsigned long long)program, how);
+    if (a.pointer_sites.size() < 12) {
+        char b[96];
+        std::snprintf(b, sizeof b, "%016llx %s at +%#llx", (unsigned long long)program, how, (unsigned long long)(addr - r->lo));
         if (std::find(a.pointer_sites.begin(), a.pointer_sites.end(), b) == a.pointer_sites.end()) a.pointer_sites.push_back(b);
     }
 }
@@ -1672,8 +1676,33 @@ void claims_pool(uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, co
          (claim == NVN_CLAIM_LAYER0 && gpu_reads)) && !r &&
         st_failed++ < 8)
         logf("direct: claims: pool %#llx+%#llx flags %#x (claim %u): no region", (unsigned long long)gpu, (unsigned long long)size, flags, claim);
-    if (r) r->by = by, r->flags = flags, __atomic_store_n(&r->track, track_made(r), __ATOMIC_RELEASE);
+    if (r) {
+        r->by = by, r->flags = flags, __atomic_store_n(&r->track, track_made(r), __ATOMIC_RELEASE);
+        std::lock_guard rk(report_mu);
+        r->made_seq = first_seq;
+    }
     pools.insert({gpu, Pool{size, flags, claim, r, by}});
+}
+void claims_made(uint64_t gpu, uint64_t size) {
+    if (!size || state.load(std::memory_order_acquire) != 1) return;
+    uint64_t seq = 0;
+    {
+        std::lock_guard lk(mu);
+        for (auto [it, end] = pools.equal_range(gpu); it != end; ++it)
+            if (it->second.size == size && it->second.region) {
+                const Region* r = it->second.region;
+                if (r->claim == NVN_CLAIM_LOAD_ONCE || !local_copied(r)) return;
+                seq = r->made_seq + 1;
+                break;
+            }
+    }
+    if (!seq) return;
+    {
+        std::lock_guard rk(report_mu);
+        if (first_seq < seq) return;   // (no first copy since: the whole copy at the next one takes the maker's writes)
+    }
+    claims_cpu_write(gpu, size);
+    st_made_again.fetch_add(1, std::memory_order_relaxed);
 }
 
 bool claims_bound(uint64_t lo, uint64_t hi) {   // (an import may pin the pages: the host keeps them committed)
@@ -1793,13 +1822,13 @@ void claims_stats(char* out, size_t cap) {
     std::snprintf(out + k, cap - k, "; uploads since the start: %lld submissions, %lld ranges, %lld MB, %lld whole regions, %.1f ms on the "
                   "submitting threads, %lld ranges or pages left to the GPU (it writes them); load-once pages copied %lld; staging %lld chunks of %llu MB (%lld at most); noted in %.1f ms; guest reads %.1f ms; after held event waits %lld refreshes, %lld KB again in %.1f ms; "
                   "copied out %lld submissions, %lld ranges, %lld MB, %lld KB of them dropped for the CPU's later writes; CPU writes reported %lld, %lld KB; "
-                  "resets made on the GPU %lld, %lld KB; read windows %lld",
+                  "resets made on the GPU %lld, %lld KB; read windows %lld; pools copied again at their making scope's end %lld",
                   (long long)st_up_subs.load(), (long long)st_up_ranges.load(), (long long)(st_up_bytes.load() >> 20), (long long)st_up_whole.load(),
                   st_up_ns.load() / 1e6, (long long)st_up_skipped_gpu.load(), (long long)st_up_once.load(), (long long)st_chunks.load(), (unsigned long long)(kChunk >> 20), (long long)st_chunks_peak.load(), st_note_ns.load() / 1e6, st_memcpy_ns.load() / 1e6, (long long)st_refreshes.load(),
                   (long long)(st_refreshed.load() >> 10), st_refresh_ns.load() / 1e6, (long long)st_out_subs.load(), (long long)st_out_ranges.load(),
                   (long long)(st_out_bytes.load() >> 20), (long long)(st_out_dropped.load() >> 10), (long long)st_reports.load(),
                   (long long)(st_report_bytes.load() >> 10), (long long)st_fills.load(), (long long)(st_fill_bytes.load() >> 10),
-                  (long long)st_read_windows.load());
+                  (long long)st_read_windows.load(), (long long)st_made_again.load());
 }
 
 }  // namespace hsd

@@ -158,19 +158,16 @@ PATCH_FUNC(0x80c58a80, word(0xd503237f), body(0xd48e5979b49a3213), aapcs, x0, po
 PATCH_FUNC(0x80c5f870, word(0xd503237f), body(0x98f5d55e007fed32), aapcs, x0, pools_80c5f870, orig) {
     CLAIM("f_80c5f870", NVN_CLAIM_UPLOAD);
 }
-/* cull_task_block_create (f_80c5da90) is a generic block maker, claimed at its calls. Object b's two (its task records and
-   the gather programs' data, 0x12000 x2 each) stay on layer 0: as Upload the grass goes, as VRAM the leaves too, with
-   cull_veg_task_records_write's writes reported (below) and whole-block reports after the maker; the check then finds its
-   storage reads differing from guest memory from the first frames, which suggests GPU writes through stored addresses that
-   the CPU reads. Open. f_80cb2a40's two (CPU-written, bound read) the same: as Upload the grass goes */
-PATCH_AT(0x80c5960c, word(0x94001121), before, none, pools_veg_tasks) { nvn_claim_begin(NVN_CLAIM_LAYER0, "cull_gpu_object_b_create tasks"); }
+/* cull_task_block_create is a generic block maker, claimed at its calls (docs/direct/pool-users.md, "The vegetation task
+   blocks"): object b's two (its task records, written each frame by cull_veg_task_records_write, reported below) and
+   cull_task_block_fill's (filled once in that function, claimed over all of it): VRAM */
+PATCH_AT(0x80c5960c, word(0x94001121), before, none, pools_veg_tasks) { nvn_claim_begin(NVN_CLAIM_VRAM, "cull_gpu_object_b_create tasks"); }
 PATCH_AT(0x80c59610, word(0xb945aa88), before, none, pools_veg_tasks_end) { nvn_claim_end(); }
-PATCH_AT(0x80c59670, word(0x94001108), before, none, pools_veg_tasks_b) { nvn_claim_begin(NVN_CLAIM_LAYER0, "cull_gpu_object_b_create tasks"); }
+PATCH_AT(0x80c59670, word(0x94001108), before, none, pools_veg_tasks_b) { nvn_claim_begin(NVN_CLAIM_VRAM, "cull_gpu_object_b_create tasks"); }
 PATCH_AT(0x80c59674, word(0xb945f288), before, none, pools_veg_tasks_b_end) { nvn_claim_end(); }
-PATCH_AT(0x80cb2b20, word(0x97feabdc), before, none, pools_cb2a40_tasks) { nvn_claim_begin(NVN_CLAIM_LAYER0, "f_80cb2a40 tasks"); }
-PATCH_AT(0x80cb2b24, word(0xb9401e68), before, none, pools_cb2a40_tasks_end) { nvn_claim_end(); }
-PATCH_AT(0x80cb2ff4, word(0x97feaaa7), before, none, pools_cb2a40_tasks_b) { nvn_claim_begin(NVN_CLAIM_LAYER0, "f_80cb2a40 tasks"); }
-PATCH_AT(0x80cb2ff8, word(0xb9401e68), before, none, pools_cb2a40_tasks_b_end) { nvn_claim_end(); }
+PATCH_FUNC(0x80cb2a40, word(0xd503237f), body(0x94458a45d56814cc), aapcs, x0, pools_task_block_fill, orig) {
+    CLAIM("cull_task_block_fill", NVN_CLAIM_VRAM);
+}
 /* f_80365950 (cull_veg_task_records_write, from f_80586fd0 on the main thread) writes f_80c5da90's task records each frame: the
    count at the list's first record (`str w24, [x23, x8]`) and count x 0x40 bytes of records (a memcpy). Shaders reach
    them through stored addresses, not binds (one of the two pools is never bound): reported */
@@ -314,8 +311,28 @@ PATCH_AT(0x80c62a38, word(0x97e2fade), before, none, pools_80c62260_a) { nvn_cla
 PATCH_AT(0x80c62a3c, word(0xb9400f28), before, none, pools_80c62260_a_end) { nvn_claim_end(); }
 PATCH_AT(0x80c62f88, word(0x97e2f98a), before, none, pools_80c62260_b) { nvn_claim_begin(NVN_CLAIM_VRAM, "f_80c62260 blocks"); }
 PATCH_AT(0x80c62f8c, word(0xb9400f28), before, none, pools_80c62260_b_end) { nvn_claim_end(); }
+/* cull_scene_blocks_init (f_80c62260) fills each block it just made, after the claim's scope: a 16-byte record per entry (stp xzr, xzr at
+   0x80c62af0 in the first block; stp x23, x24 at 0x80c6301c in the second), w24 / w20 entries a stride apart. Each loop's
+   records are gathered and reported where its two paths meet (0x80c62b0c, 0x80c63034), once a scene */
+static _Thread_local uint64_t fill_lo, fill_hi;
+static void fill_note(uint64_t at) {
+    if (!fill_hi || at < fill_lo) fill_lo = at;
+    if (at + 16 > fill_hi) fill_hi = at + 16;
+}
+static void fill_report(void) {
+    if (fill_hi) nvn_claim_write(fill_lo, fill_hi - fill_lo);
+    fill_lo = fill_hi = 0;
+}
+PATCH_AT(0x80c62af0, word(0xa9007d1f), after, none, pools_80c62260_fill_a, as(x8, at)) { fill_note(at); }
+PATCH_AT(0x80c62b0c, word(0x1a9f3108), before, none, pools_80c62260_fill_a_end) { fill_report(); }
+PATCH_AT(0x80c6301c, word(0xa9006117), after, none, pools_80c62260_fill_b, as(x8, at)) { fill_note(at); }
+PATCH_AT(0x80c63034, word(0x1a9f3108), before, none, pools_80c62260_fill_b_end) { fill_report(); }
 /* f_80c63e70 (called by f_80c62260 on SceneLowPriority) fills f_80c64650's block: memcpy of count (w23) x 4 bytes. Kokiri
    never binds that block (shaders reach it through stored addresses): reported */
+/* cull_address_block_create (f_80c64650) stores an 8-byte GPU address (a 0x90 ubo object's +0x80 of [x20 + 0xe8]) into
+   the one-word block it just allocated (ubo_object_pool_alloc at 0x80c649dc): shaders load it to find their data. That
+   block lands in a heap pool another maker grew (cull_task_block_fill's), so it is reported */
+PATCH_AT(0x80c64a28, word(0xf90002a8), after, none, pools_80c64650_address, as(x21, at)) { nvn_claim_write(at, 8); }
 PATCH_AT(0x80c64244, word(0x94bff84b), after, none, pools_80c64650_fill, as(x0, dst), as(x23, count)) {
     if ((int32_t)count > 0) nvn_claim_write(dst, (uint64_t)(int32_t)count << 2);
 }

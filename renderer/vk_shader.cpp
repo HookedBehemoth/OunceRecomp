@@ -894,7 +894,8 @@ bool finish(Variant& v) {
             const uint32_t base = st.nvn_stage >= 0 && st.nvn_stage < 8 ? kSsboTable[st.nvn_stage] : 0;
             for (const auto& sb : info.storage_buffers_descriptors)
                 if (!(base && sb.cbuf_index == 0 && sb.cbuf_offset >= base && sb.cbuf_offset < base + 256) && st.nvn_stage >= 0)
-                    d.ptr_words.push_back({(uint8_t)st.nvn_stage, (uint8_t)sb.cbuf_index, (uint16_t)sb.cbuf_offset});
+                    for (uint32_t j = 0; j < std::max<uint32_t>(sb.count, 1); j++)   // (a table: count descriptors 16 bytes apart)
+                        d.ptr_words.push_back({(uint8_t)st.nvn_stage, (uint8_t)sb.cbuf_index, (uint16_t)(sb.cbuf_offset + 16 * j), sb.is_written, sb.count > 1});
             if (info.uses_global_memory && st.nvn_stage >= 0 && st.nvn_stage < 8) d.global_stages |= (uint8_t)(1u << st.nvn_stage);
             for (const auto& sb : info.storage_buffers_descriptors)
                 if (base && sb.cbuf_index == 0 && sb.cbuf_offset >= base && sb.cbuf_offset < base + 256)

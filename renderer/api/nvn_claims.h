@@ -2,7 +2,9 @@
    around that function's body. The back end serves only claimed pools; nvnMemoryPoolInitialize with no claim is an
    error (runtime/nvn_native.c). A claim covers every pool the claiming thread makes between begin and end. Claims nest:
    a kind a patch names holds over any rule, the innermost kind holds over the kinds around it (a maker's exception
-   inside its caller's claim), and between rules the outermost holds (a generic allocator's rule is its callers' default). */
+   inside its caller's claim), and between rules the outermost holds (a generic allocator's rule is its callers' default).
+   A pool's bytes are taken from guest memory at the first submission after it is made, and again when the outermost scope
+   ends if a submission came between: a maker's writes inside its scope need no report. */
 #pragma once
 #include <stdint.h>
 

@@ -753,18 +753,33 @@ Reason ubo_address(List* l, ListDraw& x, const DrawProg& p, const DrawProg::Ubo&
 /// The address table, and each stage's part's address pushed (from kTablePush); false: a reason
 /// (debug.claimuse) the guest data the program reaches through stored addresses: storage buffers addressed by a word
 /// outside the binding table, and for a stage that reaches global memory, the addresses in its small bound storage buffers
+/// a stored storage buffer's address and size (Maxwell's words: the address, then the size); false where they cannot be read
+/// the driver bank of the stage last read (stage -1: none yet)
+struct PtrBanks {
+    uint8_t bank[0xA00 + 16];
+    int stage = -1;
+};
+bool ptr_word(const ListDraw& x, const DrawProg::PtrWord& w, uint64_t& a, uint32_t& size, PtrBanks& pb) {
+    uint32_t v[3]{};
+    if (w.bank >= 3 && w.bank < 3 + 16) {
+        const nvn_p_bind_buf& b = x.s.ubo[w.stage][w.bank - 3];
+        if (!b.addr || !host->gpu_read(b.addr + w.offset, v, 12)) return false;
+    } else if (w.bank == 0) {
+        if (w.offset + 12u > 0xA00) return false;
+        if (pb.stage != w.stage) bank_fill(x.s, 0, w.stage, pb.bank, 0xA00, x.area_w, x.area_h), pb.stage = w.stage;
+        std::memcpy(v, pb.bank + w.offset, 12);
+    } else {
+        return false;
+    }
+    a = v[0] | (uint64_t)v[1] << 32, size = v[2];
+    return true;
+}
 void pointer_census(const ListDraw& x, const DrawProg& p) {
+    PtrBanks pb;
     for (const DrawProg::PtrWord& w : p.ptr_words) {
         uint64_t a = 0;
-        if (w.bank >= 3 && w.bank < 3 + 16) {
-            const nvn_p_bind_buf& b = x.s.ubo[w.stage][w.bank - 3];
-            if (!b.addr || !host->gpu_read(b.addr + w.offset, &a, 8)) continue;
-        } else if (w.bank == 0) {
-            uint8_t bank[0xA00 + 8]{};
-            bank_fill(x.s, 0, w.stage, bank, 0xA00, x.area_w, x.area_h);
-            if (w.offset + 8u > 0xA00) continue;
-            std::memcpy(&a, bank + w.offset, 8);
-        }
+        uint32_t size;
+        if (!ptr_word(x, w, a, size, pb)) continue;
         if (a) {
             char how[24];
             std::snprintf(how, sizeof how, "c%u+%#x", w.bank, w.offset);
@@ -801,6 +816,15 @@ Reason bind_data(List* l, ListDraw& x, const DrawProg& p, uint8_t push[256]) {
                                               std::max<uint64_t>(b.size, 16), unused))
                     st_ssbo_unbound.fetch_add(1, std::memory_order_relaxed);
             }
+        PtrBanks pb;
+        for (const DrawProg::PtrWord& w : p.ptr_words) {   // (and those whose address the game stored elsewhere)
+            uint64_t a;
+            uint32_t size;
+            VkDeviceAddress unused;
+            if (ptr_word(x, w, a, size, pb) && a && size && (!w.table || claims_holds(a, std::max<uint32_t>(size, 16))) &&
+                !claims_address(l, w.written ? CU_STORAGE_WRITTEN : CU_STORAGE, a, std::max<uint32_t>(size, 16), unused))
+                st_ssbo_unbound.fetch_add(1, std::memory_order_relaxed);
+        }
         x.table_entries.resize(p.ubos.size());
         for (size_t i = 0; i < p.ubos.size(); i++) {
             const Reason r = ubo_address(l, x, p, p.ubos[i], x.table_entries[i]);

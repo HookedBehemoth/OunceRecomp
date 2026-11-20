@@ -205,11 +205,13 @@ pub fn run(args: &[String]) {
 /// `ounce test <game> [--name T] [--golden | --golden-reset] [--keep-shots] [--set NAME=VALUE]...`: the smoke test T
 /// of games/<game>/tests.toml. One headless run with the test's settings, then the verdict (smoke.rs) against the data
 /// folder's `<game>/golden/<T>/` (--golden adds the run to the golden set, --golden-reset starts the set with it).
+/// `--golden-kept` adds the test's last run, kept with --keep-shots and checked by eye, without a new run.
 /// Exits 0 when it passes.
 pub fn test(args: &[String]) {
     let (layout, game, rest) = game_args("test", args);
     let config = config();
     let (mut name, mut golden, mut reset, mut keep, mut set) = (game.default_test.clone(), false, false, false, Vec::new());
+    let mut kept = false;
     let mut it = rest.iter();
     while let Some(a) = it.next() {
         let mut val = || it.next().cloned().unwrap_or_else(|| fail(format!("{a} wants a value")));
@@ -218,6 +220,7 @@ pub fn test(args: &[String]) {
             "--golden" => golden = true,
             "--golden-reset" => (golden, reset) = (true, true),
             "--keep-shots" => keep = true,
+            "--golden-kept" => kept = true,
             "--set" => set.push(switch(&val())),
             _ => fail(format!("test: what is {a}? (ounce help)")),
         }
@@ -231,6 +234,17 @@ pub fn test(args: &[String]) {
         fail(format!("test: no test {name} for {} (games/{}/tests.toml has {})", game.name, game.name, tests.join(", ")))
     };
     let gd = layout.golden(&config).join(&name);
+    if kept {
+        let dir = layout.run_dir(&format!("test-{name}"));
+        if !dir.join("shots").is_dir() {
+            fail(format!("test: {} has no shots (run with --keep-shots first)", dir.display()));
+        }
+        let (lines, _) = crate::smoke::verdict(&dir, &gd, t.smoke_skip as u64, true, false).unwrap_or_else(|e| fail(e));
+        for l in &lines {
+            println!("{l}");
+        }
+        return;
+    }
     let gds = gd.to_string_lossy();
     let mut settings: Vec<(String, String)> = t.set.iter().map(|s| switch(&s.replace("{golden}", &gds))).collect();
     settings.extend(set);

@@ -314,6 +314,7 @@ extern "C" MKWVK_EXPORT void gpu_target_given(const void* t) { hsd::image_target
 extern "C" MKWVK_EXPORT void gpu_claim_write(uint64_t addr, uint64_t size) { hsd::claims_cpu_write(addr, size); }
 extern "C" MKWVK_EXPORT void gpu_claim_fill(uint64_t addr, uint64_t size, uint32_t value) { hsd::claims_gpu_fill(addr, size, value); }
 extern "C" MKWVK_EXPORT void gpu_claim_read(uint64_t addr, uint64_t size) { hsd::claims_read_window(addr, size); }
+extern "C" MKWVK_EXPORT void gpu_claim_made(uint64_t gpu, uint64_t size) { hsd::claims_made(gpu, size); }
 extern "C" MKWVK_EXPORT void gpu_host_event(const char* reason, const char* what) {
     hsd::strict_event(reason, "%s", what ? what : "");
 }

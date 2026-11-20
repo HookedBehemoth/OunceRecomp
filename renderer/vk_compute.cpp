@@ -888,8 +888,8 @@ void pointer_census(const Variant& v, const ListComp& c, const uint8_t* bank, ui
             if (!b.addr || !host->gpu_read(b.addr + sb.cbuf_offset, &a, 8)) continue;
         }
         if (a) {
-            char how[24];
-            std::snprintf(how, sizeof how, "c%u+%#x", sb.cbuf_index, sb.cbuf_offset);
+            char how[32];
+            std::snprintf(how, sizeof how, "c%u+%#x%s", sb.cbuf_index, sb.cbuf_offset, sb.is_written ? " written" : "");
             claims_pointer(a, v.key, how);
         }
     }
@@ -1145,10 +1145,33 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
     }
     for (const auto& sb : v->info.storage_buffers_descriptors) {   // (the storage buffers the program reaches by address: in
                                                                       // their claims' regions)
-        if (sb.cbuf_index != 0 || sb.cbuf_offset < v->lay_ssbo_at || (sb.cbuf_offset - v->lay_ssbo_at) / 16 >= std::min(v->lay_ssbo, 16u)) continue;
-        const nvn_p_bind_buf& b = c.ssbo[(sb.cbuf_offset - v->lay_ssbo_at) / 16];
+        const ClaimUse use = sb.is_written ? CU_STORAGE_WRITTEN : CU_STORAGE;
         VkDeviceAddress unused;
-        if (b.addr) claims_address(l, sb.is_written ? CU_STORAGE_WRITTEN : CU_STORAGE, b.addr, std::max<uint64_t>(b.size, 16), unused);
+        if (sb.cbuf_index == 0 && sb.cbuf_offset >= v->lay_ssbo_at && (sb.cbuf_offset - v->lay_ssbo_at) / 16 < std::min(v->lay_ssbo, 16u)) {
+            const nvn_p_bind_buf& b = c.ssbo[(sb.cbuf_offset - v->lay_ssbo_at) / 16];
+            if (b.addr) claims_address(l, use, b.addr, std::max<uint64_t>(b.size, 16), unused);
+            continue;
+        }
+        // (one whose address and size are words the game stored elsewhere, in the driver bank or a uniform buffer, as
+        // Maxwell reads them: its writes are the GPU's as much as a bound one's)
+        for (uint32_t j = 0; j < std::max<uint32_t>(sb.count, 1); j++) {   // (a table: count descriptors 16 bytes apart)
+            const uint32_t off = sb.cbuf_offset + 16 * j;
+            uint32_t w[4]{};
+            if (sb.cbuf_index == 0) {
+                if (off + 12 > v->bank_bytes) break;
+                std::memcpy(w, map + off, 12);
+            } else if (sb.cbuf_index >= 3 && sb.cbuf_index < 3 + 16) {
+                const nvn_p_bind_buf& b = c.ubo[sb.cbuf_index - 3];
+                if (!b.addr || !host->gpu_read(b.addr + off, w, 12)) break;
+            } else {
+                break;
+            }
+            const uint64_t a = w[0] | (uint64_t)w[1] << 32;
+            // (a table's entries are candidates the program picks among at run time: those that hold no region's memory
+            // are never picked, as they read the null window)
+            if (a && w[2] && (sb.count <= 1 || claims_holds(a, std::max<uint32_t>(w[2], 16))))
+                claims_address(l, use, a, std::max<uint32_t>(w[2], 16), unused);
+        }
     }
     uint8_t* tmap;
     if (!draw_arena(l->slot, std::max<uint32_t>(8, 8 * (uint32_t)nu), tmap, table_addr)) return c.fixups.resize(fix_at), count(l, D_ARENA);
