@@ -297,24 +297,23 @@ Each step is one commit. Each one passes `ounce test oot`, a 60-second DKB run, 
 | 6 | Upload as bound-range copies at the guest's submit, load-once copies at their claim's end, and writer patches for the exceptions the measurement names | 600 lines, plus the patches |
 | 7 | (done) No guest memory imported: the imports, udmabuf and the host-pointer path, `os_guest`'s export, the import probe, their settings and docs go | deletes about 800 lines |
 | 8 | The agl texture takeover, then MKW's pools on the same patches | 600 lines across the games |
-| 8a | Upload only what the CPU wrote (below) | the writer patches, then the bound-range copy narrowed |
-| 9 | Write-once uniform rings (below) | to be sized |
+| 9 | Write-once dynamic uniform ring (below) | to be sized |
 
-### Step 8a: upload only what the CPU wrote
+### Upload copies the bound ranges
 
 OoT's uniform data is persistent, double-buffered per-object blocks (bound at base + (frame & 1) * stride), written in
-place by a few writers. The bound-range copy moves about 0.55 to 0.97 MB a frame, of which only 40 to 60 KB was written
-(work/assets/native/uniform-buffers.md, section 1). The writers report their ranges with `nvn_claim_write`, and only
-reported or dirty ranges are copied. The writers to cover and the plan are in [uniform rings](uniform-rings.md). The
-bound-range copy stays only where no writer is patched; the check must show 0 mismatches, and the uploaded bytes and
-host draw time are measured before and after.
+place by a few writers. The bound-range copy moves about 0.55 to 0.97 MB a frame, of which only 40 to 60 KB is written
+(work/assets/native/uniform-buffers.md, section 1). Writer reports for uniform data are not planned: a CPU profile of
+Kokiri puts the whole claims machinery at about 1.1 ms of CPU a frame, 0.76 ms of it in the sender thread's preparing
+of copies (1.95 MB a frame is staged), so narrowing could win at most about 0.9 ms, on a thread that rarely holds the
+frame. Where a writer must report, it uses `nvn_claim_write`. See [uniform rings](uniform-rings.md).
 
-### Step 9: write-once uniform rings
+### Step 9: write-once dynamic uniform ring
 
-The gsys heap's uniform pools and agl's dynamic uniform ring get addresses where the back end maps device-local,
-host-visible memory with `VK_EXT_map_memory_placed`, so the game writes once into memory the GPU reads and nothing is
-copied. Linux only; Windows has no placed map and stays on step 8a. The paths, the placement options and the plan are
-in [uniform rings](uniform-rings.md).
+Step 9 is a later whole host replacement of `agl::utl::DynamicUniformBlockAllocator`'s alloc, writing into a ring
+mapped with `VK_EXT_map_memory_placed`, so the game's data is written once and not copied. It removes a further 0.1 to
+0.3 ms of sender-thread CPU. It is Linux only; Windows has no placed map and the ring stays Upload. The gsys heap's
+uniform pools stay Upload. The plan is in [uniform rings](uniform-rings.md).
 
 ### The NVIDIA check
 
@@ -333,6 +332,6 @@ lines must report 0 mismatches.
 
 ## Deferred
 
-- **Driver-mapped memory for other pools** (`VK_EXT_map_memory_placed`, as step 9 does for the uniform pools): CPU
+- **Driver-mapped memory for other pools** (`VK_EXT_map_memory_placed`, as step 9 does for the dynamic ring): CPU
   reads of device-local, host-visible memory are uncached, Windows has no placed map, and it cannot serve in-place
   files. Not planned.

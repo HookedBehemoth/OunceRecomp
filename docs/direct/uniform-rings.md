@@ -1,7 +1,7 @@
 # Uniform data and write-once rings
 
-This page describes how OoT's uniform data reaches the GPU. It weighs the two follow-ups to the Upload claims:
-copying only what the CPU wrote (step 8a), and letting the game write straight into memory the GPU reads (step 9). Read
+This page describes how OoT's uniform data reaches the GPU. It records why only the bound ranges are copied,
+and how the dynamic ring can later be written straight into memory the GPU reads (step 9). Read
 it before you patch a uniform writer, change how the gsys heap's general pools are claimed, or map back-end memory
 into the guest window. The claim kinds are in [pool claims](pool-claims.md), and the frame's threads are in
 [the frame loop](frame-loop.md).
@@ -79,64 +79,35 @@ memory, which is where NVIDIA and Windows fail.
 
 **CPU reads are the new cost.** Device-local, host-visible memory is write-combined: CPU reads go over PCIe and are
 uncached. The camera writers read back 11.4 KB of their blocks a frame, the general pools also hold report slots the
-CPU reads, and some writers may read before they modify. Each such pool stays Upload, or its reader is patched to read
+CPU reads, and some writers may read before they modify. A pool stays Upload, or its reader is patched to read
 a copy, before it can be mapped.
 
-## Step 8a or step 9
+## Writer reports for uniform data are not planned
 
-| | Step 8a: copy only what the CPU wrote | Step 9: write-once mapped pools |
-|---|---|---|
-| Gains | the staged bytes go from 0.55 to 0.97 MB to 40 to 60 KB a frame, and record-time marking goes for pools whose writers all report | every copy, mark and staging chunk for those pools, and the re-copy after the gate's signal |
-| Costs | a report per writer call; patches at about 15 to 25 sites | a new claim kind, a placed arena, and a census of CPU reads per pool |
-| Risks | a writer nobody patched leaves stale data, silently except under the check | CPU reads of write-combined memory; Linux only; NVIDIA's Linux support unconfirmed |
-| Platforms | all | Linux with the placed map; Windows stays on 8a |
+Upload copies only the ranges the game binds, 0.55 to 0.97 MB a frame in OoT, of which 40 to 60 KB is written
+(work/assets/native/uniform-buffers.md, section 1). Narrowing the copies to writer reports would need patches at about
+15 to 25 writers. A CPU profile of Kokiri puts the whole claims machinery at about 1.1 ms of CPU a frame, 0.76 ms of it
+in the sender thread's preparing of copies, and 1.95 MB a frame is staged. Narrowing could remove at most about 0.9 ms
+(realistically 0.4 to 0.6), all on the asynchronous sender thread, which rarely holds the frame. The bound-range copy
+stays, and a writer that needs a report uses `nvn_claim_write`.
 
-The Upload cost in Kokiri is 0.6 to 1 ms of host draw, but a profile put only about 0.12 ms of it on the submitting
-threads' user stacks (marking 48 µs, preparing 24 µs, copying 44 µs). The rest is on the sender and the Presentation
-Thread, outside the profile. Where that time goes decides how much either step can win back.
+## Step 9: the dynamic ring
 
-**Recommendation: step 8a first, then step 9 on Linux.** Windows, where the user is moving, needs 8a in any case,
-and its gains can be measured on the user's NVIDIA PC. Step 9 then removes what is left on Linux, where the placed map
-exists.
-
-### The writers 8a must cover
-
-The list in [pool claims](pool-claims.md) misses some writers. The complete list for OoT's uniform pools:
-
-- views: `ubo_view_camera_write`, `ubo_model_scene_view_write`, `ubo_view_pool_write`, `ubo_view_small_block_write`,
-  f_80680730, f_80425950;
-- environment: `ubo_env_block_write`;
-- models: `ubo_shape_block_write`, `ubo_param_dirty_write`, f_80bd1d00, f_800a8ae0, f_8051c740, f_800acfa0;
-- deformables: `draw_deformable_model`;
-- others: `sky_inscatter_ubo_write`, `vfx_emitter_ubo_write`, `vfx_emitter_c14_write`, and the copy-flip writers
-  f_80366e00, f_80493950 and f_8034cea0;
-- the dynamic ring: `ubo_ring_16mb`, one patch for its 72 callers.
-
-`ubo_object_bind_uniform`, once listed as a writer, is a binder.
-
-### Plan for step 8a
-
-1. Profile the sender and the Presentation Thread in Kokiri, with Upload and without it. No code. Name where the 0.5 to
-   0.9 ms goes.
-2. Report writes in the memcpy and memset replacements when the destination is in an Upload region. One lookup per
-   call covers the camera, environment and parameter memcpys. About 60 lines.
-3. Patch the remaining writers in the list above, one report per call, not per store. About 250 lines of patches.
-4. Switch each pool group to reported writes only once all its writers report, and keep the bound-range copy for the
-   rest. The check must show 0 mismatches in Kokiri and Market. About 150 lines in `vk_claims.cpp`.
-5. Measure the bytes staged and host draw before and after, on this PC and on the user's NVIDIA PC.
+Step 9 is a later, whole host replacement of `agl::utl::DynamicUniformBlockAllocator`'s alloc (see
+[engine classes](engine-classes.md)) writing into a mapped ring. It removes a further 0.1 to 0.3 ms, also on the sender
+thread. It is not a general programme of mapped pools: the gsys heap's uniform pools stay Upload. Mapped memory is
+Linux only, because Windows has no placed map; there the ring stays Upload.
 
 ### Plan for step 9
 
-1. Extend the census to count CPU reads of Upload pages by pool maker, and move the readers it finds (the camera
-   read-backs, the report slots) out of the mapped pools, or patch them to read a copy. About 80 lines.
+1. Count CPU reads of the ring's pages. Move the readers it finds out of the ring, or patch them to read a copy.
 2. Add a mapped claim kind. The runtime gives a mapped pool its CPU and GPU address in a range of the window that the
-   back end reserves. About 80 lines.
-3. In the back end, allocate arenas of device-local, host-visible, coherent memory, map each one whole at its range
-   with the placed map, point the address table's granules at the arena's buffer, and skip Upload tracking for them.
-   GPU writes there (report slots, storage) need a barrier to the host at the end of their submission. About 250 lines.
-4. Claim `gpu_pool_create`'s uniform pools and the dynamic ring as mapped where the device has the placed map, and as
-   Upload elsewhere. DKB has the same allocators.
-5. Measure as in step 8a.
+   back end reserves.
+3. In the back end, allocate an arena of device-local, host-visible, coherent memory, map it whole at its range with
+   the placed map, point the address table's granules at the arena's buffer, and skip Upload tracking for it.
+4. Replace the alloc by host code that writes into the ring and fences reuse against the GPU. Claim the ring as mapped
+   where the device has the placed map, and as Upload elsewhere. DKB has the same allocator.
+5. Measure the sender thread's CPU time and the bytes staged before and after.
 
 ## DKB
 

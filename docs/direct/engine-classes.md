@@ -117,9 +117,9 @@ in all three games) makes it, and `ubo_ring_16mb` (DKB: `ubo_ring_alloc`) bumps 
 in, and hands out the next slot. Both are functions; there are 72 calls of the alloc in OoT and 101 in DKB.
 
 No patch exists for it: the ring is claimed Upload, and its data is complete when the alloc returns. A host alloc
-that writes into a mapped ring and fences reuse against the GPU is the natural form of step 9 in
-[uniform rings](uniform-rings.md). It takes one address per game and no field table beyond the three offsets. Do it
-with step 9, not before.
+that writes into a mapped ring and fences reuse against the GPU is step 9 in [uniform rings](uniform-rings.md). It
+takes one address per game and no field table beyond the three offsets. It is a later replacement of the whole alloc,
+not a general mapped-pool programme.
 
 ## Readback objects
 
