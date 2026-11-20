@@ -38,3 +38,9 @@
 80bdaa50 bake_page_map                    # sparse textures: maps pages of one bake array (kind 0..2) from that kind's free physical page list; MapVirtual
 825e0d60 gfx_texture_copy_levels          # sparse textures: copies every level both textures have, layer by layer, with nvnCommandBufferCopyTextureToTexture (5 callers, not the bake path)
 800a05b0 world_map_env_sparse_init        # sparse textures: "allocCopyTextureSparseWork", a sparse work texture and its pages; "game::WorldInfoMapEnv::MepElementNonSparseCopy" job
+80264760 ubo_object_name                  # docs/direct/engine-classes.md: agl::UniformBlock's getName virtual ("agl::UniformBlock")
+80264550 ubo_object_pool_alloc            # docs/direct/engine-classes.md: as OoT's ubo_object_pool_alloc (object, heap, copies, elements); 221 bl and 70 tail b callers
+805f6530 ubo_object_block_alloc_b         # docs/direct/engine-classes.md: a GPU memory block (agl's GPUMemBlockBase) from the GPU heap (gpu_heap_suballoc), as OoT's ubo_object_block_alloc_b; 191 callers # ? the pool helper's share
+8025fe80 agl_ssb_set_storage              # docs/direct/engine-classes.md: as DKB's: a UniformBlock or ShaderStorageBlock given storage (cull_geometry_mgr_memory's +0x28 over its +0xb8 block)
+80ba4960 cull_geometry_mgr_memory         # docs/direct/engine-classes.md: gsys::GeometryCullingMgr's memory, as OoT's gpu_result_block_a_create: per-view blocks (ubo_object_pool_alloc), the +0xb8 block, the buffer at +0x28 over it (+0xe8 its size)
+80d86150 agl_dynamic_uniform_block_init   # docs/direct/engine-classes.md: agl::utl::DynamicUniformBlockAllocator's init (its string), its slots at +0x48 and its ring block (ubo_object_block_alloc_b) at +0x8

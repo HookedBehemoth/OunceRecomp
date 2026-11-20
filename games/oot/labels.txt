@@ -1240,3 +1240,7 @@
 80711820 probe_bake_records_write         # games/oot/patches/pools.c: the BakeProbe thread's copy of 0x80-byte records into [x0 + 0x300] and 0x20-byte ones into [x0 + 0x270] # ? what the records are
 806ace20 probe_calc_fields_write          # games/oot/patches/pools.c: writes six 8-byte fields into the f_80c5c450 block's current half (last store 0x806acfdc); calls probe_calc_block_init once # ?
 80c4e880 probe_storage_records_write      # games/oot/patches/pools.c: has its virtual (+0x88, bake::ModuleMgr's f_83ad7f40) write count x 32-byte records into the probe storage block, then flushes them
+# --- agl::UniformBlock and agl::ShaderStorageBlock (the "ubo object"; docs/direct/engine-classes.md; class names from their getName virtuals; TOTK's agl headers, aquacluck/ghidra_scripts dt_totk_gdt_export, are the same classes 8 bytes shorter)
+80521830 ubo_object_name                  # docs/direct/engine-classes.md: agl::UniformBlock's getName virtual ("agl::UniformBlock")
+834bc100 ssb_object_name                  # docs/direct/engine-classes.md: agl::ShaderStorageBlock's getName virtual ("agl::ShaderStorageBlock")
+80521840 ubo_object_set_buffer            # docs/direct/engine-classes.md: gives a UniformBlock its memory (x1: offset +0x20, size +0x28, pool +0x30, block +0x38; x2 the copies into +0x4a, x3 the elements into +0x48), the total size +0x44, the NVNbuffer at +0x50 and its GPU address +0x80, the CPU address +0x18; as DKB's agl_ssb_set_storage

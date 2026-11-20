@@ -251,3 +251,5 @@
 81663430 texdata_serialize_jpg            # docs/direct/pool-users.md: agl::utl::TextureDataSerializerJPG, as OoT's: a block, texdata_copy_to_buffer, JpegEncoder
 807365a0 agl_dynamic_uniform_block_init   # docs/direct/uniform-rings.md: as OoT's: agl::utl::DynamicUniformBlockAllocator's init (from f_807354a0; the instance g_826ee0a0), its ring block by ubo_object_block_alloc_b
 80119ec0 ubo_ring_alloc                   # docs/direct/uniform-rings.md: as OoT's ubo_ring_16mb: the DynamicUniformBlockAllocator's alloc, a compare-and-swap bump of +0x6c and a slot (+0x68) with a new NVNbuffer (101 callers)
+804ca2a0 ubo_object_name                  # docs/direct/engine-classes.md: agl::UniformBlock's getName virtual ("agl::UniformBlock")
+8163cf54 cull_geometry_slot_alloc         # docs/direct/engine-classes.md: as OoT's: GeometryCullingMgr's slice of the +0xb8 block (CAS bump on +0xf8, capacity +0xe8); OoT's cull_geometry_store_address inlined as a loop of address stores (0x8163d100)
