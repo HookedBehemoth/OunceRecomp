@@ -21,7 +21,8 @@ enum {
     NVN_CLAIM_KINDS
 };
 
-/* by: a fixed string naming the patch, for the log */
+/* by: a fixed string naming the patch, for the log. NVN_CLAIM_NONE names no kind: a scope whose end is a maker's end only,
+   its pools taking the kinds inside or around it */
 void nvn_claim_begin(int kind, const char *by);
 /* the same, with the kind the patch's rule gives each pool by its NVNmemoryPoolFlags and size (a generic allocator whose
    pools differ by access) */

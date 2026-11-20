@@ -211,6 +211,7 @@ CPU's invalidates (a CPU-cached pool the CPU invalidates is one whose GPU writes
 | GeometryCullingMgr: the views' arrays, the block | Readback, VRAM | each address store reported; the exposure record in the views' pool reported |
 | the vegetation task blocks (`cull_task_block_create`, object b's and `cull_task_block_fill`'s) | VRAM | the CPU's writes reported, among them a GPU address stored later into the shared pool ([pool users](pool-users.md)) |
 | the depth grid: constants, slots, the 0x5b40 block | Upload, Readback, VRAM | the per-frame camera copy into the slots reported |
+| the occlusion query's records and per-id state (`depth_grid_buffers_create`) | VRAM | filled once after their allocations, inside a scope over the maker that names no kind |
 | the probe storage block, both calc blocks (`gpu_calc_block_create`) | VRAM | bake::ModuleMgr's records, the streamed data, the BakeProbe records and the calc fields reported; the 150 MB block's fill is in its claim's scope |
 | the save picture (`texdata_serialize_jpg`) | Readback | a copy the CPU waits for, then encodes |
 | terrain streams, `f_82c24db0`'s block | Load once | written before their first use (the check finds no later write in Kokiri and Market); as Upload their bound ranges cost about 1 ms of host draw |
@@ -222,8 +223,6 @@ CPU's invalidates (a CPU-cached pool the CPU invalidates is one whose GPU writes
 The census (`debug.poolcensus`) and `games/oot/patches/pools.c` give each maker's claim and its writer patches. Still on
 layer 0 in OoT, each for a reason a run showed:
 
-- The occlusion query's records and per-id state (`depth_grid_buffers_create`). As VRAM the occlusion culling culls less
-  (the foliage pass 0.9 to 1.0 ms): a CPU write after creation that the census does not attribute must be reported first.
 - DKB (its headless run reaches only the title menus; `games/dkb/patches/pools.c`): `f_80743ba8`'s, `f_80732960`'s,
   `f_804ab060`'s and `f_807935d8`'s blocks are Host and `f_805723e8`'s general pool Upload. GeometryCullingMgr
   (`cull_geometry_mgr_memory`) stays on layer 0: its small pool is shared by other ubo objects (the census's reads and

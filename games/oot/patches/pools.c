@@ -239,11 +239,9 @@ PATCH_AT(0x81268558, word(0x94a7e786), after, none, pools_vfx_copy, as(x0, dst),
    claimed at their ubo_object_pool_alloc calls (docs/direct/pool-users.md). The grid's per-frame constants (0x390 x2) and
    the query constants (0x80 x4, x2) are Upload; the two grid slots (0x3970: the GPU writes the grid, report_reader_a reads
    the newest slot) Readback, with the CPU's per-frame camera copy into them (f_80365b70's memcpy of 0x2420 bytes at
-   +0x1550, from job_calc_runner) reported; the 0x5b40 block VRAM. The query records (5000 x 0x90) and the per-id state
-   (5000 x 16) as VRAM make the occlusion culling cull
-   less (the foliage pass 0.9 -> 1.0 ms, rt9 0.15 -> 0.25 ms in Kokiri), so a CPU write after creation (an id's release or
-   reuse, unattributed in the census) must reach them: on layer 0 until that writer is reported. The query's read block
-   (0x80366788) is Readback above */
+   +0x1550, from job_calc_runner) reported; the 0x5b40 block VRAM. The query records (5000 x 0x90, zeroed) and the per-id
+   state (5000 x 16, 1e6 each) are VRAM: the GPU's after their fill at creation, which follows their allocations inside
+   depth_grid_buffers_create (the scope below). The query's read block (0x80366788) is Readback above */
 PATCH_AT(0x80c5a8dc, word(0x97e31b35), before, none, pools_grid_consts) { nvn_claim_begin(NVN_CLAIM_UPLOAD, "depth_grid_slots_create constants"); }
 PATCH_AT(0x80c5a8e0, word(0xd291c729), before, none, pools_grid_consts_end) { nvn_claim_end(); }
 PATCH_AT(0x80c5aa28, word(0x97e31ae2), before, none, pools_grid_slot_a) { nvn_claim_begin(NVN_CLAIM_READBACK, "depth_grid_slots_create slots"); }
@@ -254,9 +252,14 @@ PATCH_AT(0x80c5ab24, word(0x97e31aa3), before, none, pools_grid_block) { nvn_cla
 PATCH_AT(0x80c5ab28, word(0xf9559268), before, none, pools_grid_block_end) { nvn_claim_end(); }
 PATCH_AT(0x80366694, word(0x9406ebc7), before, none, pools_query_consts) { nvn_claim_begin(NVN_CLAIM_UPLOAD, "depth_grid_buffers_create constants"); }
 PATCH_AT(0x80366698, word(0x91002260), before, none, pools_query_consts_end) { nvn_claim_end(); }
-PATCH_AT(0x803666d0, word(0x9406ebb8), before, none, pools_query_records) { nvn_claim_begin(NVN_CLAIM_LAYER0, "depth_grid_buffers_create records"); }
+/* depth_grid_buffers_create fills its records (memset, 0x8036672c) and state (1e6, 0x80366814) after their allocations:
+   a scope over the whole function, naming no kind, ends the maker's writes there */
+PATCH_FUNC(0x80366600, word(0xd503237f), body(0x54947c02491b4cf1), aapcs, x0, pools_query_object, orig) {
+    CLAIM("depth_grid_buffers_create", NVN_CLAIM_NONE);
+}
+PATCH_AT(0x803666d0, word(0x9406ebb8), before, none, pools_query_records) { nvn_claim_begin(NVN_CLAIM_VRAM, "depth_grid_buffers_create records"); }
 PATCH_AT(0x803666d4, word(0xb9400688), before, none, pools_query_records_end) { nvn_claim_end(); }
-PATCH_AT(0x803667c4, word(0x9406eb7b), before, none, pools_query_state) { nvn_claim_begin(NVN_CLAIM_LAYER0, "depth_grid_buffers_create state"); }
+PATCH_AT(0x803667c4, word(0x9406eb7b), before, none, pools_query_state) { nvn_claim_begin(NVN_CLAIM_VRAM, "depth_grid_buffers_create state"); }
 PATCH_AT(0x803667c8, word(0xb9400688), before, none, pools_query_state_end) { nvn_claim_end(); }
 PATCH_AT(0x80365c00, word(0x94e3f1dc), after, none, pools_grid_camera, as(x0, dst)) { nvn_claim_write(dst, 0x2420); }
 

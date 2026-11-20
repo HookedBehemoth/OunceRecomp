@@ -54,8 +54,8 @@ DKB has the same object: `cull_geometry_mgr_memory` (0x804c0d84), made by 0x804b
 | CPU users | `cull_gpu_dispatch` gathers up to 2000 pending queries a frame, writes their 16-byte records into the +0xf0 half, flushes, dispatches, and later invalidates and reads that half. |
 | GPU users | The dispatch's program reads the records and the constants, and keeps per-id state in +0x8 and +0x180 (the occlusion-culling program writes a 0x14000 buffer; see work/assets/native/readback.md). |
 | Flow per frame | CPU writes the query records, then the GPU culls and writes results, then the CPU reads them in a later frame. |
-| Desktop match | +0xf0 is Readback (claimed today). +0x8 and +0x180 fit VRAM: the CPU writes them only at creation, and a CPU-visible VRAM pool is copied once. |
-| Confidence and census | Medium. Confirm that no CPU write reaches +0x8 or +0x180 after creation (an id's release or reuse would be one). |
+| Desktop match | +0xf0 is Readback. +0x8 and +0x180 are VRAM. |
+| What blocked it | The CPU writes +0x8 and +0x180 only once, at creation, but after the allocation calls the claims were scoped to: the memset of the records (lr 0x8036672c) and the 1e6 fill of the state (lr 0x80366814). The census named both. With a pool made on another thread's frame, a submission's whole copy came first, and the state started at 0 instead of 1e6, so fewer queries were culled. A scope over the whole of `depth_grid_buffers_create` that names no kind now ends the maker's writes there. |
 
 ## The GPU culling lists (`cull_gpu_object_a_create`, `cull_gpu_object_b_create`, `cull_gpu_results_create`)
 
@@ -142,6 +142,5 @@ traced yet.
    holds the exposure record, whose writes are reported), the block VRAM.
 3. **Vfx3:** the plugin setters, the new-buffer fill and the dirty-range copy report their writes.
 4. **The probe module:** the storage block and both calc blocks are VRAM, their writers reported.
-5. **The depth grid:** its slots are Readback with the camera copy reported. The query's records and per-id state stay on
-   layer 0 until the writer that the census does not attribute is found.
+5. **The depth grid:** its slots are Readback with the camera copy reported; the query's records and per-id state VRAM.
 6. **The per-frame dedicated pool:** open.
