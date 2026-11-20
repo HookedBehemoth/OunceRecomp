@@ -68,6 +68,8 @@ struct Sub {
     uint64_t frame = 0;   // (presents before its hand-in)
     std::vector<ReadbackItem> readbacks;   // (the GPU's writes copied into guest memory once it completes)
     ClaimSub* claims = nullptr;   // (its copies into the claims' regions, prepared by the sender just before it submits them)
+    bool claims_due = false;   // (a copy's command buffer leads the pending chunk: its first, or one after a held wait)
+    bool wait_held = false;    // (held at the event wait it is at)
     // (a present: its GPU work runs here, in its queue's order)
     bool present = false;
     nvn_tex tex{};
@@ -137,10 +139,17 @@ struct Chunk {
     uint64_t wait = 0, value = 0;
     size_t first = 0, n = 0;
 };
+/// a submission's copy into the claims' regions, prepared by the sender just before it submits the chunk that starts with
+/// it: in queue order, off the game's threads. Its command buffer is the sender's, in the place of a null one
+struct Prep {
+    ClaimSub* s;
+    bool after_wait;
+};
 struct Batch {
     std::unique_lock<std::mutex> lk;
     std::vector<Chunk> chunks;
     std::vector<VkCommandBuffer> cbs;
+    std::vector<Prep> preps;
 };
 Batch batch;
 std::atomic<int64_t> st_batch_calls{0};
@@ -153,11 +162,17 @@ std::condition_variable& fifo_cv = *new std::condition_variable;
 struct Handed {
     std::vector<Chunk> chunks;
     std::vector<VkCommandBuffer> cbs;
+    std::vector<Prep> preps;
 };
 std::deque<Handed>& handed = *new std::deque<Handed>;
 
 /// One handed-over batch as one vkQueueSubmit2 (queue_mu held)
-void submit_handed(const Handed& h) {
+void submit_handed(Handed& h) {
+    size_t at = 0;
+    for (const Prep& p : h.preps) {
+        while (h.cbs[at]) at++;
+        h.cbs[at] = claims_sub_prepare(p.s, p.after_wait);
+    }
     const size_t k = h.chunks.size();
     std::vector<VkSubmitInfo2> si(k, VkSubmitInfo2{VK_STRUCTURE_TYPE_SUBMIT_INFO_2});
     std::vector<VkSemaphoreSubmitInfo> sem(2 * k, VkSemaphoreSubmitInfo{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO});
@@ -198,10 +213,10 @@ void send_handed() {
     }
 }
 /// The work of values just given handed over (order_mu held: pushed in value order)
-void hand_over(std::vector<Chunk>&& chunks, std::vector<VkCommandBuffer>&& cbs) {
+void hand_over(std::vector<Chunk>&& chunks, std::vector<VkCommandBuffer>&& cbs, std::vector<Prep>&& preps = {}) {
     {
         std::lock_guard fl(fifo_mu);
-        handed.push_back({std::move(chunks), std::move(cbs)});
+        handed.push_back({std::move(chunks), std::move(cbs), std::move(preps)});
     }
     fifo_cv.notify_one();
 }
@@ -372,8 +387,8 @@ void batch_flush() {
         batch.cbs.insert(batch.cbs.begin() + (long)(batch.chunks[k - 1].first + batch.chunks[k - 1].n), gt.end[slot]);
         batch.chunks[k - 1].n++;
     }
-    if (k) hand_over(std::move(batch.chunks), std::move(batch.cbs));
-    batch.chunks.clear(), batch.cbs.clear();
+    if (k) hand_over(std::move(batch.chunks), std::move(batch.cbs), std::move(batch.preps));
+    batch.chunks.clear(), batch.cbs.clear(), batch.preps.clear();
     batch.lk.unlock();
     if (in_cpu_signal) st_sig_flush_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - t0).count(), st_sig_flush_n++;
 }
@@ -412,7 +427,7 @@ void send_chunk(Queue& q, Sub& s, bool last) {
     }
     st_age_sent[std::min<uint64_t>(present_count() - std::min(present_count(), s.frame), 3)].fetch_add(1, std::memory_order_relaxed);
     s.last_value = batch_add(wait_value, s.wait_next && !s.pending.empty(), s.pending.data(), (uint32_t)s.pending.size());
-    if (s.claims && !s.chunks) claims_sub_prepare(s.claims, s.last_value);   // (its copies, in its first chunk: recorded now)
+    if (s.claims && s.claims_due) batch.preps.push_back({s.claims, s.chunks > 0}), s.claims_due = false;   // (its copies, in this chunk)
     if (s.wait_next && s.pending.empty()) return;   // (nothing after the wait yet: the barrier goes with the next chunk)
     st_cbs += (int64_t)s.pending.size(), st_chunks++;
     s.pending.clear();
@@ -429,8 +444,8 @@ bool run(Queue& q, Sub& s, bool& moved) {
             return false;
         }
     }
-    if (s.claims && !s.chunks && !s.at && s.pending.empty())   // (its copies before its first work)
-        s.pending.push_back(claims_sub_buffer(s.claims));
+    if (s.claims && !s.chunks && !s.at && s.pending.empty() && !s.claims_due)   // (its copies before its first work: see Prep)
+        s.pending.push_back(VK_NULL_HANDLE), s.claims_due = true;
     for (; s.at < s.items.size(); s.at++, moved = true) {
         const SubItem& it = s.items[s.at];
         if (it.cb) {
@@ -456,10 +471,15 @@ bool run(Queue& q, Sub& s, bool& moved) {
             host->gpu_read(o.addr, &have, 4);
             if (!event_wait_met(have, o.mode, o.value)) {
                 send_chunk(q, s, false);   // (what came before it may run meanwhile)
+                s.wait_held = true;
                 return false;
             }
             st_waits_met++;
             send_chunk(q, s, false);
+            // (held until the CPU's signal met it now: what the CPU wrote since the first copy, before its signal, copied before
+            // the work after it. A wait another queue's work meets orders nothing for the CPU)
+            if (s.wait_held && in_cpu_signal && s.claims && s.chunks) s.pending.push_back(VK_NULL_HANDLE), s.claims_due = true;
+            s.wait_held = false;
             s.wait_next = true;
             break;
         }

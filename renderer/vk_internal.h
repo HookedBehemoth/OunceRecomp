@@ -206,14 +206,14 @@ bool claims_address(List* l, ClaimUse use, uint64_t gpu, uint64_t size, VkDevice
 bool claims_holds(uint64_t gpu, uint64_t size);   // (guest [gpu, gpu + size) is in one region; no error when not)
 void claims_stats(char* out, size_t cap);
 /// A submission's copies into the claims' regions (Upload, load once) and the check's: made at the guest's submit, its
-/// lists referenced until they are prepared
+/// lists referenced until it completes
 struct ClaimSub;
 ClaimSub* claims_sub_new(List* const* lists, size_t n);
-/// The command buffer its first chunk starts with (vk_sync.cpp's mu held)
-VkCommandBuffer claims_sub_buffer(ClaimSub* s);
-/// When its first chunk (value first) goes into the batch (vk_sync.cpp's mu held): the lists' ranges merged by region,
-/// the guest bytes copied to staging, and the buffer recorded
-void claims_sub_prepare(ClaimSub* s, uint64_t first);
+/// Just before the chunk it leads is submitted, by the sender in queue order: the command buffer of a copy, recorded. At
+/// its first chunk, the ranges its lists read, their guest bytes through staging; after an event wait it was held at
+/// (after_wait), the ranges of those whose guest bytes changed since, so the CPU's writes before the signal that met the
+/// wait reach the work after it, as on the console
+VkCommandBuffer claims_sub_prepare(ClaimSub* s, bool after_wait);
 /// Its last timeline value: the check compared once it completes, then freed
 void claims_sub_sent(ClaimSub* s, uint64_t value);
 /// (claimuse) a shader reaches guest addr through an address stored in a buffer (how: where the address was)

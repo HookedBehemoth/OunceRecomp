@@ -356,6 +356,7 @@
 805215b0 ubo_object_pool_alloc            # work/assets/native/uniform-buffers.md, work/assets/native/second-map.md: per-object uniform pool (28 KB per render view)
 802a8fc0 ubo_ring_16mb                    # work/assets/native/alloc-transfer.md: wraps slots of the 16 MB ring 0x102e645000
 8005e7c0 ubo_ring_alloc_helper            # work/assets/native/uniform-buffers.md, work/assets/native/engine-layers.md: helper of the per-draw ring pool f_809de920
+814f2c80 ubo_param_dirty_write            # docs/direct/pool-claims.md: writes a block's changed parameters (a dirty bit mask over its parameter table; each through its own writer or a memcpy) into its uniform memory; memwatch saw it write +0x1b0 of a 0x100 block in a gpu_pool_create 1 MB pool during the next frame's calc jobs (job_calc_runner -> f_8009b7b0) # ? which objects
 81500200 ubo_shape_block_write            # work/assets/native/uniform-buffers.md, work/assets/native/cpu-to-gpu.md: shape / material / skeleton pool writer
 83647b20 ubo_transient_buffer_wrap        # work/assets/native/alloc-transfer.md, work/assets/native/nvn-callpaths.md: transient NVNbuffer Init/GetAddress/Finalize
 806dc520 ubo_view_camera_write            # work/assets/native/alloc-transfer.md, work/assets/native/uniform-buffers.md: view (camera) pools: memcpys 8.4 KB a frame; the parked camera jitter's three sites (docs/parked-patches.md)

@@ -41,8 +41,9 @@ what the GPU added.
 ## Where Upload data comes from
 
 The back end sees every uniform, vertex, index and indirect range a frame binds, at record time. Those ranges are the
-default Upload signal: each list notes them when it records them, and the guest's submit marks them in the region's
-dirty bitmap, which the next submission's first chunk copies in, before the work that reads them. The game's flush and invalidate calls are never a signal. Patches report writes only where binds cannot:
+default Upload signal: each list notes them when it records them, and the submission's first chunk copies them in,
+before the work that reads them. The game's flush and invalidate calls are never a signal. Patches report writes only
+where binds cannot:
 
 - data shaders reach through stored pointers (storage buffers by address), reported by the writer or its allocator;
 - load-once data, such as the in-place files' vertex and index pools (a Load once claim), copied a page at a time
@@ -52,11 +53,23 @@ dirty bitmap, which the next submission's first chunk copies in, before the work
 
 **How the copies run.** An Upload or Readback claim's region is device-local, in the same arenas as VRAM claims, and is
 copied whole from guest memory at the first submission after its pool is made. An Upload region keeps a bitmap with a
-bit per 16 bytes. At the guest's submit, the ranges the submission's lists read set their bits; no sorting or merging
-of ranges is needed. When a submission's first chunk goes to the queue, every set bit is cleared and its bytes are
-copied from guest memory into a host-visible staging chunk and from there into the regions, before its work. The copy
-can belong to an earlier submission than the one that read the range: it still runs after the guest's submit, and
-before the reader's work. A staging chunk is reused once the GPU is past its submission.
+bit per 16 bytes. The sender thread prepares a submission's copies just before it submits the submission's first chunk,
+in queue order. It marks the ranges the submission's lists read in the bitmaps, then clears every marked bit and
+copies its bytes from guest memory into a host-visible staging chunk, and from there into the regions, before the
+work. No sorting or merging of ranges is needed. A staging chunk is kept until its submission completes.
+
+**Event waits the CPU signals.** OoT's frame starts with a gate: the Presentation Thread submits the frame with a GPU
+wait on an event, and the main thread signals that event from the CPU at the frame's end. On the console, everything
+the CPU writes before its signal is visible to the work after the wait. The game relies on it: about ten uploaded
+ranges a frame in Kokiri (in `gpu_pool_create`'s per-view and uniform pools) change between the submit and the signal.
+So when the CPU's signal meets a wait that held a submission, the sender compares the ranges that submission copied
+with guest memory, 256 bytes at a time, and copies the changed blocks again before the work after the wait. Waits that
+another queue's work meets get no such copy: they order nothing for the CPU.
+
+The writes the check still finds after the signal and before the submission completes (about one a frame) are races
+in the game itself: they come from the next frame's calc jobs (`job_calc_runner`, through `f_814f2c80`, the material
+parameter writer), which run while the GPU draws the frame. The console GPU reads the new value only if its draw comes
+after the write. The next frame's submit copies them, so they need no patch.
 
 **Pools both uploaded and written by the GPU.** A page that any GPU work writes (a storage buffer the program writes,
 a copy's or a fill's destination, a report) belongs to the GPU from the submission that first writes it: bound
@@ -71,7 +84,9 @@ each submission's lists note the guest ranges they use (uniform, vertex, index, 
 region. When its first chunk goes, the guest bytes of the ranges the GPU only reads are kept, and a copy of what
 their regions hold runs before its work; once it completes the two are compared, and a mismatch is an error line and a
 strict event that names the range, its use, the pool with its claim and claiming patch, and the lists. It uses no page
-protection. It also confirms the load-once copies. Ranges in layer-0 claims that any GPU work writes are left out.
+protection. It also confirms the load-once copies. Ranges in layer-0 claims that any GPU work writes are left out. Once
+the submission completes, the check also compares the bytes it copied with guest memory and logs the first ranges the
+CPU wrote meanwhile, with their count in its summary line.
 
 **The measurement.** `debug.claimuse` prints, every 600 presents, the bytes bound a frame per pool group (claiming
 patch, flags, claim) and per use, the largest ranges, the pages that changed since their pool was made and between
