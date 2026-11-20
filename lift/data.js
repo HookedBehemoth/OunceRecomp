@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795202391747,
+  "lastUpdate": 1795202405531,
   "repoUrl": "https://github.com/HookedBehemoth/OunceRecomp",
   "entries": {
     "lift oot": [
@@ -416,6 +416,144 @@ window.BENCHMARK_DATA = {
             "value": 267.526,
             "unit": "s",
             "extra": "4 jobs on Intel(R) Xeon(R) 6975P-C"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "luis@scheurenbrand.me",
+            "name": "HookedBehemoth",
+            "username": "HookedBehemoth"
+          },
+          "committer": {
+            "email": "luis@scheurenbrand.me",
+            "name": "HookedBehemoth",
+            "username": "HookedBehemoth"
+          },
+          "distinct": true,
+          "id": "3de2091a21d362099af5f1bae0ebcae8f5257ba0",
+          "message": "culling lists: object a's resets are buffer clears recorded at the culling pass, before its work, and the CPU stores and fills go. pass_vegetation_compute's compute (frame_compute_list_begin's list, the culling calls cull_pass_calls_a, cull_pass_vegetation, cull_pass_calls_c) is the only GPU work that writes object a's lists and headers (CU_STORAGE_WRITTEN in a run); a row after frame_compute_list_begin (0x80291310, its command buffer at sp + 0xe8) and one on the other path (0x802917c0, x19's) record nvnCommandBufferClearBuffer of every copy a flip made current since the pass last ran: counts 0, the set count as it was at the flip, mesh records {0, 1, 1, w3}, dispatch records {0, 1, 1, 0}. cull_gpu_lists_reset's host code flips and reads the copied-out records only; a copy no pass reset since it was last current reads 0 (host state), no guest store. game_indirect_mesh_draw and its runtime hook go: the culling records get y = z at the pass, and actor_records_read_b's CPU records {0, n, n, 0} get 1 where n = 0 at a row after its stores. Object b's gather lists stay on fills after actor_records_read_a's zeroes: render-job mesh draws write two of them and their order against the culling pass is not established; the patch model cannot remove the game's stores. Kokiri bridge (outdoor, frame_rate 60): counts as before (op 3 6068 vs 6076, op 8 874 vs 873, no zeros, no doubling, 41 indirect mesh draws a frame); with the job sync fix before it, 0 one-present vegetation glitches in 40 s (before the fix the in-pass resets showed the race as pale ivy instead of missing ivy). ounce test oot PASS\n\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>",
+          "timestamp": "2026-11-20T19:54:49+01:00",
+          "tree_id": "db15de27772641a3477c9566d3f85a23f9f191f6",
+          "url": "https://github.com/HookedBehemoth/OunceRecomp/commit/3de2091a21d362099af5f1bae0ebcae8f5257ba0"
+        },
+        "date": 1795202405231,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "compile.sum_s",
+            "value": 1503.41,
+            "unit": "s",
+            "extra": "4 jobs on INTEL(R) XEON(R) PLATINUM 8573C"
+          },
+          {
+            "name": "functions.found",
+            "value": 188621,
+            "unit": "count",
+            "extra": "4 jobs on INTEL(R) XEON(R) PLATINUM 8573C"
+          },
+          {
+            "name": "functions.lifted",
+            "value": 188621,
+            "unit": "count",
+            "extra": "4 jobs on INTEL(R) XEON(R) PLATINUM 8573C"
+          },
+          {
+            "name": "functions.skipped",
+            "value": 0,
+            "unit": "count",
+            "extra": "4 jobs on INTEL(R) XEON(R) PLATINUM 8573C"
+          },
+          {
+            "name": "lift.cpu_s",
+            "value": 56.24,
+            "unit": "s",
+            "extra": "4 jobs on INTEL(R) XEON(R) PLATINUM 8573C"
+          },
+          {
+            "name": "lift.discovery_s",
+            "value": 0.768,
+            "unit": "s",
+            "extra": "4 jobs on INTEL(R) XEON(R) PLATINUM 8573C"
+          },
+          {
+            "name": "lift.image_s",
+            "value": 0.363,
+            "unit": "s",
+            "extra": "4 jobs on INTEL(R) XEON(R) PLATINUM 8573C"
+          },
+          {
+            "name": "lift.partitions_s",
+            "value": 9.912,
+            "unit": "s",
+            "extra": "4 jobs on INTEL(R) XEON(R) PLATINUM 8573C"
+          },
+          {
+            "name": "lift.plan_s",
+            "value": 0.397,
+            "unit": "s",
+            "extra": "4 jobs on INTEL(R) XEON(R) PLATINUM 8573C"
+          },
+          {
+            "name": "lift.summaries_s",
+            "value": 4.105,
+            "unit": "s",
+            "extra": "4 jobs on INTEL(R) XEON(R) PLATINUM 8573C"
+          },
+          {
+            "name": "lift.wall_s",
+            "value": 16.119,
+            "unit": "s",
+            "extra": "4 jobs on INTEL(R) XEON(R) PLATINUM 8573C"
+          },
+          {
+            "name": "objects",
+            "value": 83,
+            "unit": "count",
+            "extra": "4 jobs on INTEL(R) XEON(R) PLATINUM 8573C"
+          },
+          {
+            "name": "objects.bytes",
+            "value": 171640784,
+            "unit": "bytes",
+            "extra": "4 jobs on INTEL(R) XEON(R) PLATINUM 8573C"
+          },
+          {
+            "name": "objects.cold_bytes",
+            "value": 171640784,
+            "unit": "bytes",
+            "extra": "4 jobs on INTEL(R) XEON(R) PLATINUM 8573C"
+          },
+          {
+            "name": "objects.hot_bytes",
+            "value": 0,
+            "unit": "bytes",
+            "extra": "4 jobs on INTEL(R) XEON(R) PLATINUM 8573C"
+          },
+          {
+            "name": "partitions",
+            "value": 76,
+            "unit": "count",
+            "extra": "4 jobs on INTEL(R) XEON(R) PLATINUM 8573C"
+          },
+          {
+            "name": "total.cpu_s",
+            "value": 1505.93,
+            "unit": "s",
+            "extra": "4 jobs on INTEL(R) XEON(R) PLATINUM 8573C"
+          },
+          {
+            "name": "total.peak_mb",
+            "value": 2947.723,
+            "unit": "MB",
+            "extra": "4 jobs on INTEL(R) XEON(R) PLATINUM 8573C"
+          },
+          {
+            "name": "total.wall_s",
+            "value": 388.624,
+            "unit": "s",
+            "extra": "4 jobs on INTEL(R) XEON(R) PLATINUM 8573C"
           }
         ]
       }
