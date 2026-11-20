@@ -11,7 +11,7 @@ use crate::image::Image;
 use crate::nso::Nso;
 use crate::patch::{self, Horizon, PatchSet, Row, Where};
 use crate::plan::{self, Plan};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// where the inputs are
@@ -64,7 +64,10 @@ pub struct Base {
     pub nvn: Vec<String>,
     /// the image's SDK version, and how many declarations of other SDKs the scan's set left out
     pub sdk: ((u32, u32, u32), usize),
+    /// the image, the word patches applied
     pub img: Image,
+    /// {pc: the game's word} of the word patches applied to img
+    pub original: BTreeMap<u64, u32>,
     pub facts: Facts,
     /// the image's entries and those ADR / ADRP+ADD form outside unwind-covered code
     pub entries: Vec<u64>,
@@ -116,7 +119,8 @@ impl Base {
         let (hle, stubbed) = eden::hle_set(&mods, &implemented, &horizon.os_namespaces)?;
         let nvn = eden::nvn_exports(&mods, &implemented);
         times.load = t0.elapsed().as_secs_f64() - times.scan;
-        let (img, facts) = eden::build(mods, &hle, &stubbed)?;
+        let (mut img, facts) = eden::build(mods, &hle, &stubbed)?;
+        let original = patch::apply_words(&mut img, &ps.words)?;
         times.build = t0.elapsed().as_secs_f64() - times.load - times.scan;
         let spans = img.fde_spans(&facts.eh_frame_hdr);
         let mut entries = facts.entries.clone();
@@ -124,7 +128,7 @@ impl Base {
         entries.extend(img.code_address_refs(&spans).into_iter().filter(|&e| img.in_code(e) && !have.contains(&e)));
         times.image = t0.elapsed().as_secs_f64();
         let hot: HashSet<u64> = game.hot_list()?.into_iter().collect();
-        let parts = Inputs { game, npdm, ps, horizon, implemented, hle, stubbed, nvn, sdk, img, facts, entries, hot };
+        let parts = Inputs { game, npdm, ps, horizon, implemented, hle, stubbed, nvn, sdk, img, original, facts, entries, hot };
         Ok(Base::of(parts, o, times))
     }
 
@@ -138,8 +142,8 @@ impl Base {
             let found = (d.funcs.len(), d.jt.len(), d.jt_index.len(), d.plt.len(), d.setjmp_owner.len(), d.rounds as usize + 1);
             (Plan::new(&d, &i.img, &i.hot), found)
         };
-        let Inputs { game, npdm, ps, horizon, implemented, hle, stubbed, nvn, sdk, img, facts, entries, .. } = i;
-        Base { game, opts: o.clone(), npdm, ps, horizon, implemented, hle, stubbed, nvn, sdk, img, facts, entries, plan, found, times }
+        let Inputs { game, npdm, ps, horizon, implemented, hle, stubbed, nvn, sdk, img, original, facts, entries, .. } = i;
+        Base { game, opts: o.clone(), npdm, ps, horizon, implemented, hle, stubbed, nvn, sdk, img, original, facts, entries, plan, found, times }
     }
 
     /// a base of synthetic code: (entry, words) functions in one module, the declarations of texts, no hooks (the
@@ -166,7 +170,9 @@ impl Base {
             segments: vec![Segment { name: ".text".into(), addr: lo, size: hi - lo }],
             bss: [0, 0],
         };
-        let img = Image { base: lo, end: hi, mem, modules: vec![module], hooks: Vec::new(), code: vec![(lo, hi)] };
+        let ps = patch::scan_texts(texts)?;
+        let mut img = Image { base: lo, end: hi, mem, modules: vec![module], hooks: Vec::new(), code: vec![(lo, hi)] };
+        let original = patch::apply_words(&mut img, &ps.words)?;
         let mut entries: Vec<u64> = code.iter().map(|c| c.0).collect();
         entries.sort_unstable();
         let facts = Facts {
@@ -191,7 +197,6 @@ impl Base {
             local_continuations: Vec::new(),
             assets: Default::default(),
         };
-        let ps = patch::scan_texts(texts)?;
         let horizon = Horizon::load(root)?;
         let implemented = ps.hle_symbols();
         let inputs = Inputs {
@@ -205,6 +210,7 @@ impl Base {
             nvn: Vec::new(),
             sdk: ((0, 0, 0), 0),
             img,
+            original,
             facts,
             entries,
             hot: HashSet::new(),
@@ -216,6 +222,19 @@ impl Base {
     /// the lifted function at e: (pcs, words)
     pub fn body(&self, e: u64) -> Option<&plan::PBody> {
         self.plan.bodies.binary_search_by_key(&e, |b| b.entry).ok().map(|k| &self.plan.bodies[k])
+    }
+
+    /// a body's words as the game has them (each word patch's original): what word(...) and body(...) assert
+    pub fn game_words(&self, b: &plan::PBody) -> Vec<u32> {
+        let mut w = b.words.clone();
+        if !self.original.is_empty() {
+            for (k, pc) in b.pcs.iter().enumerate() {
+                if let Some(&o) = self.original.get(pc) {
+                    w[k] = o;
+                }
+            }
+        }
+        w
     }
 
     /// the lifted functions whose body holds pc, by entry
@@ -261,8 +280,9 @@ impl Base {
             r.func = hits[0];
             out.extend(self.row_errors(&r, &entry_set)?.into_iter().map(|m| (r.at.clone(), m)));
         }
-        let (_, ferrs) = patch::func_errors(ps, &self.facts.exports, &|a| self.body(a).map(|b| (b.pcs.clone(), b.words.clone())));
+        let (found, ferrs) = patch::func_errors(ps, &self.facts.exports, &|a| self.body(a).map(|b| (b.pcs.clone(), self.game_words(b))));
         out.extend(ferrs);
+        out.extend(self.word_errors(ps, &found));
         out.extend(self.errors_effects(ps));
         Ok(out)
     }
@@ -285,7 +305,33 @@ impl Base {
             (false, "instead") => (Some(&self.plan.jt), None),
             _ => (None, None),
         };
-        patch::errors(r, &b.pcs, &b.words, jt, ents)
+        patch::errors(r, &b.pcs, &b.words, self.original.get(&r.pc).copied(), jt, ents)
+    }
+
+    /// the word patches' errors against the plan: each in one lifted function, a skip's target in the same one, and
+    /// that function's body run (no PATCH_FUNC without orig replaces it). A set other than the one this base's image
+    /// was patched with is an error too: a word patch needs a new base
+    fn word_errors(&self, ps: &PatchSet, funcs: &BTreeMap<u64, &patch::Func>) -> Vec<(Where, String)> {
+        let mut out = Vec::new();
+        for w in &ps.words {
+            if !self.ps.words.iter().any(|a| a.pc == w.pc && a.new == w.new) {
+                out.push((w.at.clone(), format!("{} at {:#x}: not in the image this lift was built with", w.kind, w.pc)));
+                continue;
+            }
+            let hits = self.containing(w.pc);
+            if hits.len() != 1 {
+                out.push((w.at.clone(), format!("{} at {:#x}: in {} lifted functions, not one", w.kind, w.pc, hits.len())));
+                continue;
+            }
+            let f = hits[0];
+            if let Some(to) = w.to.filter(|&t| !self.containing(t).contains(&f)) {
+                out.push((w.at.clone(), format!("PATCH_SKIP at {:#x}: {to:#x} is not in its function f_{f:08x}", w.pc)));
+            }
+            if let Some(p) = funcs.get(&f).filter(|p| !p.orig) {
+                out.push((w.at.clone(), format!("{} at {:#x}: f_{f:08x} is replaced by {} at {}:{} without orig: its body never runs", w.kind, w.pc, p.kind, p.at.0, p.at.1)));
+            }
+        }
+        out
     }
 
     /// the patches of ps as the lift reads them; the first error stops (Base::errors lists them all)
@@ -305,7 +351,10 @@ impl Base {
                 }
             }
         }
-        let found = patch::check_funcs(ps, &self.facts.exports, &|a| self.body(a).map(|b| (b.pcs.clone(), b.words.clone())))?;
+        let found = patch::check_funcs(ps, &self.facts.exports, &|a| self.body(a).map(|b| (b.pcs.clone(), self.game_words(b))))?;
+        if let Some((w, m)) = self.word_errors(ps, &found).first() {
+            return patch::fail(w, m);
+        }
         if let Some((w, m)) = self.errors_effects(ps).first() {
             return patch::fail(w, m);
         }
@@ -382,6 +431,7 @@ struct Inputs {
     nvn: Vec<String>,
     sdk: ((u32, u32, u32), usize),
     img: Image,
+    original: BTreeMap<u64, u32>,
     facts: Facts,
     entries: Vec<u64>,
     hot: HashSet<u64>,

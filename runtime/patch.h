@@ -47,6 +47,13 @@
        lifted IR doing the same (ounce/lift answers_ir). An import the game calls that the host neither
        implements nor answers stops the game, naming it (ounce/lift/src/gen.rs gen_stubs; a direct call of it is noreturn):
        each answer is one the game was seen to need, with the reason it is enough.
+     PATCH_WORD(pc, word(W), new, "why");   PATCH_NOP(pc, word(W), "why");   PATCH_SKIP(pc, word(W), to, "why");
+       the instruction at pc (W in the game, checked at the build) is another one in the image the lifter decodes and the
+       run loads, as if the binary had been edited: the word new; a NOP (0xd503201f); a B to `to`, an address of the same
+       function within 128 MiB. No host function. What the replaced or skipped code computed is the declaration's
+       author's to keep. One word patch per pc; a PATCH_AT at a patched pc runs before it (mode before) and asserts the
+       game's word; word(...) and body(...) of every declaration assert the game's words; a function with a word patch
+       is lifted unless a PATCH_FUNC without orig replaces it (an error).
      SVC(number, name, inputs, results) { body }
        the host's answer to the guest's `svc #number` (number: 0x and two upper-case hex digits), unsigned __int128
        hos_svc_<number>(x0..x7, pc, uint64_t *more), which the lifter calls with the registers x0 up to inputs as
@@ -847,6 +854,9 @@ typedef struct SvcCall {
     static inline __attribute__((always_inline)) void svc_##name(SvcCall *c)
 #define PATCH_ANSWER(sym, value, why, ...)                                                                            \
     HOS_PATCH_RECORD("PATCH_ANSWER", #sym "," #value "," #why "," #__VA_ARGS__) _Static_assert(1, #sym)
+#define PATCH_WORD(pc, word, new, why) HOS_PATCH_RECORD("PATCH_WORD", #pc "," #word "," #new "," #why) _Static_assert(1, #pc)
+#define PATCH_NOP(pc, word, why) HOS_PATCH_RECORD("PATCH_NOP", #pc "," #word "," #why) _Static_assert(1, #pc)
+#define PATCH_SKIP(pc, word, to, why) HOS_PATCH_RECORD("PATCH_SKIP", #pc "," #word "," #to "," #why) _Static_assert(1, #pc)
 #define HLE_EFFECTS(sym, ...) HOS_PATCH_RECORD("HLE_EFFECTS", #sym "," #__VA_ARGS__) _Static_assert(1, #sym)
 #define PATCH_AT_SITE(pc, word, mode, result, fn, ...)                                                                \
     HOS_PATCH_RECORD("PATCH_AT_SITE", #pc "," #word "," #mode "," #result "," #fn "," #__VA_ARGS__)                \

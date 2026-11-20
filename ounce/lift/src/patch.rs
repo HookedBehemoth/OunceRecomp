@@ -9,7 +9,10 @@ use crate::export::{GuestCalls, HleFact, MetaAt, MetaValue, PatchDecl, RowEffect
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
-pub const KINDS: [&str; 9] = ["PATCH_AT", "PATCH_AT_SITE", "PATCH_FUNC", "PATCH_FUNC_SYM", "HLE", "NV", "HLE_EFFECTS", "PATCH_ANSWER", "SVC"];
+pub const KINDS: [&str; 12] = [
+    "PATCH_AT", "PATCH_AT_SITE", "PATCH_FUNC", "PATCH_FUNC_SYM", "HLE", "NV", "HLE_EFFECTS", "PATCH_ANSWER", "SVC", "PATCH_WORD", "PATCH_NOP",
+    "PATCH_SKIP",
+];
 
 /// (file, line) of a declaration
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -862,6 +865,91 @@ impl Svc {
     }
 }
 
+/// AArch64 NOP, a PATCH_NOP's word
+pub const NOP: u32 = 0xd503_201f;
+
+/// a PATCH_WORD, PATCH_NOP or PATCH_SKIP: the instruction at pc, `word` in the game, is `new` in the image the lift
+/// decodes and the run loads (a NOP; a SKIP's B to `to`)
+#[derive(Clone, Debug)]
+pub struct WordPatch {
+    pub kind: &'static str,
+    pub at: Where,
+    pub pc: u64,
+    pub word: u32,
+    pub new: u32,
+    /// a SKIP's target
+    pub to: Option<u64>,
+}
+
+impl WordPatch {
+    fn new(d: &Decl) -> Res<WordPatch> {
+        let (a, at) = (&d.args, &d.at);
+        let (form, n) = match d.kind {
+            "PATCH_WORD" => ("PATCH_WORD(pc, word(W), new, \"why\")", 4),
+            "PATCH_NOP" => ("PATCH_NOP(pc, word(W), \"why\")", 3),
+            _ => ("PATCH_SKIP(pc, word(W), to, \"why\")", 4),
+        };
+        if a.len() != n {
+            return fail(at, form);
+        }
+        if a[n - 1].len() != 1 || a[n - 1][0].kind != TK::Str || a[n - 1][0].text.chars().count() <= 2 {
+            return fail(at, format!("{form}: the reason as a string"));
+        }
+        let pc = num(&a[0], at, "pc")?;
+        if pc & 3 != 0 || !(0..1 << 64).contains(&pc) {
+            return fail(at, format!("{}: {pc:#x} is no instruction's address", d.kind));
+        }
+        let word = match call(&a[1], "word") {
+            Some(w) if w.len() == 1 => num(&owned(&w[0]), at, "word")? as u32,
+            _ => return fail(at, format!("the instruction word is written word(0x...), not {}", py_repr(&joined(&a[1])))),
+        };
+        let (new, to) = match d.kind {
+            "PATCH_NOP" => (NOP, None),
+            "PATCH_WORD" => {
+                let v = num(&a[2], at, "the new word")?;
+                if !(0..1 << 32).contains(&v) {
+                    return fail(at, format!("PATCH_WORD: the new word {v:#x} is not 32 bits"));
+                }
+                (v as u32, None)
+            }
+            _ => {
+                let to = num(&a[2], at, "the target")?;
+                let off = to - pc;
+                if to & 3 != 0 || off == 0 || !(-(1 << 27)..1 << 27).contains(&off) {
+                    return fail(at, format!("PATCH_SKIP from {pc:#x} to {to:#x}: a B reaches another word within 128 MiB"));
+                }
+                (0x1400_0000 | ((off >> 2) as u32 & 0x03ff_ffff), Some(to as u64))
+            }
+        };
+        if new == word {
+            return fail(at, format!("{} at {pc:#x}: the word is {word:#010x} already", d.kind));
+        }
+        if ounce_decode::decode(new).is_none() {
+            return fail(at, format!("{} at {pc:#x}: {new:#010x} is no instruction the lift decodes", d.kind));
+        }
+        Ok(WordPatch { kind: d.kind, at: at.clone(), pc: pc as u64, word, new, to })
+    }
+}
+
+/// the word patches applied to the image, before anything reads its code: {pc: the game's word}. A pc outside the code
+/// or holding another word than the declared one stops (another game version)
+pub fn apply_words(img: &mut crate::image::Image, words: &[WordPatch]) -> Res<BTreeMap<u64, u32>> {
+    let mut original = BTreeMap::new();
+    for w in words {
+        if !img.in_code(w.pc) {
+            return fail(&w.at, format!("{} at {:#x}: not in the image's code", w.kind, w.pc));
+        }
+        let got = img.word(w.pc);
+        if got != w.word {
+            return fail(&w.at, format!("{} at {:#x} holds {got:08x}, not {:08x} (another game version?)", w.kind, w.pc, w.word));
+        }
+        let o = (w.pc - img.base) as usize;
+        img.mem[o..o + 4].copy_from_slice(&w.new.to_le_bytes());
+        original.insert(w.pc, got);
+    }
+    Ok(original)
+}
+
 /// the scan's result (patch_scan.PatchSet)
 #[derive(Default, Debug, Clone)]
 pub struct PatchSet {
@@ -873,12 +961,15 @@ pub struct PatchSet {
     pub answers: BTreeMap<String, Answer>,
     /// by number
     pub svcs: BTreeMap<u32, Svc>,
+    /// the word patches, in declaration order (one per pc)
+    pub words: Vec<WordPatch>,
 }
 
 /// patch_scan.scan_texts: [(file name, text)]
 pub fn scan_texts(texts: &[(String, String)]) -> Res<PatchSet> {
     let (mut sites, mut replaced, mut funcs, mut answers) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let mut svcs: BTreeMap<u32, Svc> = BTreeMap::new();
+    let mut words: Vec<WordPatch> = Vec::new();
     // (every file tokenised, one without a declaration too: a malformed one is reported, not skipped)
     for (rel, text) in texts {
         for d in declarations(text, rel)? {
@@ -886,6 +977,7 @@ pub fn scan_texts(texts: &[(String, String)]) -> Res<PatchSet> {
                 "PATCH_AT" | "PATCH_AT_SITE" => sites.push(Site::new(&d)?),
                 "PATCH_FUNC" | "PATCH_FUNC_SYM" => funcs.push(Func::new(&d)?),
                 "PATCH_ANSWER" => answers.push(Answer::new(&d)?),
+                "PATCH_WORD" | "PATCH_NOP" | "PATCH_SKIP" => words.push(WordPatch::new(&d)?),
                 "SVC" => {
                     let s = Svc::new(&d)?;
                     if let Some(o) = svcs.get(&s.number) {
@@ -926,6 +1018,20 @@ pub fn scan_texts(texts: &[(String, String)]) -> Res<PatchSet> {
             return fail(&s.at, format!("the same site as {}:{}", w.0, w.1));
         }
         seen.insert(k, &s.at);
+    }
+    // (one word patch per pc; a row at a patched pc runs before it, the only place a row of the game's instruction is
+    // still one)
+    let mut patched: HashMap<u64, &WordPatch> = HashMap::new();
+    for w in &words {
+        if let Some(o) = patched.get(&w.pc) {
+            return fail(&w.at, format!("a second word patch at {:#x} (the first at {}:{})", w.pc, o.at.0, o.at.1));
+        }
+        patched.insert(w.pc, w);
+    }
+    for s in &sites {
+        if let Some(w) = patched.get(&s.pc).filter(|_| s.mode != "before") {
+            return fail(&s.at, format!("{} {} at {:#x}: {} at {}:{} replaces that instruction; only a before row shares its address", s.kind, s.mode, s.pc, w.kind, w.at.0, w.at.1));
+        }
     }
     let mut seen: HashMap<String, &Where> = HashMap::new();
     for h in &funcs {
@@ -972,7 +1078,7 @@ pub fn scan_texts(texts: &[(String, String)]) -> Res<PatchSet> {
             return fail(&a.at, format!("PATCH_ANSWER of {}, which {} declares at {}:{}", a.symbol, o.kind, o.at.0, o.at.1));
         }
     }
-    let mut ps = PatchSet { sites, funcs, svcs, ..Default::default() };
+    let mut ps = PatchSet { sites, funcs, svcs, words, ..Default::default() };
     // (dict by symbol: a later declaration of one kind would replace an earlier, but the checks above refuse those)
     for r in replaced {
         let m = match r.kind {
@@ -1243,10 +1349,12 @@ fn written(w: u32) -> Res<BTreeSet<String>> {
 }
 
 /// what is wrong with one row against its function (probes.errors); jt and entries as the lift passes them
-pub fn errors(r: &Row, pcs: &[u64], words: &[u32], jt: Option<&HashMap<u64, Vec<u64>>>, entries: Option<&HashSet<u64>>) -> Res<Vec<String>> {
+/// one resolved row's errors over its function's (pcs, words); `original`: the game's word at the row's pc when a word
+/// patch replaced it (word(...) asserts the game's code)
+pub fn errors(r: &Row, pcs: &[u64], words: &[u32], original: Option<u32>, jt: Option<&HashMap<u64, Vec<u64>>>, entries: Option<&HashSet<u64>>) -> Res<Vec<String>> {
     let word = |pc: u64| pcs.binary_search(&pc).ok().map(|k| words[k]);
     let kind = if r.value { "Value" } else { "At" };
-    match word(r.pc) {
+    match word(r.pc).and(original).or(word(r.pc)) {
         Some(w) if w == r.word => {}
         got => {
             return Ok(vec![format!(
@@ -1613,10 +1721,10 @@ mod tests {
     fn a_word_or_an_instruction_that_differs_stops() {
         let r = row("PATCH_AT(0x80001004, word(0x8b020020), after, x0, f, x0, x1)", 0x8000_1000);
         let (pcs, words) = (vec![0x8000_1000, 0x8000_1004], vec![0xd503_201f, 0x8b02_0020]);
-        assert!(errors(&r, &pcs, &words, None, None).unwrap().is_empty());
-        let e = errors(&r, &pcs, &[0xd503_201f, 0x8b02_0021], None, None).unwrap();
+        assert!(errors(&r, &pcs, &words, None, None, None).unwrap().is_empty());
+        let e = errors(&r, &pcs, &[0xd503_201f, 0x8b02_0021], None, None, None).unwrap();
         assert!(e[0].contains("another game version"), "{e:?}");
-        let e = errors(&r, &pcs[..1], &words[..1], None, None).unwrap();
+        let e = errors(&r, &pcs[..1], &words[..1], None, None, None).unwrap();
         assert!(e[0].contains("holds nothing"), "{e:?}");
     }
 
@@ -1625,22 +1733,22 @@ mod tests {
         // cbz w0, +8; nop; ret
         let (pcs, words) = (vec![0x8000_3000, 0x8000_3004, 0x8000_3008], vec![0x3400_0040, 0xd503_201f, 0xd65f_03c0]);
         let r = row("PATCH_AT(0x80003004, word(0xd503201f), before, none, t_none, x0)", 0x8000_3000);
-        assert!(errors(&r, &pcs, &words, Some(&HashMap::new()), Some(&HashSet::new())).unwrap().is_empty());
+        assert!(errors(&r, &pcs, &words, None, Some(&HashMap::new()), Some(&HashSet::new())).unwrap().is_empty());
         let r = row("PATCH_AT(0x80003008, word(0xd65f03c0), before, none, t_none, x0)", 0x8000_3000);
-        let e = errors(&r, &pcs, &words, Some(&HashMap::new()), Some(&HashSet::new())).unwrap();
+        let e = errors(&r, &pcs, &words, None, Some(&HashMap::new()), Some(&HashSet::new())).unwrap();
         assert!(e[0].contains("a branch target"), "{e:?}");
         // br x16; nop; ret
         let (pcs, words) = (vec![0x8000_4000, 0x8000_4004, 0x8000_4008], vec![0xd61f_0200, 0xd503_201f, 0xd65f_03c0]);
         let r = row("PATCH_AT(0x80004004, word(0xd503201f), before, none, t_none, x0)", 0x8000_4000);
         let entry = HashSet::from([0x8000_4000]);
-        assert!(errors(&r, &pcs, &words, Some(&HashMap::new()), Some(&entry)).unwrap().is_empty());
+        assert!(errors(&r, &pcs, &words, None, Some(&HashMap::new()), Some(&entry)).unwrap().is_empty());
         let jt = HashMap::from([(0x8000_4000, vec![0x8000_4004, 0x8000_4008])]);
-        let e = errors(&r, &pcs, &words, Some(&jt), Some(&entry)).unwrap();
+        let e = errors(&r, &pcs, &words, None, Some(&jt), Some(&entry)).unwrap();
         assert!(e[0].contains("jump-table target"), "{e:?}");
-        let e = errors(&r, &pcs, &words, Some(&HashMap::new()), Some(&HashSet::from([0x8000_4000, 0x8000_4004]))).unwrap();
+        let e = errors(&r, &pcs, &words, None, Some(&HashMap::new()), Some(&HashSet::from([0x8000_4000, 0x8000_4004]))).unwrap();
         assert!(e[0].contains("another function's entry"), "{e:?}");
         let r = row("PATCH_AT(0x80004000, word(0xd61f0200), before, none, t_none, x0)", 0x8000_4000);
-        assert!(errors(&r, &pcs, &words, Some(&HashMap::new()), Some(&entry)).unwrap().is_empty());
+        assert!(errors(&r, &pcs, &words, None, Some(&HashMap::new()), Some(&entry)).unwrap().is_empty());
     }
 
     #[test]
@@ -1657,12 +1765,12 @@ mod tests {
         for (res, ok) in [("w12", true), ("x12", false), ("w13", false)] {
             let r = row(&format!("PATCH_AT(0x1000, word(0x1e38000c), instead, {res}, t_v, s0)"), 0x1000);
             assert!(r.value);
-            assert_eq!(errors(&r, &pcs, &words, None, None).unwrap().is_empty(), ok, "{res}");
+            assert_eq!(errors(&r, &pcs, &words, None, None, None).unwrap().is_empty(), ok, "{res}");
         }
         let r = row("PATCH_AT(0x1000, word(0x1e38000c), instead, w12, t_v, w1)", 0x1000);
-        assert!(errors(&r, &pcs, &words, None, None).unwrap()[0].contains("operands"));
+        assert!(errors(&r, &pcs, &words, None, None, None).unwrap()[0].contains("operands"));
         let r = row("PATCH_AT(0x1000, word(0xf9000020), instead, w0, t_v, x1)", 0x1000);
-        assert!(errors(&r, &pcs, &[0xf900_0020], None, None).unwrap()[0].contains("no single general register"));
+        assert!(errors(&r, &pcs, &[0xf900_0020], None, None, None).unwrap()[0].contains("no single general register"));
     }
 
     #[test]

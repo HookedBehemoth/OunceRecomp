@@ -555,10 +555,11 @@ fn declared_at(ps: &PatchSet, w: &Where) -> Option<&'static str> {
         .or_else(|| ps.funcs.iter().find(|d| d.at == *w).map(|d| d.kind))
         .or_else(|| [&ps.hle, &ps.nv, &ps.declared].iter().flat_map(|m| m.values()).find(|d| d.at == *w).map(|d| d.kind))
         .or_else(|| ps.answers.values().find(|d| d.at == *w).map(|_| "PATCH_ANSWER"))
+        .or_else(|| ps.words.iter().find(|d| d.at == *w).map(|d| d.kind))
 }
 
 fn count(ps: &PatchSet) -> usize {
-    ps.sites.len() + ps.funcs.len() + ps.hle.len() + ps.nv.len() + ps.declared.len()
+    ps.sites.len() + ps.funcs.len() + ps.hle.len() + ps.nv.len() + ps.declared.len() + ps.words.len()
 }
 
 /// `ounce-lift check [<file:line> | - | --all] OPTS`
@@ -613,7 +614,9 @@ pub fn check(argv: Vec<String>) {
             "; a guest function a host function calls without declaring it is not checkable here (the check host_reads compiles the host for that)"
         }
     );
-    if let (Some(w), true) = (&only, errs.is_empty()) {
+    if let Some(w) = only.as_ref().filter(|w| errs.is_empty() && b.ps.words.iter().any(|d| d.at == **w)) {
+        println!("{}: a word patch changes the image the plan is made from; its cost is not computed here", wh(w));
+    } else if let (Some(w), true) = (&only, errs.is_empty()) {
         println!("cost of {} {} (the summaries computed again without it):", declared_at(&b.ps, w).unwrap(), wh(w));
         let mut o = String::new();
         cost(&b, &without(&texts, b.sdk.0 .0, w), &b.ps, &n, &mut o).unwrap_or_else(|e| fail(e));
@@ -1066,6 +1069,75 @@ PATCH_AT(0x80001004, word(0x8b020020), after, x19, t_x19, x1) { return x1; }
                 assert_eq!(li[k], flow.use_[k] | (lo[k] & !flow.dfn[k]), "at {k}");
             }
         }
+    }
+
+    fn errs(b: &Base) -> Vec<String> {
+        b.errors(&b.ps).unwrap().into_iter().map(|(w, m)| format!("{}: {m}", wh(&w))).collect()
+    }
+
+    #[test]
+    fn a_word_patch_asserts_the_games_word() {
+        let e = Base::synthetic(&code(), &[("runtime/t.c".into(), "PATCH_NOP(0x80001004, word(0x8b020021), \"t\");".into())], &root()).err().unwrap();
+        assert!(e.contains("runtime/t.c:1: PATCH_NOP at 0x80001004 holds 8b020020, not 8b020021 (another game version?)"), "{e}");
+    }
+
+    #[test]
+    fn a_nop_is_lifted_and_word_and_body_keep_the_games_words() {
+        // (the add no-op'd: the image holds a NOP there; a before row at it and the PATCH_FUNC of F with orig assert
+        // the game's words)
+        let h = patch::body_hash(&code()[0].1);
+        let b = base(&format!(
+            "PATCH_NOP(0x80001004, word(0x8b020020), \"t\");
+PATCH_AT(0x80001004, word(0x8b020020), before, none, t_before, x1) {{}}
+PATCH_FUNC(0x80001000, word(0xb4000040), body({h:#018x}), aapcs, x0, t_f, orig) {{ return guest_orig(orig); }}
+"
+        ));
+        assert_eq!(b.img.word(0x8000_1004), patch::NOP);
+        assert_eq!(b.body(F).unwrap().words[1], patch::NOP);
+        assert_eq!(b.original.get(&0x8000_1004), Some(&0x8b02_0020));
+        assert!(errs(&b).is_empty(), "{:?}", errs(&b));
+        assert!(b.patches(&b.ps).is_ok());
+    }
+
+    #[test]
+    fn a_skip_is_a_branch_the_discovery_follows() {
+        // (cbz skipped to the ret: the add and the BL are no longer in F's body, and the ret is a branch target)
+        let b = base("PATCH_SKIP(0x80001000, word(0xb4000040), 0x8000100c, \"t\");\n");
+        assert_eq!(b.img.word(F), 0x1400_0003);
+        assert_eq!(b.body(F).unwrap().pcs, vec![F, F + 12]);
+        assert!(errs(&b).is_empty(), "{:?}", errs(&b));
+        let b = base("PATCH_SKIP(0x80001000, word(0xb4000040), 0x8000100c, \"t\");\nPATCH_AT(0x8000100c, word(0xd65f03c0), before, none, t_b, x0) {}\n");
+        assert!(errs(&b)[0].contains("a branch target (from 0x80001000)"), "{:?}", errs(&b));
+        // (a skip out of its function: C's entry is a tail call's target, not F's)
+        let b = base("PATCH_SKIP(0x80001008, word(0x940003fe), 0x80002000, \"t\");\n");
+        assert!(errs(&b)[0].contains("PATCH_SKIP at 0x80001008: 0x80002000 is not in its function f_80001000"), "{:?}", errs(&b));
+        let e = patch::scan_texts(&[("t.c".into(), "PATCH_SKIP(0x80001000, word(0xb4000040), 0x90001000, \"t\");".into())]).unwrap_err();
+        assert!(e.contains("a B reaches another word within 128 MiB"), "{e}");
+        let e = patch::scan_texts(&[("t.c".into(), "PATCH_WORD(0x80001000, word(0xb4000040), 0xffffffff, \"t\");".into())]).unwrap_err();
+        assert!(e.contains("no instruction the lift decodes"), "{e}");
+    }
+
+    #[test]
+    fn word_patches_that_conflict_stop() {
+        let scan = |t: &str| patch::scan_texts(&[("t.c".into(), t.into())]).unwrap_err();
+        let e = scan("PATCH_NOP(0x80001004, word(0x8b020020), \"a\");\nPATCH_WORD(0x80001004, word(0x8b020020), 0x8b020021, \"b\");");
+        assert!(e.contains("t.c:2: a second word patch at 0x80001004 (the first at t.c:1)"), "{e}");
+        for mode in ["after", "instead"] {
+            let e = scan(&format!("PATCH_NOP(0x80001004, word(0x8b020020), \"a\");\nPATCH_AT(0x80001004, word(0x8b020020), {mode}, x0, t_a, x1) {{ return x1; }}"));
+            assert!(e.contains(&format!("t.c:2: PATCH_AT {mode} at 0x80001004: PATCH_NOP at t.c:1 replaces that instruction")), "{e}");
+        }
+        let e = scan("PATCH_NOP(0x80001004, word(0xd503201f), \"a\");");
+        assert!(e.contains("the word is 0xd503201f already"), "{e}");
+        // (in a function a PATCH_FUNC without orig replaces: its body never runs)
+        let h = patch::body_hash(&code()[0].1);
+        let b = base(&format!(
+            "PATCH_NOP(0x80001004, word(0x8b020020), \"t\");\nPATCH_FUNC(0x80001000, word(0xb4000040), body({h:#018x}), aapcs, x0, t_f, x0) {{ return x0; }}\n"
+        ));
+        assert!(errs(&b)[0].contains("f_80001000 is replaced by PATCH_FUNC at runtime/t.c:2 without orig"), "{:?}", errs(&b));
+        assert!(b.patches(&b.ps).is_err());
+        // (a set the base was not built with)
+        let other = patch::scan_texts(&[("runtime/u.c".into(), "PATCH_NOP(0x80002000, word(0x8b010000), \"t\");".into())]).unwrap();
+        assert!(b.errors(&other).unwrap()[0].1.contains("not in the image this lift was built with"));
     }
 
     #[test]

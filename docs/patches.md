@@ -19,6 +19,7 @@ host function's prototype. The authoritative description of every macro, mode an
 | Implement an SDK function the game imports | `HLE(symbol, effect...) { ... }` | Yes |
 | Answer an SDK function with a constant (no host code: each direct call becomes the constant) | `PATCH_ANSWER(symbol, value, "why");` | Yes |
 | Implement an NVN proc | `NV(name, effect...) { ... }` in `runtime/nvn_native.c` | No |
+| Replace one instruction word, no-op an instruction, or branch over a range | `PATCH_WORD(pc, word(W), new, "why");`, `PATCH_NOP(pc, word(W), "why");`, `PATCH_SKIP(pc, word(W), to, "why");` | Yes |
 
 A few real declarations, one per kind:
 
@@ -88,6 +89,33 @@ local cost of every declaration, costliest first, in about half a minute, and ea
   changes what its function preserves.
 - The build compares the compiled host's declarations with the scan. A declaration that one of them sees and the other
   does not stops the build.
+
+## Edit an instruction word
+
+A word patch changes the game's code the way an edit of the binary would. The lifter lifts the new word as if it were
+the game's, and the image the game runs from holds it too, so code that reads instruction words at run time sees the
+edited word.
+
+- `PATCH_WORD(pc, word(W), new, "why");` puts the instruction word `new` at `pc`.
+- `PATCH_NOP(pc, word(W), "why");` puts a NOP there. It removes a store, a call (BL or BLR), or any other instruction.
+- `PATCH_SKIP(pc, word(W), to, "why");` puts an unconditional branch to `to` there. The target must be in the same
+  function and within 128 MiB; the lifter computes the offset.
+
+The patch author owns what the replaced or skipped code computed. The lifter checks no liveness: a register or memory
+word that the removed code wrote and later code reads keeps whatever it held.
+
+Rules the build enforces for word patches:
+
+- `word(...)` is the game's word at `pc`. Every `word(...)` and `body(...)` of other declarations also asserts the
+  game's words, so a function with a word patch keeps its `body(...)` hash.
+- One word patch per address.
+- A `PATCH_AT` at a patched address must use mode `before`: it runs on the edge into the edited instruction. A skip's
+  target is a branch target, so a `before` row cannot sit there.
+- The patched address must be in a lifted function whose body runs. A word patch in a function that a `PATCH_FUNC`
+  without `orig` replaces stops the build.
+
+A word patch changes the image that the discovery and the plan are made from, so `check <file:line>` does not compute
+its cost, and `check -` refuses a word patch that the build has not lifted.
 
 ## Patch an indirect call
 
