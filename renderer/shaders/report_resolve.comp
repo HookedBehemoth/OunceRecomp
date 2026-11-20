@@ -1,8 +1,10 @@
-// (vk_query.cpp) The reports of a pass written into guest memory as NVN lays them out: {counter, timestamp}.
+// (vk_query.cpp) The reports of a pass as NVN lays them out: {counter, timestamp}.
 // One invocation per report: its record (written by the CPU when the report was recorded) names the guest address, the
 // counter type, the occlusion queries whose results sum to the counter (a samples-passed counter runs from its reset
 // across renderings) and, by its own index, its timestamp query. Timestamps go to the guest's counter clock (19.2 MHz)
-// on the host tick clock's epoch (calibrated). Guest addresses reach memory through layer 0's window table.
+// on the host tick clock's epoch (calibrated). Each report goes to its record's slot in the out buffer, which the host
+// copies into guest memory once the submission completes (vk_readback.cpp); a report whose address is in a claim's
+// region (kind bit 31) also goes there, through the address table, for the GPU's readers (render conditions).
 // Regenerate the header: glslangValidator -V --target-env vulkan1.3 --vn report_resolve_spv -o report_resolve_spv.h report_resolve.comp
 #version 460
 #extension GL_EXT_buffer_reference : require
@@ -14,9 +16,10 @@ layout(buffer_reference, std430, buffer_reference_align = 8) readonly buffer Rec
 layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Idx { uint v[]; };
 layout(buffer_reference, std430, buffer_reference_align = 8) readonly buffer In64 { uint64_t v[]; };
 layout(buffer_reference, std430, buffer_reference_align = 8) writeonly buffer Out64 { uint64_t v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 16) writeonly buffer Outs { u64vec2 v[]; };
 
 layout(push_constant) uniform P {
-    Recs recs; Idx idx; In64 occ; In64 ts; In64 windows;
+    Recs recs; Idx idx; In64 occ; In64 ts; In64 windows; Outs outs;
     uint64_t dev0;   // (a device timestamp at the calibration)
     double host0;    // (the same moment on the guest's counter clock)
     double scale;    // (guest counter ticks per device tick)
@@ -29,12 +32,15 @@ void main() {
     if (i >= p.n) return;
     const uint ri = p.idx.v[i];
     const Rec r = p.recs.r[ri];
+    const uint kind = r.kind & 0x7fffffffu;
     uint64_t counter = 0;
-    if (r.kind == 1u)   // (NVN_COUNTER_TYPE_SAMPLES_PASSED)
+    if (kind == 1u)   // (NVN_COUNTER_TYPE_SAMPLES_PASSED)
         for (uint k = 0; k < r.n && k < 4u; k++) counter += p.occ.v[r.occ[k]];
-    if (r.kind == 1u && p.fixed_samples != 0u) counter = p.fixed_samples;
+    if (kind == 1u && p.fixed_samples != 0u) counter = p.fixed_samples;
     const double d = double(int64_t(p.ts.v[ri] - p.dev0));
     const uint64_t ticks = uint64_t(max(0.0lf, p.host0 + d * p.scale));
+    p.outs.v[ri] = u64vec2(counter, ticks);
+    if ((r.kind & 0x80000000u) == 0u) return;
     // (an entry per 64 KB granule, the distance to the device address, or for a split granule its pages' entries: bda_emit.h)
     uint64_t e = p.windows.v[uint(r.addr >> 16)];
     if ((e & 1UL) != 0UL) e = p.windows.v[uint(e >> 1) + uint(r.addr >> 12 & 15UL)];

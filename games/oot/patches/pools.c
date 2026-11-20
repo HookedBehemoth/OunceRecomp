@@ -53,15 +53,20 @@ PATCH_FUNC(0x80f6c9d0, word(0xd503237f), body(0x698a26829c189947), aapcs, x0, po
 PATCH_FUNC(0x80792e30, word(0xd503237f), body(0xba09850595f0fa65), aapcs, x0, pools_gfx, orig) {
     CLAIM_RULE("gfx_memory_pool_init");
 }
-/* sead's device and queue pools (0x12, 0x21) */
-PATCH_FUNC(0x80f69040, word(0xd503237f), body(0x64085c9cc9080b15), aapcs, x0, pools_sead, orig) {
-    CLAIM_RULE("sead_device_queue_pools");
-}
-/* the texture and sampler descriptor pools' memory (0x22) */
+/* sead_device_queue_pools' pools, each claimed at its nvnMemoryPoolInitialize: the events' words (0x12, 4 KB; written by
+   the host), the command memory (0x12; the host translates it) and the shader scratch memory (0x21, GPU only). The
+   display's buffers it makes through display_buffers_pool_init are that function's claim */
+PATCH_AT(0x80f692dc, word(0xd63f0100), before, none, pools_sead_events) { nvn_claim_begin(NVN_CLAIM_HOST, "sead_device_queue_pools events"); }
+PATCH_AT(0x80f692e0, word(0xb001ea37), before, none, pools_sead_events_end) { nvn_claim_end(); }
+PATCH_AT(0x80f69474, word(0xd63f0100), before, none, pools_sead_commands) { nvn_claim_begin(NVN_CLAIM_HOST, "sead_device_queue_pools commands"); }
+PATCH_AT(0x80f69478, word(0xf9400348), before, none, pools_sead_commands_end) { nvn_claim_end(); }
+PATCH_AT(0x80f6971c, word(0xd63f0100), before, none, pools_sead_scratch) { nvn_claim_begin(NVN_CLAIM_VRAM, "sead_device_queue_pools scratch"); }
+PATCH_AT(0x80f69720, word(0xb94132c8), before, none, pools_sead_scratch_end) { nvn_claim_end(); }
+/* the texture and sampler descriptor pools' memory (0x22): the host translates the descriptors */
 PATCH_FUNC(0x80966440, word(0xd503237f), body(0x2abbf2d96dca7f84), aapcs, x0, pools_desc, orig) {
-    CLAIM_RULE("desc_pools_create");
+    CLAIM("desc_pools_create", NVN_CLAIM_HOST);
 }
-/* the display's buffers at boot (0x21, 95.6 MB) */
+/* the display's buffers at boot (0x21, 95.6 MB): window textures, images the back end owns */
 PATCH_FUNC(0x8114e4f0, word(0xd503237f), body(0xb3560c600e03da68), aapcs, x0, pools_display, orig) {
-    CLAIM_RULE("f_8114e4f0");
+    CLAIM("display_buffers_pool_init", NVN_CLAIM_TARGETS);
 }

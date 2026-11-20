@@ -33,7 +33,8 @@ struct QSlot {
     VkDeviceAddress addr = 0;
     uint32_t recs = 0, occs = 0;   // (used since the reset: the owner thread's alone)
     Rec* rec() const { return (Rec*)map; }
-    static constexpr VkDeviceSize kOccAt = sizeof(Rec) * kRecs, kTsAt = kOccAt + 8 * kOcc, kBytes = kTsAt + 8 * kRecs;
+    static constexpr VkDeviceSize kOccAt = sizeof(Rec) * kRecs, kTsAt = kOccAt + 8 * kOcc, kOutAt = kTsAt + 8 * kRecs,
+                                  kBytes = kOutAt + 16 * kRecs;   // (out: each record's 16 bytes, for guest memory)
 };
 /// A report waiting to be written: its record, and the queries it sums
 struct Pend {
@@ -51,6 +52,7 @@ struct ListQuery {
     bool clobbered = false;              // (a job with counters of its own ran since the reset: NVN's counter is the job's then)
     QSlot* segs_q = nullptr;
     std::vector<Pend> pend;
+    std::vector<std::pair<QSlot*, uint32_t>> written;   // (the records its resolve steps write: copied out at each submission's end)
     bool cond_want = false, cond_on = false;   // (a condition set; begun in the command buffer)
     uint64_t cond_addr = 0;
     int32_t cond_mode = 0;
@@ -85,7 +87,7 @@ const char* const kNames[Q_COUNT] = {
     "reports", "samples passed", "timestamp", "timestamp (top)", "other types", "resets of samples passed", "resets of other types",
     "occlusion queries", "stretches ended at a rendering's end", "samples reports with no reset in their list",
     "reports summing stretches", "reports past 4 stretches (summed in part)", "reports with no room in the slot (not written)",
-    "reports not in a region (not written)", "reports in lists that record nothing (not written)", "reports written by the GPU",
+    "reports not 8-byte aligned (not written)", "reports in lists that record nothing (not written)", "reports written by the GPU",
     "flushes", "resolve dispatches", "reports in job secondaries", "conditions", "of them in job secondaries",
     "conditions begun", "gated draws", "gated clears", "conditions on a report not written yet in their list",
     "conditions whose second word is not 0 (condcheck)", "conditions whose first word is past 32 bits (condcheck)",
@@ -223,15 +225,13 @@ void report(List* l, ListQuery& x, const nvn_p_counter& c, bool rendering, CmdOf
                                                   : type == NVN_COUNTER_TYPE_TIMESTAMP_TOP ? Q_TOP : Q_OTHER);
     if (l->secondary) count(Q_IN_JOB);
     if (!l->rec) return count(Q_UNRECORDED);
-    VkBuffer b;
-    VkDeviceSize off;
-    if ((c.addr & 7) || !claims_span(c.addr, 16, b, off)) return count(Q_NOT_MEMORY);
+    if (c.addr & 7) return count(Q_NOT_MEMORY);
     VkCommandBuffer cb = cmd(l);
     QSlot* q = slot_of(l);
     if (!q || q->recs == kRecs) return count(Q_NO_ROOM);
     const uint32_t ri = q->recs++;
     Rec& r = q->rec()[ri];
-    r.addr = c.addr, r.kind = type, r.n = 0;
+    r.addr = c.addr, r.kind = type | (claims_holds(c.addr, 16) ? 0x80000000u : 0), r.n = 0;   // (bit 31: also into its region)
     Pend p{q, ri, 0, {}};
     if (type == NVN_COUNTER_TYPE_SAMPLES_PASSED) {
         stretch_end(x, cb, true);   // (the counter goes on: the next draw opens the next stretch)
@@ -316,6 +316,7 @@ void query_device_created() {
 
 void query_slot_reset(QSlot* q) {
     if (!q) return;
+    if (q->recs) readback_drain();   // (its records' last values out before the slot's next work writes them)
     if (q->occs) pResetQueryPool(dev.device, q->occ, 0, q->occs);
     if (q->recs) pResetQueryPool(dev.device, q->ts, 0, q->recs);
     q->occs = q->recs = 0;
@@ -453,7 +454,7 @@ void query_flush(List* l, CmdOf cmd) {
     const VkShaderStageFlagBits stage = VK_SHADER_STAGE_COMPUTE_BIT;
     vkCmdBindShadersEXT(cb, 1, &stage, &resolve);
     struct Push {
-        VkDeviceAddress recs, idx, occ, ts, windows;
+        VkDeviceAddress recs, idx, occ, ts, windows, outs;
         uint64_t dev0;
         double host0, scale;
         uint32_t n, pad;
@@ -478,6 +479,8 @@ void query_flush(List* l, CmdOf cmd) {
         }
         for (uint32_t k = 0; k < n; k++) std::memcpy(map + 4 * k, &x.pend[i + k].rec, 4);
         push.recs = q->addr, push.idx = a, push.occ = q->addr + QSlot::kOccAt, push.ts = q->addr + QSlot::kTsAt, push.n = n;
+        push.outs = q->addr + QSlot::kOutAt;
+        for (uint32_t k = 0; k < n; k++) x.written.push_back({q, x.pend[i + k].rec});
         pool_push(cb, &push, sizeof push);
         pDispatch(cb, (n + 63) / 64, 1, 1);
         count(Q_DISPATCHES), count(Q_WRITTEN, n);
@@ -515,6 +518,13 @@ void query_list_free(List* l) {
     if (l->qctx && l->secondary && !l->qctx->pend.empty()) count(Q_JOB_PENDING_LEFT, (int64_t)l->qctx->pend.size());
     delete l->qctx;
     l->qctx = nullptr;
+}
+
+void query_readbacks(const List* l, std::vector<ReadbackItem>& out) {
+    if (l->qctx)
+        for (const auto& [q, ri] : l->qctx->written) out.push_back({q->map + QSlot::kOutAt + 16 * ri, q->mem, q->rec()[ri].addr, 16});
+    for (const Seg& s : l->segs)
+        if (s.callee) query_readbacks(s.callee, out);
 }
 
 void query_stats(char* out, size_t cap, double frames) {

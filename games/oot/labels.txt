@@ -476,7 +476,7 @@
 8005eb20 heap_new_in_heap                 # work/assets/native/engine-layers.md: operator new(size, heap, align), 276 callers
 83b797e0 module_system_prepare            # docs/direct/boot-to-main-loop.md: ModuleSystem's prepare: modules, threads, Pack/Bootup (boot's single-threaded window)
 83b7a2c0 module_bootup_pack_load          # docs/direct/boot-to-main-loop.md: the Pack/Bootup loader the prepare uses
-80f69040 sead_device_queue_pools          # work/assets/native/engine-layers.md: device/queue pools
+80f69040 sead_device_queue_pools          # work/assets/native/engine-layers.md, games/oot/patches/pools.c: the queue, the display's buffers, the events' pool (0x12, 4 KB), the command memory (0x12) with 32-byte mapped buffers at its end, the shader scratch memory (0x21)
 809df700 sead_exp_heap_create             # work/assets/native/engine-layers.md: sead::ExpHeap::create(size, name, parent, align, dir, lock)
 809df710 sead_exp_heap_create_b           # games/oot/patches/oot_probes.c: the module heaps' create (patched for the Graphics heap)
 809e00a0 sead_frame_heap_create           # work/assets/native/engine-layers.md: FrameHeap::create
@@ -1180,3 +1180,5 @@
 8114e4f0 display_buffers_pool_init        # games/oot/patches/pools.c: the display's buffers at boot (flags 0x21, 95.6 MB) # ?
 80c553b0 rgba32f_targets_init             # games/oot/patches/tex_cpu.c: makes 1x1 NVN format 0x2e targets by dta_alloc_b and clears them with memset at 0x80c558bc
 8093e7c0 tera_unit_textures_init          # games/oot/patches/tex_cpu.c: 1x1 format 0x25 textures by dta_alloc_b, cleared with memset at 0x8093ea3c # ?
+80f6a7e0 memory_pool_allocator_heap_init  # games/oot/patches/pools.c survey: "MemoryPoolAllocatorMgrHeap": a gfx_memory_pool_init pool (0xa2, 8 MB) under a NumberLineAllocator
+81277330 vfx3_pools_create                # games/oot/patches/pools.c survey: NintendoWare Vfx3's pools through f_812bb860 (0x22 88 MB, 0xa4, 0xa)

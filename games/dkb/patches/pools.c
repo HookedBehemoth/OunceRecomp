@@ -63,16 +63,20 @@ PATCH_FUNC(0x80577b30, word(0xd503237f), body(0xc69d2d96f5b1a11a), aapcs, x0, po
 PATCH_FUNC(0x8052f8a8, word(0xd503237f), body(0x716734f6519dbfb9), aapcs, x0, pools_gfx, orig) {
     CLAIM_RULE("gfx_memory_pool_init");
 }
-/* sead's device and queue pools and their neighbours at boot (0x12, 0x21, 0xa1) */
-PATCH_FUNC(0x805e7a88, word(0xd503237f), body(0xb4d112ce9270cf55), aapcs, x0, pools_sead, orig) {
-    CLAIM_RULE("f_805e7a88");
+/* f_805e7a88 (sead's graphics system) makes the command memory (0x12, 16 MB; the host translates it, at 0x805e7dbc) and
+   the shader scratch memory (0x21, GPU only, at 0x805e7fac), each call claimed; the display's buffers it makes through
+   display_buffers_pool_init are that function's claim */
+PATCH_AT(0x805e7dbc, word(0xd63f0100), before, none, pools_sead_commands) { nvn_claim_begin(NVN_CLAIM_HOST, "f_805e7a88 commands"); }
+PATCH_AT(0x805e7dc0, word(0xb9004fff), before, none, pools_sead_commands_end) { nvn_claim_end(); }
+PATCH_AT(0x805e7fac, word(0xd63f0100), before, none, pools_sead_scratch) { nvn_claim_begin(NVN_CLAIM_VRAM, "f_805e7a88 scratch"); }
+PATCH_AT(0x805e7fb0, word(0x52800800), before, none, pools_sead_scratch_end) { nvn_claim_end(); }
+/* f_805e6684: one pool (0xa1, 64 MB) holding two textures of the window's size at boot: render targets */
+PATCH_FUNC(0x805e6684, word(0xd503237f), body(0xbe62a6f8ce137b87), aapcs, x0, pools_boot_targets, orig) {
+    CLAIM("f_805e6684", NVN_CLAIM_TARGETS);
 }
-PATCH_FUNC(0x805e6684, word(0xd503237f), body(0xbe62a6f8ce137b87), aapcs, x0, pools_boot_a1, orig) {
-    CLAIM_RULE("f_805e6684");
-}
-/* other pool makers (0x22, 0x62) */
-PATCH_FUNC(0x807a6234, word(0xd503237f), body(0x894b655fcae7f0aa), aapcs, x0, pools_807a6234, orig) {
-    CLAIM_RULE("f_807a6234");
+/* desc_pools_create: the texture and sampler descriptor pools' memory (0x22); the host translates the descriptors */
+PATCH_FUNC(0x807a6234, word(0xd503237f), body(0x894b655fcae7f0aa), aapcs, x0, pools_desc, orig) {
+    CLAIM("desc_pools_create", NVN_CLAIM_HOST);
 }
 /* f_807ac5e8 makes a shader-code pool (0x62, its nvnMemoryPoolInitialize at 0x807ac6cc) and a data pool (0x22, at
    0x807ac8b4): each call claimed */
@@ -80,7 +84,7 @@ PATCH_AT(0x807ac6cc, word(0xd63f0100), before, none, pools_807ac5e8_code) { nvn_
 PATCH_AT(0x807ac6d0, word(0xb000e668), before, none, pools_807ac5e8_code_end) { nvn_claim_end(); }
 PATCH_AT(0x807ac8b4, word(0xd63f0100), before, none, pools_807ac5e8_data) { nvn_claim_begin(NVN_CLAIM_LAYER0, "f_807ac5e8 data"); }
 PATCH_AT(0x807ac8b8, word(0xf000e67a), before, none, pools_807ac5e8_data_end) { nvn_claim_end(); }
-/* the display's buffers at boot (0x21, 95.6 MB) */
+/* the display's buffers at boot (0x21, 95.6 MB): window textures, images the back end owns */
 PATCH_FUNC(0x80802d48, word(0xd503237f), body(0xe94a043c888e1db2), aapcs, x0, pools_display, orig) {
-    CLAIM_RULE("f_80802d48");
+    CLAIM("display_buffers_pool_init", NVN_CLAIM_TARGETS);
 }

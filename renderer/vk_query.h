@@ -6,7 +6,8 @@
 // is the sum of the stretches since the reset. Every report also writes a timestamp query where it is recorded. The
 // values reach guest memory at the end of the rendering they were recorded in (a job's: its caller's rendering), in
 // the list's order: the queries' results are copied into the slot's buffer and one compute step writes each report's
-// 16 bytes at its guest address (report_resolve.comp), so the game's CPU readers read plain memory. Query pools and
+// 16 bytes (report_resolve.comp) into the slot's out records, copied into guest memory once the submission completes
+// (vk_readback.h), and into the claim's region when the address has one (render conditions read it). Query pools and
 // the record buffer belong to the thread's command slot (vk_cmd.h) and are reset with it, on the host.
 //
 // SetRenderEnableConditional(mode, addr) renders when the counters at addr and addr + 16 are equal (0) or differ (1).
@@ -20,6 +21,7 @@
 #include <vector>
 
 #include "vk_lists.h"
+#include "vk_readback.h"
 
 namespace hsd {
 
@@ -49,6 +51,8 @@ void query_flush(List* l, CmdOf cmd);
 void query_execute(List* l, VkCommandBuffer cb, const List* job);
 void query_executed(List* l, const List* job);
 void query_list_free(List* l);
+/// The reports a submission of l writes (its callees' too): their 16 bytes for guest memory once it completes
+void query_readbacks(const List* l, std::vector<ReadbackItem>& out);
 void query_stats(char* out, size_t cap, double frames);
 
 }  // namespace hsd

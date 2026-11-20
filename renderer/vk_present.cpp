@@ -23,6 +23,7 @@
 #include "vk_shader.h"
 #include "vk_image.h"
 #include "vk_internal.h"
+#include "vk_readback.h"
 #include "vk_pass.h"
 #include "vk_query.h"
 #include "vk_check.h"
@@ -338,6 +339,8 @@ void log_line() {
     logf("direct: %s", b);
     query_stats(b, sizeof b, frames);
     if (*b) logf("direct: %s", b);
+    readback_stats(b, sizeof b, frames);
+    logf("direct: %s", b);
     image_stats(b, sizeof b);
     char* own = std::strstr(b, "; not from the store");   // (M6f: the images' memory on a line of its own)
     if (own) *own = 0;

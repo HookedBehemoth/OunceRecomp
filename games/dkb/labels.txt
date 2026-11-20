@@ -242,3 +242,6 @@
 8086a680 gfx_shader_binary_pool_init      # games/dkb/patches/pools.c: in-place shader binaries' nn::gfx pools (flags 0x64), claimed host
 80577b30 agl_memory_pool_create           # games/dkb/patches/pools.c: agl's pool wrapper (OoT agl_memory_pool_create)
 80802d48 display_buffers_pool_init        # games/dkb/patches/pools.c: the display's buffers at boot (flags 0x21, 95.6 MB) # ?
+805e7a88 gfx_system_init                  # games/dkb/patches/pools.c: sead's graphics system at boot: the queue, the display's buffers (display_buffers_pool_init), the command memory (0x12, 16 MB) with a 32-byte mapped buffer per frame at its end, the shader scratch memory (0x21)
+805e6684 boot_targets_create              # games/dkb/patches/pools.c: one pool (0xa1) for two window-sized textures (formats 0x25, 0x35) registered in the texture pool # ? which targets
+807a6234 desc_pools_create                # games/dkb/patches/pools.c: the texture and sampler descriptor pools' memory (0x22, 2.6 MB) and a default sampler

@@ -92,8 +92,11 @@ Measured in OoT's Kokiri test (`debug.replog`, `nvn.log_pools`):
 
 - **Event words** are written by the host, in submission order, not by the GPU: no readback.
 - **Reports and queries** live in the gsys heap's general pools (flags 0x22, six pools in Kokiri), between other
-  allocations. The back end writes each report itself and knows its 16 bytes, so it copies those slots out when
-  their submission completes. No claim is needed for them.
+  allocations, and in DKB also in 32-byte buffers at the end of sead's command memory (a Host claim). The back end
+  writes each report itself: the resolve step writes its 16 bytes into the command slot's out records, which are
+  copied into guest memory when the submission completes, before any wait on it returns (`vk_readback.cpp`), and
+  also into the claim's region when the address has one, where render conditions read it. No claim is needed for
+  them.
 - **GPU results through storage buffers** (the exposure light sums, the light visibility counters) are allocations
   inside the same heap. Their makers (`exposure_light_buffers_create`, `render_light_visibility_buffer`) claim them as
   Readback ranges by allocation. The light visibility counters are also zeroed by the CPU each frame
@@ -115,9 +118,9 @@ game. Game-specific makers stay per-game patches.
 | gsys GPU heap | 4,574 pools in OoT: 0x22, 0x24, 0xa1, 0x12 | by allocation: Upload, VRAM, Readback | `gpu_pool_create` 0x809de920 | f_80198500 | `gpu_heap_grow` 0x805f72f0 |
 | nn::gfx MemoryPool for in-place files | BFRES vertex and index data (0x24), shader binaries (0x64), ui2d (0x21) | Upload (load time), Host, Textures | `gfx_memory_pool_init` 0x80792e30 | 0x8052f8a8 | to find |
 | shader archives | shader code (0x62) | Host | `shader_sharcb_load` | f_805ba7c0 | to find |
-| sead device and queue pools | command memory (0x12, 0x21) | Host | `sead_device_queue_pools` 0x80f69040 | f_805e7a88 | to find |
-| the display's buffers | three 4K window textures (0x21, 95.6 MB) | Targets | f_8114e4f0 | f_80802d48 | at boot, to find |
-| descriptor pools | texture and sampler descriptors | Host | `desc_pools_create` 0x80966440 | to find | to find |
+| sead device and queue pools | events (0x12), command memory (0x12), shader scratch (0x21) | Host, Host, VRAM (each call) | `sead_device_queue_pools` 0x80f69040 | `gfx_system_init` 0x805e7a88 | to find |
+| the display's buffers | three 4K window textures (0x21, 95.6 MB) | Targets | `display_buffers_pool_init` 0x8114e4f0 | 0x80802d48 | at boot, to find |
+| descriptor pools | texture and sampler descriptors | Host | `desc_pools_create` 0x80966440 | 0x807a6234 | to find |
 
 Per-game makers:
 

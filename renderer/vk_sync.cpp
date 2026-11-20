@@ -36,6 +36,8 @@
 #include "vk_lists.h"
 #include "vk_marks.h"
 #include "vk_pass.h"
+#include "vk_query.h"
+#include "vk_readback.h"
 
 namespace hsd {
 std::atomic<int64_t> st_send_ns{0}, st_send_n{0};
@@ -64,6 +66,7 @@ struct Sub {
     std::vector<CmdSlot*> slots;
     std::vector<DumpItem*> dumps;
     uint64_t frame = 0;   // (presents before its hand-in)
+    std::vector<ReadbackItem> readbacks;   // (the GPU's writes copied into guest memory once it completes)
     // (a present: its GPU work runs here, in its queue's order)
     bool present = false;
     nvn_tex tex{};
@@ -491,6 +494,7 @@ void progress() {
                 send_chunk(*q, s, true);   // (the last, even with no command buffer: its value is the submission's fence)
                 const uint64_t v = s.last_value;
                 for (CmdSlot* c : s.slots) cmd_slot_sent(c, v);
+                if (!s.readbacks.empty()) readback_add(v, std::move(s.readbacks));
                 if (dumped) dump_sent(v);
                 q->seq_sent = s.seq;
                 q->values.push_back({s.seq, v});
@@ -534,10 +538,11 @@ int nvn_wait(uint64_t fence, uint64_t timeout_ns) {
             if (!sent_cv.wait_until(lk, until, [&] { return fence_value(fence, value); })) return 0;
         }
     }
-    if (!value || sync_completed() >= value) return 1;
+    if (!value || sync_completed() >= value) return readback_drain(), 1;
     if (!timeout_ns) return 0;
     const uint64_t spent = (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - t0).count();
     const bool ok = sync_wait_value(value, timeout_ns > spent ? timeout_ns - spent : 0);
+    if (ok) readback_drain();
     st_cpu_waits.fetch_add(1, std::memory_order_relaxed);
     st_cpu_wait_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - t0).count(), std::memory_order_relaxed);
     return ok ? 1 : 0;
@@ -563,6 +568,7 @@ void nvn_finish() {
     }
     const uint64_t v = sent.load(std::memory_order_acquire);
     if (v) sync_wait_value(v, UINT64_MAX);
+    readback_drain();
 }
 void nvn_event_signal(uint64_t, uint32_t) {   // (the host wrote the value: the queues held at waits may go on)
     st_cpu_signals.fetch_add(1, std::memory_order_relaxed);
@@ -621,6 +627,7 @@ bool sync_init() {
         return false;
     }
     os_thread_release(os_thread_start([](void*) { sender_main(); }, nullptr, 0, "direct sender"));
+    readback_init();
     atexit(sender_drain_at_exit);
     return true;
 }
@@ -703,6 +710,7 @@ extern "C" MKWVK_EXPORT void gpu_submit(uint64_t queue, void* const* lists, uint
         draw_list_submitted(l);   // (M2b: the deferred binds' handles as the game's arrays hold them now)
         compute_list_submitted(l);   // (M4a: and the dispatches')
         s.lists.push_back(l);
+        query_readbacks(l, s.readbacks);
         list_items(l, s.items, s.slots, dump_recording() ? &s.dumps : nullptr);
     }
     s.frame = present_count();

@@ -188,6 +188,7 @@ bool claims_bound(uint64_t lo, uint64_t hi);   // (guest pages a layer-0 claim i
 /// Guest [gpu, gpu + size) as its region's buffer and offset; false: not in one region (not memory the GPU reads)
 bool claims_span(uint64_t gpu, uint64_t size, VkBuffer& buffer, VkDeviceSize& offset);
 bool claims_address(uint64_t gpu, uint64_t size, VkDeviceAddress& a);   // (the same, as a device address)
+bool claims_holds(uint64_t gpu, uint64_t size);   // (guest [gpu, gpu + size) is in one region; no error when not)
 void claims_stats(char* out, size_t cap);
 /// (debug logs) the game's pool holding guest addr: base, size, NVN flags, whether its region is VRAM; false: none
 bool claims_pool_of(uint64_t addr, uint64_t& base, uint64_t& size, uint32_t& flags, bool& in_vram);

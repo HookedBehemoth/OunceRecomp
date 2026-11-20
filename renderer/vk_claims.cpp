@@ -477,11 +477,17 @@ bool claims_pool_of(uint64_t addr, uint64_t& base, uint64_t& size, uint32_t& fla
     return found;
 }
 
-bool claims_span(uint64_t gpu, uint64_t size, VkBuffer& buffer, VkDeviceSize& offset) {
+bool claims_holds(uint64_t gpu, uint64_t size) {
     if (!size || gpu >= guest_bytes || state.load(std::memory_order_acquire) != 1) return false;
     const uint64_t hi = std::min(gpu + size, guest_bytes);
     Region* r = region_at(gpu);
-    if (!r || gpu < r->lo || hi > r->hi || region_at(hi - 1) != r) {
+    return r && gpu >= r->lo && hi <= r->hi && region_at(hi - 1) == r;
+}
+
+bool claims_span(uint64_t gpu, uint64_t size, VkBuffer& buffer, VkDeviceSize& offset) {
+    if (!size || gpu >= guest_bytes || state.load(std::memory_order_acquire) != 1) return false;
+    Region* r = region_at(gpu);
+    if (!claims_holds(gpu, size)) {
         if (st_span_missed.fetch_add(1, std::memory_order_relaxed) < 8) {   // (named: the pool and its claim, which keeps it off the GPU)
             uint64_t base = 0, psize = 0;
             uint32_t flags = 0, claim = NVN_CLAIM_NONE;
