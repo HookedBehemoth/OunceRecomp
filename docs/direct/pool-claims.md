@@ -79,7 +79,14 @@ through a writer's report (`nvn_claim_write`), and the CPU reads the GPU's only 
 
 **Reported writes.** A writer patch reports a CPU write after it. The next submission's first copy copies the range in
 before its work, whatever the GPU owns, and the copies out of submissions whose first copy came before the report drop
-that range: an older GPU value never lands over the CPU's write. OoT's light readers zero the sums they read this way.
+that range: an older GPU value never lands over the CPU's write. OoT's light-visibility reader zeroes the sums it reads
+this way.
+
+**Resets the GPU makes in list order.** Where a reader zeroes a sum the GPU adds to once a frame, a report puts the zero
+after any work still in flight, which then adds onto the old sum or loses its result. OoT's exposure sums are reset
+instead by a patch at the pass that adds to them: it records a buffer clear of the words the reader zeroes into the
+game's own command buffer, before the pass's work. Each frame's sum is then complete on its own, every copy out lands,
+and the reader's zero stays in guest memory.
 
 Where the writer flushes what it wrote, the patch marks the flush call instead (`nvn_claim_flush_written`), and that
 flush's range is the report. A mark needs a census of that call: every write of its class lies inside the flush that
@@ -180,8 +187,8 @@ Measured in OoT's Kokiri test (`debug.replog`, `nvn.log_pools`):
   them.
 - **GPU results through storage buffers** (the exposure light sums, the light visibility counters) are allocations
   inside the same heap. Their makers (`exposure_light_buffers_create`, `render_light_visibility_buffer`) claim them as
-  Readback (each allocation is a pool of its own). Their readers zero the sums each frame, and patches report those
-  stores.
+  Readback (each allocation is a pool of its own). Their readers zero the sums each frame: the light-visibility zero
+  is reported, the exposure sums are cleared on the GPU before the passes that add to them.
 - **Which pools the CPU reads.** A pool the game allocates CPU-cached (0x24) and invalidates before it reads is one whose
   GPU writes the CPU reads. The invalidate is never a signal, but a survey of the invalidates per pool (a 600-present
   run) names the Readback candidates; the claim then goes on their maker.

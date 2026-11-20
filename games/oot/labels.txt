@@ -394,6 +394,9 @@
 80c54290 exposure_light_buffers_create    # exposure_light_readback's object: four buffers by ubo_object_pool_alloc (+0xc0 0x90 bytes, +0x30, +0x1d8, +0x268 0x1010 bytes each, filled from a 0x1010 template, +0x150 0x40 x2), the averages' histories (+0x320, +0x340, +0x360)
 834a5280 math_vec4_scale                  # four floats at x0 times s0, returned in s0..s3
 831e5dd0 render_light_visibility_buffer   # makes an object (0x870 bytes, "Player") with the 0x40 buffer at +0x720 that render_light_visibility_readback reads # ? which objects; reached through a pointer only
+80293f10 exposure_pass_sum_a             # games/oot/patches/pools.c: pass_scene_pipeline's exposure pass of the +0x30 light-sum buffer (x0 the exposure object, x1 the pass context, command buffer at +0xd8): program, uniforms, ubo_object_bind of the buffer (0x8029410c), four textures, one 1x1x1 dispatch (0x80294180) whose atomic adds make the frame's sum
+80294720 exposure_pass_sum_b             # games/oot/patches/pools.c: the same for the +0x1d8 buffer (16 bytes read: bind 0x80294978, dispatch 0x802949ac)
+802b69c0 exposure_pass_sum_c             # games/oot/patches/pools.c: the same for the +0x268 buffer (bind 0x802b6b38, dispatch 0x802b720c, three "countup" views)
 80357060 exposure_light_readback          # work/assets/native/readback2.md D: each frame reads one float of each of the three 0x1010 light-sum buffers (+0x30 at 0x803571c4, +0x1d8 +0xc at 0x803573c4, +0x268 at 0x80357784; GPU atomic adds of 592079442d7129da, 435a0138b9013040, aba5e6af8d4683eb), zeroes them, keeps moving averages (+0x32c, +0x34c, +0x36c), and writes the 0x90 exposure block (+0xc0: four sums zeroed, 8 floats, 0x60 zero bytes; 0x80357608) and a 0x40 light block (+0x150)
 
 # --- shaders and programs
