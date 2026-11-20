@@ -1109,10 +1109,10 @@ void claims_stats(char* out, size_t cap) {
     std::lock_guard lk(mu);
     retired_sweep();
     std::snprintf(out, cap, "claims: pools made by claim: textures %lld, targets %lld, host %lld, vram %lld, upload %lld, readback %lld, "
-                  "layer 0 %lld; regions %lld made, %lld freed, %zu retiring, %lld failed; VRAM %llu MB live; imports %llu MB live (%lld "
+                  "load once %lld, layer 0 %lld; regions %lld made, %lld freed, %zu retiring, %lld failed; VRAM %llu MB live; imports %llu MB live (%lld "
                   "arenas, %lld of their own); spans outside a region %lld",
                   (long long)st_by_claim[NVN_CLAIM_TEXTURES], (long long)st_by_claim[NVN_CLAIM_TARGETS], (long long)st_by_claim[NVN_CLAIM_HOST],
-                  (long long)st_by_claim[NVN_CLAIM_VRAM], (long long)st_by_claim[NVN_CLAIM_UPLOAD], (long long)st_by_claim[NVN_CLAIM_READBACK],
+                  (long long)st_by_claim[NVN_CLAIM_VRAM], (long long)st_by_claim[NVN_CLAIM_UPLOAD], (long long)st_by_claim[NVN_CLAIM_READBACK], (long long)st_by_claim[NVN_CLAIM_LOAD_ONCE],
                   (long long)st_by_claim[NVN_CLAIM_LAYER0], (long long)st_regions, (long long)st_freed, retired.size(), (long long)st_failed,
                   (unsigned long long)(vram_live >> 20), (unsigned long long)(import_live >> 20), (long long)st_arenas,
                   (long long)st_own_imports, (long long)st_span_missed.load());
