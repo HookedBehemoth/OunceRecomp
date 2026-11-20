@@ -349,13 +349,13 @@
 # --- uniform and other GPU data writers, GPU pools
 809de920 gpu_pool_create                  # work/assets/native/alloc-transfer.md: made 4,574 of the game's GPU pools ("gpu")
 80021ca0 model_prev_transform_write       # work/assets/native/cpu-to-gpu.md, work/assets/native/alloc-transfer.md: prev/last world matrices for motion vectors ("mLastTransform/mPrevTransform")
-8029f590 ubo_compute_dispatch_consts      # work/assets/native/uniform-buffers.md: compute dispatch constants
+8029f590 ubo_object_bind_uniform          # docs/direct/uniform-rings.md: binds a ubo object's current copy (+0x80 + align(+0x40) x (+0x48 x (+0x4a >> 4) + element)) as a uniform buffer at each stage its location word names (247 callers); a binder, not a writer: the census called its class compute dispatch constants
 808a3050 ubo_env_block_write              # work/assets/native/uniform-buffers.md, work/assets/native/engine-materials.md: environment block, filled by the binder on its first bind each frame
 80364ee0 ubo_model_scene_view_write       # work/assets/native/uniform-buffers.md: the model-scene job's view writer
 80522050 ubo_object_block_alloc           # work/assets/native/uniform-buffers.md
-805215b0 ubo_object_pool_alloc            # work/assets/native/uniform-buffers.md, work/assets/native/second-map.md: per-object uniform pool (28 KB per render view)
-802a8fc0 ubo_ring_16mb                    # work/assets/native/alloc-transfer.md: wraps slots of the 16 MB ring 0x102e645000
-8005e7c0 ubo_ring_alloc_helper            # work/assets/native/uniform-buffers.md, work/assets/native/engine-layers.md: helper of the per-draw ring pool f_809de920
+805215b0 ubo_object_pool_alloc            # docs/direct/uniform-rings.md, work/assets/native/uniform-buffers.md, work/assets/native/second-map.md: a ubo object's block (object, heap, copies, elements), copies x elements aligned members through ubo_object_block_alloc; +0x4a holds the copy count (low nibble) and the current copy (high nibble), which writers flip before they write (copy = 1 - copy at f_80366e00, f_80493950; f_8034cea0); per-object uniform pool (28 KB per render view)
+802a8fc0 ubo_ring_16mb                    # docs/direct/uniform-rings.md, work/assets/native/alloc-transfer.md: agl::utl::DynamicUniformBlockAllocator's alloc (x1 data, x2 size): copies the data into the 16 MB ring 0x102e645000 (a compare-and-swap bump of +0x6c that wraps to 0, no GPU fence), flushes when the pool is CPU-cached, and hands out the next of its 0x90-byte ubo objects (+0x68 modulo +0x48) with a new NVNbuffer; 72 callers (passes, compute)
+8005e7c0 ubo_heap_block_alloc             # docs/direct/uniform-rings.md, work/assets/native/engine-layers.md: ubo_object_block_alloc's pool helper: pool flags from the block's attributes, then gpu_pool_create (a sub-allocation of a shared pool, or a pool of its own); not a ring
 814f2c80 ubo_param_dirty_write            # docs/direct/pool-claims.md: writes a block's changed parameters (a dirty bit mask over its parameter table; each through its own writer or a memcpy) into its uniform memory; memwatch saw it write +0x1b0 of a 0x100 block in a gpu_pool_create 1 MB pool during the next frame's calc jobs (job_calc_runner -> f_8009b7b0) # ? which objects
 81500200 ubo_shape_block_write            # work/assets/native/uniform-buffers.md, work/assets/native/cpu-to-gpu.md: shape / material / skeleton pool writer
 83647b20 ubo_transient_buffer_wrap        # work/assets/native/alloc-transfer.md, work/assets/native/nvn-callpaths.md: transient NVNbuffer Init/GetAddress/Finalize
@@ -443,7 +443,7 @@
 
 # --- engine: agl, sead, gfx system, heaps, threads, config
 80c4cad0 agl_driver_mgr_dl                # work/assets/native/engine-layers.md: agl::driver::GraphicsDriverMgr TemporaryDL / CopyDL / Condition
-80c49c80 agl_dynamic_block_alloc_a        # work/assets/native/engine-layers.md: agl::utl::Dynamic{Uniform,ShaderStorage}BlockAllocator / OcclusionQueryAllocator
+80c49c80 agl_dynamic_uniform_block_init   # docs/direct/uniform-rings.md, work/assets/native/engine-layers.md: agl::utl::DynamicUniformBlockAllocator's init (from dta_create): its ring block (ubo_object_block_alloc_b, 0x100-aligned) and its slot objects (+0x48)
 80c4ab80 agl_dynamic_block_alloc_b        # work/assets/native/engine-layers.md: (same group)
 80c4da80 agl_dynamic_block_alloc_c        # work/assets/native/engine-layers.md: (same group)
 80c4fd10 agl_gpu_timestamp_array          # work/assets/native/engine-layers.md: agl::perf::GPUTimeStampArray

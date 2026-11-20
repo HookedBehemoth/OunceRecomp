@@ -17,6 +17,7 @@ made from the game belongs in these pages or in the repository; it stays under `
 - [Render targets](render-targets.md): sizes, switches, the allocator hook, shadows and upscaling.
 - [The transient pool](transient-pool.md): one allocation for the transient render targets.
 - [Pool claims](pool-claims.md): what backs each memory pool on the GPU, and the plan that removes layer 0.
+- [Uniform rings](uniform-rings.md): OoT's uniform data paths, and the steps that copy less of it or none.
 - [Pool users](pool-users.md): what the gsys object blocks still on layer 0 hold, and the patches that fit them to a
   desktop GPU.
 

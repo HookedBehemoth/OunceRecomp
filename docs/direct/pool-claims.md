@@ -264,24 +264,16 @@ running. Expect a small regression on AMD, where layer 0 was zero-copy: Upload a
 OoT's uniform data is persistent, double-buffered per-object blocks (bound at base + (frame & 1) * stride), written in
 place by a few writers. The bound-range copy moves about 0.55 to 0.97 MB a frame, of which only 40 to 60 KB was written
 (work/assets/native/uniform-buffers.md, section 1). The writers report their ranges with `nvn_claim_write`, and only
-reported or dirty ranges are copied: `ubo_param_dirty_write` (the calc jobs), `ubo_view_camera_write`,
-`ubo_view_pool_write`, `ubo_shape_block_write`, `ubo_env_block_write`, the Vfx3 emitter writers,
-`sky_inscatter_ubo_write` and `ubo_compute_dispatch_consts`. The bound-range copy stays only where no writer is
-patched; the check must show 0 mismatches, and the uploaded bytes and host draw time are measured before and after.
+reported or dirty ranges are copied. The writers to cover and the plan are in [uniform rings](uniform-rings.md). The
+bound-range copy stays only where no writer is patched; the check must show 0 mismatches, and the uploaded bytes and
+host draw time are measured before and after.
 
 ### Step 9: write-once uniform rings
 
-The game's per-frame uniform ring allocators, the gsys heap's general pools (0x22, Upload) in the first place, are
-patched so the game writes straight into a persistently mapped buffer the back end owns: device-local and host-visible
-on ReBAR, host-visible otherwise. That removes the staging copy and the dirty marking for that data, as desktop engines
-do it. The goal is to win back the host-draw time Upload cost in Kokiri (about 0.5 to 0.7 ms).
-
-Open questions:
-
-- the allocator patch points;
-- how the guest's addresses map to that memory: the guest's pointers must stay valid in the fixed 0x1000_0000_0000
-  window, or the ring patch hands out addresses that the address table maps to the buffer;
-- Windows, which has no placed mapping (`VK_EXT_map_memory_placed`).
+The gsys heap's uniform pools and agl's dynamic uniform ring get addresses where the back end maps device-local,
+host-visible memory with `VK_EXT_map_memory_placed`, so the game writes once into memory the GPU reads and nothing is
+copied. Linux only; Windows has no placed map and stays on step 8a. The paths, the placement options and the plan are
+in [uniform rings](uniform-rings.md).
 
 ### The NVIDIA check
 
@@ -300,6 +292,6 @@ lines must report 0 mismatches.
 
 ## Deferred
 
-- **Driver-mapped memory as the game's storage** for patch-owned pools (`VK_EXT_map_memory_placed`): the guest's
-  writes would land in GPU memory with no copy. Only Mesa has it; NVIDIA is unconfirmed and Windows lacks it, CPU reads
-  of VRAM are slow, and it cannot serve in-place files. Not planned.
+- **Driver-mapped memory for other pools** (`VK_EXT_map_memory_placed`, as step 9 does for the uniform pools): CPU
+  reads of device-local, host-visible memory are uncached, Windows has no placed map, and it cannot serve in-place
+  files. Not planned.
