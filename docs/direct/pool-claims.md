@@ -48,6 +48,17 @@ reads them. The game's flush and invalidate calls are never a signal. Patches re
   them (the loader's body) and then excluded from the per-submit copies. A copy at first use would hitch and race
   streaming.
 
+**How the copies run.** An Upload or Readback claim's region is device-local, in the same arenas as VRAM claims, and is
+copied whole from guest memory at the first submission after its pool is made. At each submission, when its first
+chunk goes to the queue, the merged ranges its lists read in Upload regions are copied from guest memory into a
+host-visible staging chunk and from there into the regions, before its work. A staging chunk is reused once the GPU is
+past its submission.
+
+**Pools both uploaded and written by the GPU.** A page that any GPU work writes (a storage buffer the program writes,
+a copy's or a fill's destination, a report) belongs to the GPU from the submission that first writes it: bound
+ranges never copy it again, so a re-upload cannot overwrite what the GPU added. The CPU's writes there reach the GPU only
+through a writer's report, and the CPU reads the GPU's only through a Readback range.
+
 A report from a ring or an allocator arrives before the write. With two guest queues, an async-compute submit can fall
 between the allocation and the write, so a report is kept live until its ring flips, not consumed by the next submit.
 

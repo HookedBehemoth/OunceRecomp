@@ -191,6 +191,7 @@ struct Pool {
 };
 std::multimap<uint64_t, Pool> pools;   // (mu; every pool the game has, by base)
 uint32_t vram_type = UINT32_MAX;
+std::vector<Region*> whole_uploads;   // (mu; Upload and Readback regions made since the last submit: copied whole then)
 uint64_t vram_live = 0, import_live = 0;
 int64_t st_regions = 0, st_failed = 0, st_freed = 0, st_split_full = 0, st_arenas = 0, st_own_imports = 0;
 int64_t st_by_claim[NVN_CLAIM_KINDS] = {};
@@ -380,9 +381,10 @@ void block_give(uint32_t bi, uint64_t off, uint64_t size) {   // (mu held; the G
     if (it != f.begin())
         if (auto p = std::prev(it); p->first + p->second == it->first) p->second += it->second, f.erase(it);
 }
-/// A VRAM claim's region over guest pages [lo, hi): a buffer in a VRAM arena. The CPU never reads or writes such a
-/// pool; the GPU's copies fill it. Null on failure (mu held)
-Region* region_vram(uint64_t lo, uint64_t hi) {
+/// A VRAM, Upload or Readback claim's region over guest pages [lo, hi): a buffer in a device-local arena. The GPU reads
+/// and writes only it; staged copies move the CPU's writes in (Upload) and the GPU's out (Readback). Null on failure
+/// (mu held)
+Region* region_local(uint64_t lo, uint64_t hi, uint32_t claim) {
     const VkBuffer b = region_buffer(hi - lo, nullptr);
     if (!b) return nullptr;
     VkMemoryRequirements req{};
@@ -394,7 +396,7 @@ Region* region_vram(uint64_t lo, uint64_t hi) {
         return nullptr;
     }
     vram_live += req.size;
-    Region* r = region_publish(lo, hi, b, VK_NULL_HANDLE, NVN_CLAIM_VRAM);
+    Region* r = region_publish(lo, hi, b, VK_NULL_HANDLE, claim);
     r->block = bi, r->block_off = off, r->block_size = req.size;
     return r;
 }
@@ -459,7 +461,7 @@ struct SubRange {
 };
 struct ClaimSubImpl {
     std::vector<SubRange> ranges;
-    uint64_t frame = 0;
+    uint64_t frame = 0, run_frame = 0, run_behind = 0;   // (presents at its submit and at its first chunk; values the GPU was behind)
     // (the check: the guest bytes when its first chunk went, and the region's bytes the GPU copied before its work)
     std::vector<SubRange> checked;
     std::vector<uint8_t> want;
@@ -600,16 +602,20 @@ void compare(ClaimSubImpl& s) {
             lists[0] = 0;
             for (uint32_t lr : s.sites) k += std::snprintf(lists + k, k < (int)sizeof lists ? sizeof lists - k : 0, " %#x", lr);
             const std::string pool = pool_name(x.lo);
+            int64_t seen;
             {
                 std::lock_guard lk(miss_mu);
                 char key[160];
                 std::snprintf(key, sizeof key, "%s flags %#x (%s)", x.r->by ? x.r->by : "?", x.r->flags, uses.c_str());
-                misses[key]++;
+                seen = misses[key]++;
             }
-            if (st_mismatches.fetch_add(1, std::memory_order_relaxed) < 16)
-                logf("direct: claims: ERROR: check: %#llx+%#llx (%s) differs from guest memory at +%#llx: %s; present %llu, lists%s",
+            st_mismatches.fetch_add(1, std::memory_order_relaxed);
+            if (seen < 4)   // (the first of each pool group and use)
+                logf("direct: claims: ERROR: check: %#llx+%#llx (%s) differs from guest memory at +%#llx: %s; submitted at present %llu, "
+                     "sent at %llu with the GPU %llu values behind, compared at %llu; lists%s",
                      (unsigned long long)x.lo, (unsigned long long)n, uses.c_str(), (unsigned long long)first, pool.c_str(),
-                     (unsigned long long)s.frame, lists);
+                     (unsigned long long)s.frame, (unsigned long long)s.run_frame, (unsigned long long)s.run_behind,
+                     (unsigned long long)present_count(), lists);
             strict_event("a bound range the GPU reads differs from guest memory", "%#llx+%#llx (%s): %s", (unsigned long long)x.lo,
                          (unsigned long long)n, uses.c_str(), pool.c_str());
         }
@@ -619,9 +625,37 @@ void compare(ClaimSubImpl& s) {
     s.buf = VK_NULL_HANDLE, s.mem = nullptr, s.map = nullptr;
 }
 
+/// Upload staging: host-visible chunks, each holding one submission's copies until the GPU is past it (check_mu)
+struct Staging {
+    VkBuffer buf = VK_NULL_HANDLE;
+    Mem* mem = nullptr;
+    uint8_t* map = nullptr;
+    uint64_t size = 0, busy = 0;   // (busy: the value that frees it; UINT64_MAX until it is sent)
+};
+std::vector<Staging> staging;
+std::atomic<int64_t> st_up_subs{0}, st_up_ranges{0}, st_up_bytes{0}, st_up_whole{0}, st_up_ns{0}, st_up_skipped_gpu{0};
+int64_t staging_take(uint64_t n) {   // (check_mu held: a chunk of at least n bytes no work uses, made when none is)
+    const uint64_t done = sync_completed();
+    int best = -1;
+    for (size_t i = 0; i < staging.size(); i++)
+        if (staging[i].busy <= done && staging[i].size >= n && (best < 0 || staging[i].size < staging[best].size)) best = (int)i;
+    if (best < 0) {
+        Staging c;
+        c.size = std::max<uint64_t>(16ull << 20, (n + (1 << 20) - 1) & ~((1ull << 20) - 1));
+        void* map = nullptr;
+        if (!mem_buffer(c.size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true, c.buf, c.mem, &map, MO_UPLOAD) || !map) return -1;
+        c.map = (uint8_t*)map;
+        staging.push_back(c);
+        best = (int)staging.size() - 1;
+    }
+    staging[best].busy = UINT64_MAX;
+    return best;
+}
+
 }  // namespace
 
 struct ClaimSub : ClaimSubImpl {
+    int64_t staged = -1;   // (its staging chunk)
     bool ran = false;
 };
 
@@ -640,7 +674,7 @@ ClaimSub* claims_gather(List* const* lists, size_t n) {
         Region* r = region_at(b.lo);
         if (!r || !r->pages) continue;
         const uint64_t hi = std::min<uint64_t>(b.lo + b.size, r->hi);
-        if ((1u << b.use) & kGpuWrites && track_check && r->claim == NVN_CLAIM_LAYER0) mark_gpu_written(b.lo, hi);
+        if ((1u << b.use) & kGpuWrites) mark_gpu_written(b.lo, hi);   // (its pages the GPU's from now on: see claims_sub_run)
         if (!s->ranges.empty() && s->ranges.back().r == r && b.lo <= s->ranges.back().hi) {
             SubRange& x = s->ranges.back();
             x.hi = std::max(x.hi, hi), x.uses |= 1u << b.use;
@@ -649,58 +683,141 @@ ClaimSub* claims_gather(List* const* lists, size_t n) {
         s->ranges.push_back({b.lo, hi, r, 1u << b.use});
     }
     if (track_use) measure(*s, raw);
-    if (!track_check) return delete s, nullptr;
     return s;
 }
 
 VkCommandBuffer claims_sub_run(ClaimSub* s) {
     if (!s || s->ran) return VK_NULL_HANDLE;
     s->ran = true;
-    uint64_t total = 0;
+    const auto t0 = std::chrono::steady_clock::now();
+    s->run_frame = present_count(), s->run_behind = sync_pushed() - sync_completed();
+    // (Upload: the CPU's bytes of what its lists read, its pages the GPU writes left out: those are the GPU's from the first
+    // submission that writes them, and the CPU's writes there reach the GPU only through a writer's report. Upload and
+    // Readback regions made since the last submit: whole)
+    struct Up {
+        Region* r;
+        uint64_t lo, hi;
+    };
+    std::vector<Up> ups;
+    {
+        std::lock_guard lk(mu);
+        for (Region* r : whole_uploads)
+            if (r->pages) ups.push_back({r, r->lo, r->hi}), st_up_whole.fetch_add(1, std::memory_order_relaxed);
+        whole_uploads.clear();
+    }
     for (const SubRange& x : s->ranges) {
-        // (what the CPU writes and the GPU only reads: layer-0 claims' ranges no GPU work may write; VRAM and readback
-        // claims' are the GPU's)
-        if (x.r->claim != NVN_CLAIM_LAYER0 && x.r->claim != NVN_CLAIM_UPLOAD) continue;
-        if (x.uses & kGpuWrites || (x.r->claim == NVN_CLAIM_LAYER0 && any_gpu_written(x.lo, x.hi))) {
-            st_skipped_gpu_written.fetch_add(1, std::memory_order_relaxed);
+        if (x.r->claim != NVN_CLAIM_UPLOAD) continue;
+        if (x.uses & kGpuWrites) {
+            st_up_skipped_gpu.fetch_add(1, std::memory_order_relaxed);
             continue;
         }
-        s->checked.push_back(x), total += x.hi - x.lo;
+        for (uint64_t a = x.lo; a < x.hi;) {   // (the pages no GPU work writes, in runs)
+            const uint64_t pe = std::min(x.hi, (a & ~(kPage - 1)) + kPage);
+            if (any_gpu_written(a, pe)) {
+                st_up_skipped_gpu.fetch_add(1, std::memory_order_relaxed);
+                a = pe;
+                continue;
+            }
+            if (!ups.empty() && ups.back().r == x.r && ups.back().hi == a) ups.back().hi = pe;
+            else ups.push_back({x.r, a, pe});
+            a = pe;
+        }
     }
-    if (!total) return VK_NULL_HANDLE;
-    void* map = nullptr;
-    if (!mem_buffer(total, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, s->buf, s->mem, &map, MO_OTHER) || !map) {
-        logf("direct: claims: ERROR: check: no buffer of %llu bytes", (unsigned long long)total);
-        s->checked.clear();
-        return VK_NULL_HANDLE;
-    }
-    s->map = (uint8_t*)map;
-    s->want.resize(total);
+    uint64_t up_total = 0;
+    for (const Up& u : ups) up_total += u.hi - u.lo;
+    std::vector<uint64_t> up_at(ups.size());   // (each upload's place in the staging chunk)
+    // (the check: what the CPU writes and the GPU only reads, after the uploads)
+    uint64_t total = 0;
+    if (track_check)
+        for (const SubRange& x : s->ranges) {
+            if (x.r->claim != NVN_CLAIM_LAYER0 && x.r->claim != NVN_CLAIM_UPLOAD) continue;
+            if (x.uses & kGpuWrites || any_gpu_written(x.lo, x.hi)) {
+                st_skipped_gpu_written.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
+            s->checked.push_back(x), total += x.hi - x.lo;
+        }
+    if (!up_total && !total) return VK_NULL_HANDLE;
     VkCommandBuffer cb = check_buffer();
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(cb, &bi);
-    record_dep(cb, Dep{VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
-                       VK_ACCESS_2_TRANSFER_READ_BIT, 0});
-    uint64_t at = 0;
-    for (const SubRange& x : s->checked) {
-        const uint64_t n = x.hi - x.lo;
-        host->gpu_read(x.lo, s->want.data() + at, n);
-        const VkBufferCopy c{x.lo - x.r->lo, at, n};
-        copy_buffer(cb, x.r->buffer, s->buf, 1, &c);
-        at += n;
-    }
-    record_dep(cb, Dep{VK_PIPELINE_STAGE_2_COPY_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
-                       VK_ACCESS_2_MEMORY_WRITE_BIT, 0});
-    vkEndCommandBuffer(cb);
     s->cb = cb;
-    st_checked_ranges.fetch_add((int64_t)s->checked.size(), std::memory_order_relaxed);
-    st_checked_bytes.fetch_add((int64_t)total, std::memory_order_relaxed);
+    if (up_total) {
+        Staging* st = nullptr;
+        {
+            std::lock_guard lk(check_mu);
+            s->staged = staging_take(up_total);
+            if (s->staged >= 0) st = &staging[s->staged];
+        }
+        if (!st) {
+            logf("direct: claims: ERROR: no upload staging of %llu bytes", (unsigned long long)up_total);
+        } else {
+            record_dep(cb, Dep{VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
+                               VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, 0});
+            uint64_t at = 0;
+            std::vector<VkBufferCopy> cs;
+            for (size_t i = 0; i < ups.size(); i++) {
+                const Up& u = ups[i];
+                up_at[i] = at;
+                host->gpu_read(u.lo, st->map + at, u.hi - u.lo);
+                cs.push_back({at, u.lo - u.r->lo, u.hi - u.lo});
+                at += u.hi - u.lo;
+                if (i + 1 == ups.size() || ups[i + 1].r != u.r) copy_buffer(cb, staging[s->staged].buf, u.r->buffer, (uint32_t)cs.size(), cs.data()), cs.clear();
+            }
+            mem_flush(st->mem);
+            record_dep(cb, Dep{VK_PIPELINE_STAGE_2_COPY_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                               VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT, 0});
+            st_up_subs.fetch_add(1, std::memory_order_relaxed), st_up_ranges.fetch_add((int64_t)ups.size(), std::memory_order_relaxed);
+            st_up_bytes.fetch_add((int64_t)up_total, std::memory_order_relaxed);
+        }
+    }
+    void* map = nullptr;
+    if (total && (!mem_buffer(total, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, s->buf, s->mem, &map, MO_OTHER) || !map)) {
+        logf("direct: claims: ERROR: check: no buffer of %llu bytes", (unsigned long long)total);
+        s->checked.clear(), total = 0;
+    }
+    if (total) {
+        s->map = (uint8_t*)map;
+        s->want.resize(total);
+        record_dep(cb, Dep{VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+                           VK_ACCESS_2_TRANSFER_READ_BIT, 0});
+        uint64_t at = 0;
+        for (const SubRange& x : s->checked) {
+            const uint64_t n = x.hi - x.lo;
+            // (a range this submission uploads: the bytes it copied, so a write racing the copy is not a mismatch; the check
+            // is for what no copy covers: load-once and pointer-reached data, and the layer-0 claims' memory)
+            for (uint64_t a = x.lo; a < x.hi;) {
+                const Up* u = nullptr;
+                for (const Up& w : ups)
+                    if (w.r == x.r && w.lo <= a && a < w.hi) u = &w;
+                const uint64_t e = u ? std::min(x.hi, u->hi) : x.hi;
+                if (u && s->staged >= 0) std::memcpy(s->want.data() + at + (a - x.lo), staging[s->staged].map + up_at[u - ups.data()] + (a - u->lo), e - a);
+                else host->gpu_read(a, s->want.data() + at + (a - x.lo), e - a);
+                a = e;
+            }
+            const VkBufferCopy c{x.lo - x.r->lo, at, n};
+            copy_buffer(cb, x.r->buffer, s->buf, 1, &c);
+            at += n;
+        }
+        record_dep(cb, Dep{VK_PIPELINE_STAGE_2_COPY_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                           VK_ACCESS_2_MEMORY_WRITE_BIT, 0});
+        st_checked_ranges.fetch_add((int64_t)s->checked.size(), std::memory_order_relaxed);
+        st_checked_bytes.fetch_add((int64_t)total, std::memory_order_relaxed);
+    }
+    vkEndCommandBuffer(cb);
+    st_up_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count(),
+                       std::memory_order_relaxed);
     return cb;
 }
 
 void claims_sub_sent(ClaimSub* s, uint64_t value) {
     if (!s) return;
+    if (s->staged >= 0) {
+        std::lock_guard lk(check_mu);
+        staging[s->staged].busy = value;
+    }
+    if (!s->cb && !s->map) return delete s;
     readback_then(value, [s] {
         compare(*s);
         if (s->cb) {
@@ -808,8 +925,8 @@ bool claims_on() {
             if ((req.memoryTypeBits >> i & 1) && (f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) && (pass || !(f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)))
                 vram_type = i;
         }
-    track_check = dbg(SET_DBG_CLAIMCHECK), track_use = dbg(SET_DBG_CLAIMUSE), tracking = track_check || track_use;
-    if (track_check) gpu_written = std::vector<std::atomic<uint64_t>>((guest_bytes >> kPageShift >> 6) + 1);
+    track_check = dbg(SET_DBG_CLAIMCHECK), track_use = dbg(SET_DBG_CLAIMUSE), tracking = true;
+    gpu_written = std::vector<std::atomic<uint64_t>>((guest_bytes >> kPageShift >> 6) + 1);
     granule_region.reset(new std::atomic<uintptr_t>[(guest_bytes >> kGranuleShift) + 1]);
     for (uint64_t j = 0; j <= guest_bytes >> kGranuleShift; j++) granule_region[j].store(0, std::memory_order_relaxed);
     logf("direct: claims on: a region per pool the GPU reads; VRAM claims in memory type %d, layer-0 claims imported as type %u",
@@ -836,10 +953,10 @@ void claims_pool(uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, co
     const uint64_t lo = gpu / kPage * kPage, hi = std::min((gpu + size + kPage - 1) / kPage * kPage, guest_bytes);
     const bool gpu_reads = !(flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS);
     if (claim == NVN_CLAIM_LAYER0 && gpu_reads) r = region_import(lo, hi);
-    else if (claim == NVN_CLAIM_VRAM) r = region_vram(lo, hi);
-    else if (claim != NVN_CLAIM_LAYER0 && claim != NVN_CLAIM_TEXTURES && claim != NVN_CLAIM_TARGETS && claim != NVN_CLAIM_HOST)
-        logf("direct: claims: pool %#llx+%#llx: claim %u has no memory yet", (unsigned long long)gpu, (unsigned long long)size, claim);
-    if ((claim == NVN_CLAIM_VRAM || (claim == NVN_CLAIM_LAYER0 && gpu_reads)) && !r && st_failed++ < 8)
+    else if (claim == NVN_CLAIM_VRAM || claim == NVN_CLAIM_UPLOAD || claim == NVN_CLAIM_READBACK) r = region_local(lo, hi, claim);
+    if (r && claim != NVN_CLAIM_VRAM && claim != NVN_CLAIM_LAYER0) whole_uploads.push_back(r);   // (its contents now: at the next submit)
+    if ((claim == NVN_CLAIM_VRAM || claim == NVN_CLAIM_UPLOAD || claim == NVN_CLAIM_READBACK || (claim == NVN_CLAIM_LAYER0 && gpu_reads)) && !r &&
+        st_failed++ < 8)
         logf("direct: claims: pool %#llx+%#llx flags %#x (claim %u): no region", (unsigned long long)gpu, (unsigned long long)size, flags, claim);
     if (r) r->by = by, r->flags = flags, __atomic_store_n(&r->track, track_made(r), __ATOMIC_RELEASE);
     pools.insert({gpu, Pool{size, flags, claim, r, by}});
@@ -914,6 +1031,11 @@ void claims_stats(char* out, size_t cap) {
                   (long long)st_by_claim[NVN_CLAIM_LAYER0], (long long)st_regions, (long long)st_freed, retired.size(), (long long)st_failed,
                   (unsigned long long)(vram_live >> 20), (unsigned long long)(import_live >> 20), (long long)st_arenas,
                   (long long)st_own_imports, (long long)st_span_missed.load());
+    const size_t k = std::strlen(out);
+    std::snprintf(out + k, cap - k, "; uploads since the start: %lld submissions, %lld ranges, %lld MB, %lld whole regions, %.1f ms on the "
+                  "submitting threads, %lld ranges or pages left to the GPU (it writes them); staging %zu chunks",
+                  (long long)st_up_subs.load(), (long long)st_up_ranges.load(), (long long)(st_up_bytes.load() >> 20), (long long)st_up_whole.load(),
+                  st_up_ns.load() / 1e6, (long long)st_up_skipped_gpu.load(), staging.size());
 }
 
 }  // namespace hsd

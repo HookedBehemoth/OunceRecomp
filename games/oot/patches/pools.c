@@ -17,6 +17,11 @@ static int gpu_only_vram(uint32_t flags, uint64_t size) {
     (void)size;
     return (flags & 0x7) == 0x1 && !(flags & 0x308) ? NVN_CLAIM_VRAM : NVN_CLAIM_LAYER0;
 }
+/* the gsys GPU heap's pools: its general pools (0x22: uniform blocks, reports, CPU-written texels) are Upload, the
+   CPU_NO_ACCESS ones VRAM; the rest stay layer 0's until their claims move */
+static int gsys_rule(uint32_t flags, uint64_t size) {
+    return (flags & 0xff) == 0x22 ? NVN_CLAIM_UPLOAD : gpu_only_vram(flags, size);
+}
 #define CLAIM_RULE(fn)                        \
     nvn_claim_begin_rule(gpu_only_vram, fn);  \
     const uint64_t r = guest_orig(orig);      \
@@ -43,7 +48,10 @@ PATCH_FUNC(0x812c3d60, word(0xd503237f), body(0x29df94e62f1665a4), aapcs, x0, po
 }
 /* the gsys GPU heap (0x12, 0x22, 0x24, 0xa1: uniform blocks, vertex streams, GPU scratch) */
 PATCH_FUNC(0x809de920, word(0xd503237f), body(0x02d1932cc850ce16), aapcs, x0, pools_gpu_heap, orig) {
-    CLAIM_RULE("gpu_pool_create");
+    nvn_claim_begin_rule(gsys_rule, "gpu_pool_create");
+    const uint64_t r = guest_orig(orig);
+    nvn_claim_end();
+    return r;
 }
 /* agl's pool wrapper (the tera manager's pools; the texture heap's inside its own claim) */
 PATCH_FUNC(0x80f6c9d0, word(0xd503237f), body(0x698a26829c189947), aapcs, x0, pools_agl, orig) {

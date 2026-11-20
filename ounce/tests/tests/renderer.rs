@@ -12,7 +12,8 @@ use std::sync::OnceLock;
 // ---- the claims' regions (renderer/vk_claims.cpp)
 
 /// vk_claims.cpp reads no environment, writes a region's table entries before it publishes the region as a granule's
-/// owner (a reader that finds the owner finds its entries), and sub-allocates VRAM regions from its arenas (one device
+/// owner (a reader that finds the owner finds its entries), and sub-allocates device-local regions (VRAM, Upload, Readback)
+/// from its arenas (one device
 /// allocation per pool would pass the allocation limit and lengthen every submission).
 #[test]
 fn claims_regions() {
@@ -20,8 +21,8 @@ fn claims_regions() {
     assert!(!c.contains("getenv"), "vk_claims.cpp reads the environment (settings come from the host: renderer/api/settings.h)");
     let assign = block(&c, "void region_assign(");
     assert!(find(assign, "draw_table_set((uint32_t)k, distance)") < find(assign, "granule_region[k].store((uintptr_t)r"));
-    let vram = block(&c, "Region* region_vram(");
-    assert!(vram.contains("block_take(") && !vram.contains("vkAllocateMemory"), "a VRAM region is a piece of an arena");
+    let local = block(&c, "Region* region_local(");
+    assert!(local.contains("block_take(") && !local.contains("vkAllocateMemory"), "a device-local region is a piece of an arena");
 }
 
 // ---- strict mode (renderer/vk_check.{h,cpp}), read from the source
