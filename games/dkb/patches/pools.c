@@ -104,3 +104,20 @@ PATCH_AT(0x807ac8b8, word(0xf000e67a), before, none, pools_807ac5e8_data_end) { 
 PATCH_FUNC(0x80802d48, word(0xd503237f), body(0xe94a043c888e1db2), aapcs, x0, pools_display, orig) {
     CLAIM("display_buffers_pool_init", NVN_CLAIM_TARGETS);
 }
+
+/* ---- the gsys object blocks and pools the census names (debug.poolcensus; DKB's headless run reaches only the title
+   menus), each at the call that makes it ---- */
+/* never bound, written by the CPU: f_80743ba8's (0x12, the Presentation Thread's), f_80732960's (0x12, written and read
+   by MainThread), f_804ab060's (read by f_8189f728) and f_807935d8's (0.8 MB, written about 104 pages a present on
+   SceneGraphicsDrawer): Host */
+PATCH_AT(0x80743ed4, word(0x97e948bb), before, none, pools_80743ba8) { nvn_claim_begin(NVN_CLAIM_HOST, "f_80743ba8 block"); }
+PATCH_AT(0x80743ed8, word(0xf9400268), before, none, pools_80743ba8_end) { nvn_claim_end(); }
+PATCH_AT(0x807329c4, word(0x97e98dff), before, none, pools_80732960) { nvn_claim_begin(NVN_CLAIM_HOST, "f_80732960 block"); }
+PATCH_AT(0x807329c8, word(0xb000ea48), before, none, pools_80732960_end) { nvn_claim_end(); }
+PATCH_AT(0x804ab1c0, word(0x97f3ac00), before, none, pools_804ab060) { nvn_claim_begin(NVN_CLAIM_HOST, "f_804ab060 block"); }
+PATCH_AT(0x804ab1c4, word(0xf9400aa8), before, none, pools_804ab060_end) { nvn_claim_end(); }
+PATCH_AT(0x80793688, word(0x9400010e), before, none, pools_807935d8) { nvn_claim_begin(NVN_CLAIM_HOST, "f_807935d8 block"); }
+PATCH_AT(0x8079368c, word(0x294a2668), before, none, pools_807935d8_end) { nvn_claim_end(); }
+/* f_805723e8's general pool (0x22, 14 MB, through gfx_memory_pool_init): CPU-written every frame, binds read it: Upload */
+PATCH_AT(0x80572498, word(0x97fef504), before, none, pools_805723e8) { nvn_claim_begin(NVN_CLAIM_UPLOAD, "f_805723e8 general"); }
+PATCH_AT(0x80572498, word(0x97fef504), after, none, pools_805723e8_end) { nvn_claim_end(); }   /* (0x8057249c is a branch target) */

@@ -202,10 +202,11 @@ CPU's invalidates (a CPU-cached pool the CPU invalidates is one whose GPU writes
 | the depth grid: constants, slots, the 0x5b40 block | Upload, Readback, VRAM | the per-frame camera copy into the slots reported |
 | the probe storage block, `f_80c5c450`'s calc block | VRAM | bake::ModuleMgr's records and the calc fields reported |
 | the save picture (`texdata_serialize_jpg`) | Readback | a copy the CPU waits for, then encodes |
-| terrain streams; the tile cache, `f_80f6dc20`'s pool, texdata_cpu_lut's table, texdata_init_jpg's buffer | Upload; Host | the latter never bound |
+| terrain streams, `f_82c24db0`'s block | Load once | written before their first use (the check finds no later write in Kokiri and Market); as Upload their bound ranges cost about 1 ms of host draw |
+| the tile cache, `f_80f6dc20`'s pool, texdata_cpu_lut's table, texdata_init_jpg's buffer | Host | never bound |
 | `f_80c62260`, `texdata_storage_block` | VRAM | GPU scratch the CPU fills only when it makes it |
 | `f_80c64650` | Upload | written later (`f_80c63e70`'s fill, reported) and bound as storage in Market |
-| `f_80cdf2f0`'s blocks, `f_80c5ea90`, `f_82c24db0`, the agl/gfx general pool (0x22) | Upload | CPU-written, binds read them |
+| `f_80cdf2f0`'s blocks, `f_80c5ea90`, the agl/gfx general pool (0x22) | Upload | CPU-written, binds read them |
 
 The census (`debug.poolcensus`) and `games/oot/patches/pools.c` give each maker's claim and its writer patches. Still on
 layer 0 in OoT, each for a reason a run showed:
@@ -218,6 +219,12 @@ layer 0 in OoT, each for a reason a run showed:
   the pool again at a scene's load, after its first copy and outside the scope that made it.
 - The occlusion query's records and per-id state (`depth_grid_buffers_create`). As VRAM the occlusion culling culls less
   (the foliage pass 0.9 to 1.0 ms): a CPU write after creation that the census does not attribute must be reported first.
+- DKB (its headless run reaches only the title menus; `games/dkb/patches/pools.c`): `f_80743ba8`'s, `f_80732960`'s,
+  `f_804ab060`'s and `f_807935d8`'s blocks are Host and `f_805723e8`'s general pool Upload. GeometryCullingMgr
+  (`cull_geometry_mgr_memory`) stays on layer 0: its small pool is shared by other ubo objects (the census's reads and
+  writes in flight are those tenants', page by page, not the culling's), and the address store, inlined in DKB, has no
+  report yet. The pools of `f_808ec234` (0x22, 24 MB and 13 MB, never bound at the title) and the 144 MB `f_8074431c`
+  are not reached at the title.
 - NDSR's networks' pool, `f_807ac5e8`'s data pool in DKB, and the pools of rules that fall back to layer 0 (the agl
   wrapper, nn::gfx pools other than 0x24, the gsys heap's 0x24 and 0x12 pools no maker claims).
 

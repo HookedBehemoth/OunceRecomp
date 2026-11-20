@@ -188,7 +188,7 @@ PATCH_AT(0x80c59828, word(0xb9406688), before, none, pools_cull_b_results_b_end)
    actor_records_read_a reads their counts once their submission completed, then zeroes them (`str wzr, [x21, x8]`, eleven
    stores): Readback, the zeroing made on the GPU */
 PATCH_FUNC(0x80c576b0, word(0xd503237f), body(0x006c33e34ee6fc7f), aapcs, x0, pools_80c576b0, orig) {
-    CLAIM("f_80c576b0", NVN_CLAIM_LAYER0);
+    CLAIM("f_80c576b0", NVN_CLAIM_READBACK);
 }
 PATCH_AT(0x82c1dcc8, word(0xb8286abf), after, none, pools_actor_count_zeroed, as(x21, list), as(x8, off)) { nvn_claim_fill(list + off, 4, 0); }
 PATCH_AT_SITE(0x82c1dcfc, word(0xb8286abf), after, none, pools_actor_count_zeroed, x21, x8);
@@ -299,7 +299,7 @@ PATCH_AT(0x809ea320, word(0x37000040), before, none, pools_jpg_init_end) { nvn_c
 /* terrain: terrain_streams_create's streams (the CPU writes some pages a present, binds read them): Upload; the tile
    cache terrain_tile_load fills and reads (agl_memory_pool_create_b in terrain_tera_mgr_init) and f_80f6dc20's 202 MB pool
    are never bound: Host */
-PATCH_AT(0x809e3990, word(0x97fc7af4), before, none, pools_terrain_streams) { nvn_claim_begin(NVN_CLAIM_UPLOAD, "terrain_streams_create"); }
+PATCH_AT(0x809e3990, word(0x97fc7af4), before, none, pools_terrain_streams) { nvn_claim_begin(NVN_CLAIM_LOAD_ONCE, "terrain_streams_create"); }
 PATCH_AT(0x809e3994, word(0xf9400261), before, none, pools_terrain_streams_end) { nvn_claim_end(); }
 PATCH_AT(0x809e3684, word(0x94162633), before, none, pools_terrain_tiles) { nvn_claim_begin(NVN_CLAIM_HOST, "terrain_tera_mgr_init tiles"); }
 PATCH_AT(0x809e3688, word(0xf9402260), before, none, pools_terrain_tiles_end) { nvn_claim_end(); }
@@ -331,7 +331,7 @@ PATCH_AT(0x80cdfc10, word(0x97f41a40), before, none, pools_80cdf2f0_lut) { nvn_c
 PATCH_AT(0x80cdfc14, word(0xf9401660), before, none, pools_80cdf2f0_lut_end) { nvn_claim_end(); }
 PATCH_AT(0x80c5ee20, word(0x97e309e4), before, none, pools_80c5ea90) { nvn_claim_begin(NVN_CLAIM_UPLOAD, "f_80c5ea90 block"); }
 PATCH_AT(0x80c5ee24, word(0x91152260), before, none, pools_80c5ea90_end) { nvn_claim_end(); }
-PATCH_AT(0x82c2d6cc, word(0x9763cfb9), before, none, pools_82c24db0) { nvn_claim_begin(NVN_CLAIM_UPLOAD, "f_82c24db0 block"); }
+PATCH_AT(0x82c2d6cc, word(0x9763cfb9), before, none, pools_82c24db0) { nvn_claim_begin(NVN_CLAIM_LOAD_ONCE, "f_82c24db0 block"); }
 PATCH_AT(0x82c2d6d0, word(0x9102a260), before, none, pools_82c24db0_end) { nvn_claim_end(); }
 PATCH_AT(0x80f6aa08, word(0x97e0a10a), before, none, pools_agl_general) { nvn_claim_begin(NVN_CLAIM_UPLOAD, "f_80f6a950 general"); }
 PATCH_AT(0x80f6aa0c, word(0x910003e0), before, none, pools_agl_general_end) { nvn_claim_end(); }
