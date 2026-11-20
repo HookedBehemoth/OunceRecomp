@@ -368,13 +368,6 @@ void rx_nvn_write_texels(const nvn_tex *t, unsigned level, unsigned layer0, cons
 void rx_nvn_invalidate(uint64_t gpu, uint64_t size) {
     if (vk) vk->nvn_invalidate(gpu, size);
 }
-int rx_guest_imported(uint64_t lo, uint64_t hi) {
-    /* (it takes the back end's pool lock, which the replay holds at times: a block for debug.crit) */
-    const int away = hos_block_begin(CRIT_BLOCK_OTHER, (const void *)13);
-    const int r = vk && vk->guest_imported ? vk->guest_imported(lo, hi) : 0;
-    if (away) hos_block_end();
-    return r;
-}
 /* (nvn_native.c: the CPU set an event's value) in order with the submits, for the GPU's waits on it */
 void rx_nvn_event_signal(uint64_t gpu, uint32_t value) {
     if (crit_rec && vk && vk->nvn_event_signal) {   /* (debug.crit) */

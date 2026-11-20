@@ -1,16 +1,17 @@
 # Pool claims
 
-This page explains how the GPU gets the game's memory without layer 0. Every memory pool the game makes is
+This page explains how the GPU gets the game's memory. Every memory pool the game makes is
 claimed by a game patch, and the claim says where the pool's GPU copy lives and how data moves between it and the
 game's memory. Read it before you add a pool patch, change `renderer/api/nvn_claims.h`, or change how the back end backs
-a pool. It is also the plan for removing layer 0; the order of work is at the end.
+a pool. The order of work is at the end.
 
 ## Why claims
 
 The games assume unified memory: the CPU and the GPU read and write the same bytes, and nothing tells the driver
-what changed. A PC has two memories. Layer 0 hid that by importing the game's memory into the GPU (dma-bufs on Linux,
-host pointers or regions on Windows). That works only where the platform can import memory and the driver can read
-it fast, and it puts every texture the game copies, every shader and every command list on the GPU's side for nothing.
+what changed. A PC has two memories. Importing the game's memory into the GPU (dma-bufs on Linux, host pointers on
+Windows) would hide that, but it works only where the platform can import memory and the driver reads it fast, and it
+puts every texture the game copies, every shader and every command list on the GPU's side for nothing. The back end
+imports no guest memory.
 
 A claim replaces the guess with a decision made where the game decides what a pool is for: at the engine function
 that makes it. One patch on an engine allocator claims every pool that allocator makes. A pool no claim covers is an
@@ -28,8 +29,8 @@ error: a log line that names the guest call, and a strict event.
 | Readback | device-local memory the back end owns | a staged copy-out of the GPU's writes into the game's memory when their submit completes, before any wait on it returns | report and query memory, GPU results the CPU reads |
 | Load once | device-local memory the back end owns | each page copied from the game's memory the first time a submission uses it, then never again | the in-place files' vertex and index data |
 
-Every kind the GPU reads is device-local. Host-visible memory keeps the cost layer 0 has on NVIDIA, where the GPU reads
-system memory: Kokiri runs at 5 fps there. Upload and Readback pay a staging copy instead.
+Every kind the GPU reads is device-local. On NVIDIA the GPU's reads of host-visible system memory are slow enough that
+Kokiri ran at 5 fps from it. Upload and Readback pay a staging copy instead.
 
 A pool can need two kinds for parts of it, for example an object block the CPU fills from a template and the GPU then
 adds to. The claim is then made on the allocation: the callers of a generic allocator (OoT's `gpu_pool_create`) claim
@@ -119,7 +120,7 @@ uses, and the guest data shaders reach through stored addresses (a storage buffe
 binding table, or an address held in a small storage buffer of a program that uses global memory).
 
 **The census.** `debug.poolcensus` names who on the CPU writes and reads a pool the GPU uses, and when. It watches the
-pools that `layer0` (the value `1`), claim names (`vram`, `upload`, `readback`, `loadonce`), `by:<patch>` or a hex
+pools that claim names (`vram`, `upload`, `readback`, `loadonce`; the value `1` picks all four), `by:<patch>` or a hex
 address pick, joined by `+`; `whole` also watches the pages no submission binds, which shaders reach through stored
 addresses. A page a submission binds faults on its next CPU write, and a page GPU work writes faults on its next CPU read
 too, once per present. Each fault is counted by pool maker (its creation call chain) and by writer or reader (function,
@@ -132,8 +133,7 @@ folder every 300 presents. It changes no behaviour; the faults cost about 5 µs 
 ## How the GPU finds a claimed pool
 
 Translated shaders read buffers through the address table (`bda_emit.h`): one entry per 64 KB of guest addresses,
-holding the distance from a guest address to the device address that serves it. Without layer 0 the table stays,
-and only what its entries point at changes:
+holding the distance from a guest address to the device address that serves it:
 
 - A VRAM, Upload or Readback claim gets a region: a buffer the pool's size, bound into an arena of its kind (a few
   large device allocations, the pools sub-allocated). Its granules' entries point into that buffer. Pools that share
@@ -146,18 +146,18 @@ and only what its entries point at changes:
 
 The descriptor heap does not change: textures and samplers were never in pool memory on the GPU's side.
 
-## What depends on layer 0 today, and how it is served
+## How each GPU use is served
 
-| Use | Today | With claims |
-|---|---|---|
-| Uniform, storage and global buffers in shaders | the address table into the import windows or regions | the table into the claim's buffer |
-| Vertex and index buffers, indirect arguments, draw counts | the import windows | the claim's buffer |
-| Buffer copies and fills (`CopyBufferToBuffer`, `ClearBuffer`) | the import windows | the claim's buffer |
-| Report and occlusion results | a compute step writes 16 bytes into guest memory | the step writes into a Readback claim; the copy to guest memory runs when the submit completes |
-| Render conditions | the report's word read through the windows | the Readback claim's buffer, on the GPU |
-| GPU results the CPU reads (exposure light sums, light visibility) | the CPU reads imported memory | Readback claims on the allocations, copied when their submit completes |
-| CPU_NO_ACCESS pools | layer 0's VRAM class | VRAM claims |
-| The texture heap, shader code | already left unbound | Textures and Host claims |
+| Use | Served by |
+|---|---|
+| Uniform, storage and global buffers in shaders | the address table into the claim's buffer |
+| Vertex and index buffers, indirect arguments, draw counts | the claim's buffer |
+| Buffer copies and fills (`CopyBufferToBuffer`, `ClearBuffer`) | the claim's buffer |
+| Report and occlusion results | the resolve step's records, copied into guest memory when the submit completes, and the claim's buffer where the address has one |
+| Render conditions | the report's word in the Readback claim's buffer, on the GPU |
+| GPU results the CPU reads (exposure light sums, light visibility) | Readback claims on the allocations, copied when their submit completes |
+| CPU_NO_ACCESS pools | VRAM claims |
+| The texture heap, shader code | Textures and Host claims: no GPU copy |
 
 ## What the GPU writes and the CPU reads
 
@@ -255,7 +255,7 @@ Open in DKB's tunnel test (parked; the claims above passed the title-and-tunnel 
 - **A GPU hang in the punch tutorial.** A gfx ring timeout at about present 5500, once with a GPUVM fault at device
   address 0x800393dab000 (client TCP, PERMISSION_FAULTS 3): 3 hangs in 7 runs with the claims, before `f_804ab060`'s
   block moved from Host to Readback (GPU work writes it as storage), and none in the 2 runs since; none in 3 runs of the
-  same test on layer 0 (af634bf0). Likely a claim's, unproven; the faulting address is not yet mapped back to a pool.
+  same test before the claims (af634bf0). Likely a claim's, unproven; the faulting address is not yet mapped back to a pool.
 - **The voxel scene renders black** (the geometry stage is not translated): a renderer issue, not a claim's.
 - **A gsys 0x24 heap pool the CPU reads** after GPU work writes it (the check: "the CPU reads GPU writes outside a
   Readback claim", pool `0x111105d000+0x4f000` in one run): its maker needs a Readback claim.
@@ -278,19 +278,16 @@ Each step is one commit. Each one passes `ounce test oot`, a 60-second DKB run, 
 
 | Step | What | Size |
 |---|---|---|
-| 1 | (done) The claim API: kinds in `nvn_claims.h`, the claim stored on the pool, an unclaimed pool an error. Every OoT and DKB pool claimed at its engine function; GPU-visible pools on a temporary `Layer0` kind | 400 lines, mostly patches |
-| 2 | (done) Host and Textures claims leave layer 0: shader code, command memory, descriptor pools, texture heaps, in-place texture files. The back end's texture-data-pool and shader-code special cases go | 200 lines, deletes about as many |
-| 3 | (done) Regions for every claim the GPU reads, in arenas per kind; the sparse windows go. The address table's entries point into the regions, and the CPU lookup replaces `layer0_span`. VRAM claims move first (CPU_NO_ACCESS pools) | 500 lines, deletes about 700 |
+| 1 | (done) The claim API: kinds in `nvn_claims.h`, the claim stored on the pool, an unclaimed pool an error. Every OoT and DKB pool claimed at its engine function | 400 lines, mostly patches |
+| 2 | (done) Host and Textures claims: shader code, command memory, descriptor pools, texture heaps, in-place texture files. The back end's texture-data-pool and shader-code special cases go | 200 lines, deletes about as many |
+| 3 | (done) Regions for every claim the GPU reads, in arenas per kind; the sparse windows go. The address table's entries point into the regions, and the CPU lookup finds them. VRAM claims move first (CPU_NO_ACCESS pools) | 500 lines, deletes about 700 |
 | 4 | (done) Readback: copies out of the ranges GPU work writes, reported CPU writes, the light-sum and light-visibility claims; the check's owned pages | 400 lines |
 | 5 | (done) The verifier, and the measurement: bytes bound per frame per pool, and the data reached through stored pointers | 250 lines |
 | 6 | Upload as bound-range copies at the guest's submit, load-once copies at their claim's end, and writer patches for the exceptions the measurement names | 600 lines, plus the patches |
-| 7 | Remove layer 0: the imports, udmabuf and the host-pointer path, `os_guest`'s export, the import probe, their settings and docs | deletes about 800 lines |
+| 7 | (done) No guest memory imported: the imports, udmabuf and the host-pointer path, `os_guest`'s export, the import probe, their settings and docs go | deletes about 800 lines |
 | 8 | The agl texture takeover, then MKW's pools on the same patches | 600 lines across the games |
 | 8a | Upload only what the CPU wrote (below) | the writer patches, then the bound-range copy narrowed |
 | 9 | Write-once uniform rings (below) | to be sized |
-
-Steps 3 to 6 keep the remaining pools on `Layer0` until their claims move, so each step lands with both games
-running. Expect a small regression on AMD, where layer 0 was zero-copy: Upload and Readback add copies.
 
 ### Step 8a: upload only what the CPU wrote
 

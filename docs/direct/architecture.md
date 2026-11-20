@@ -89,9 +89,8 @@ whether the GPU reads it and how its data moves ([pool claims](pool-claims.md)).
 buffer over the pool's guest range, in an arena of its kind. A VRAM, Upload, Readback or Load once claim's region is
 device-local memory of the back end's own: Upload ranges a submission reads are copied in through staging when its
 first chunk goes, Load once pages at their first use, and the GPU's reports are copied out when their submission
-completes. A layer-0 claim's, until its pools move to their own kinds, is the pool's guest pages imported (dma-bufs of
-the window's memfd pages on Linux, made through `/dev/udmabuf`; host pointers on Windows) in 64 MB arenas. Shaders,
-vertex and index buffers, copies and reports find a region by its guest address. A use outside every region is an
+completes. No guest memory is imported into the GPU. Shaders, vertex and index buffers, copies and reports find a
+region by its guest address. A use outside every region is an
 error.
 
 ## Programs

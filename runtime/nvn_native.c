@@ -153,7 +153,7 @@ void nvn_claim_read(uint64_t addr, uint64_t size) {
     const gpu_fns *d = rx_direct();
     if (d) d->claim_read(addr, size);
 }
-static const char *const kClaimNames[NVN_CLAIM_KINDS] = {"none", "textures", "targets", "host", "vram", "upload", "readback", "load once", "layer 0"};
+static const char *const kClaimNames[NVN_CLAIM_KINDS] = {"none", "textures", "targets", "host", "vram", "upload", "readback", "load once"};
 /* An NVN memory call the back end does not serve: one loud error with the guest's call chain, and a strict event */
 static void guest_chain(Ctx *c, char *b, size_t cap);
 static void pool_error(Ctx *c, const char *reason, const char *fmt, ...) {

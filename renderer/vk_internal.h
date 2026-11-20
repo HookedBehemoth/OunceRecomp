@@ -72,9 +72,6 @@ struct Device {
     uint32_t queue_family = 0;
     VkQueue queue = VK_NULL_HANDLE;   // (the one queue: every submit and present, under queue_mu)
     std::mutex queue_mu;
-    bool dma_buf_import = false;
-    bool host_import = false;   // (VK_EXT_external_memory_host)
-    uint64_t host_align = 0;    // (its minImportedHostPointerAlignment)
     bool nested_rendering = false;   // (M3a: VK_KHR_maintenance7: secondaries and inline commands in one dynamic rendering)
     bool memory_budget = false;      // (VK_EXT_memory_budget: the driver's heap budgets and usage; without it, estimated)
     // the window (none: presents clear an image of their own)
@@ -98,7 +95,6 @@ enum MemOwner : int {
     MO_UPLOAD,
     MO_TRANSIENT,
     MO_CLAIM_VRAM,
-    MO_CLAIM_IMPORT,   // (guest memory imported: the guest's pages, not new memory)
     MO_IMAGE_STORE,
     MO_IMAGE,       // (the game's images not from the store)
     MO_OTHER,       // (the default: the placeholder, shots, dumps and readbacks)
@@ -185,7 +181,7 @@ uint64_t present_count();   // (presents the host asked for so far: the frame nu
 bool claims_on();
 /// a pool made (on 1; by: the claiming patch's name) or finalized
 void claims_pool(uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, const char* by, int on);
-bool claims_bound(uint64_t lo, uint64_t hi);   // (guest pages a layer-0 claim imported: the host keeps them committed)
+bool claims_in_region(uint64_t gpu);   // (a region holds guest address gpu)
 /// What a list's command does with a guest range it binds or names: the bind site of the claims' verifier and measurement
 enum ClaimUse : uint8_t {
     CU_UNIFORM, CU_VERTEX, CU_INDEX, CU_INDIRECT, CU_STORAGE, CU_STORAGE_WRITTEN, CU_COPY_SRC, CU_COPY_DST, CU_FILL, CU_TEXELS, CU_CONDITION,

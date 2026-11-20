@@ -342,8 +342,7 @@ beside itself or `ounce/target/release`.
 
 - The game is the dump's: `dump --check` checks the exefs against every game under the sources' `games/` and names
   the one it is (`@@game`).
-- The probe's warnings are shown on the first screen, so a PC without `/dev/udmabuf` gets the fix with the first
-  look; its verdict decides whether Build is offered.
+- The probe's verdict decides whether Build is offered.
 - A PC whose GPU the back end does not start on (no Vulkan loader, no GPU of Vulkan 1.3: a container) is offered no
   Build. A build there from the command line makes the shader pack without the precompile (`@@shaders skipped
   <why>`), and the game makes its programs while it plays.
@@ -444,15 +443,10 @@ An item should fail only when the back end does not start without it, and warn w
 | `descriptor_indexing` | no runtime descriptor arrays, non-uniform image indexing, update after bind for images, or 64-bit integers | | does not start |
 | `descriptor_limits` | update-after-bind limits below the pools' set: 65,536 sampled and 65,536 storage images per view type (7 types), 8,192 samplers | | does not start |
 | `push_constants` | under 144 bytes | | does not start |
-| `external_memory_fd`, `dma_buf` | | missing | starts; the game's memory is not imported: Linux hands it over as dma-bufs only |
-| `sparse_queue` | | no sparse-binding family of its own, or none at all | starts; binds on another queue with sparse binding, and with none layer 0 is off |
 | `maintenance7` | | missing | starts; the game's command jobs are not executed |
-| `sparse_residency`, `udmabuf` | | missing | starts; layer 0 is off: the game's memory is not mapped on the GPU |
+| `sparse_residency` | | no sparse buffers | starts; shader reads outside the game's GPU pools are not zero |
 | `sdl` | | no SDL of the release's, and neither SDL3 nor SDL2 loads (a developer's PC) | the game runs without a window, sound or controllers |
 | `vram` | | under 10 GB; under 8 GB the textures may not fit | starts |
-
-When `/dev/udmabuf` cannot be opened, the `udmabuf` line tells the player how to fix it: load the module and let the
-user open the device (the group that owns it, often `kvm`).
 
 `gpu`, `device` and `driver` lines name the GPU and its driver; `gpu` warns when the GPU is not discrete.
 

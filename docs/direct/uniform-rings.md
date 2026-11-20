@@ -68,16 +68,14 @@ both, so a pool can be given addresses in a range of the window that the back en
 | Option | Where it works | Verdict |
 |---|---|---|
 | Placed map (`VK_EXT_map_memory_placed`): map device-local, host-visible memory at the reserved range | RADV, ANV and NVK since Mesa 24.1. This PC's RADV has `memoryMapPlaced` and `memoryUnmapReserve`, not `memoryMapRangePlaced` (an allocation maps whole), with 4 KB alignment. NVIDIA lists it for its Linux developer beta drivers only, since 535.43.10 (September 2023); production drivers are unconfirmed | the way on Linux; check the feature on the user's NVIDIA driver |
-| Windows: export a Win32 handle, then `MapViewOfFile3` into a placeholder | No source says a Vulkan Win32 memory handle is a file-mapping section; WDDM maps allocations through the graphics kernel. NVIDIA allowed external buffers in host-visible device-local memory only in a May 2026 beta (596.46) | not available; it would depend on the external-memory paths that layer 0 found fragile on Windows |
-| Linux: export an opaque fd or a dma-buf, then `mmap` it with `MAP_FIXED` | On AMD the placed map already does this. NVIDIA's Linux driver refused host-visible types for dma-bufs in layer 0's import probe, and mmap of its exports is undocumented | not needed on AMD, unsafe on NVIDIA |
+| Windows: export a Win32 handle, then `MapViewOfFile3` into a placeholder | No source says a Vulkan Win32 memory handle is a file-mapping section; WDDM maps allocations through the graphics kernel. NVIDIA allowed external buffers in host-visible device-local memory only in a May 2026 beta (596.46) | not available; it would depend on external memory, which is fragile on Windows |
+| Linux: export an opaque fd or a dma-buf, then `mmap` it with `MAP_FIXED` | On AMD the placed map already does this. NVIDIA's Linux driver refuses host-visible memory types for dma-bufs, and mmap of its exports is undocumented | not needed on AMD, unsafe on NVIDIA |
 | No placement: `nvnMemoryPoolMap` returns the driver's pointer minus the window base | Lifted code wraps around correctly, but host code that checks guest ranges (the memcpy and memset replacements, among others) rejects such pointers, and each check would need the alias | a later experiment for Windows, not a plan |
 | Host-visible system memory | everywhere | no: NVIDIA's shader loads from system memory cost about 4.5 times a VRAM load, and uniform blocks are read many times a frame (the environment block about 150 times) |
 
-**Compared with layer 0.** Layer 0 imported the game's memory into the GPU, so every path depended on external
-memory, and the GPU read system memory. The placed map is the opposite: the driver allocates ordinary device-local
-memory, and only the CPU mapping's address is chosen. It uses no external memory and has none of layer 0's import
-costs. The export options (Win32 handles, dma-bufs) bring back layer 0's dependence on how each driver treats external
-memory, which is where NVIDIA and Windows failed.
+**No external memory.** With the placed map the driver allocates ordinary device-local memory, and only the CPU
+mapping's address is chosen. The export options (Win32 handles, dma-bufs) depend on how each driver treats external
+memory, which is where NVIDIA and Windows fail.
 
 **CPU reads are the new cost.** Device-local, host-visible memory is write-combined: CPU reads go over PCIe and are
 uncached. The camera writers read back 11.4 KB of their blocks a frame, the general pools also hold report slots the

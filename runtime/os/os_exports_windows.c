@@ -3,7 +3,6 @@
    (ounce/builder link.rs). */
 #if defined(_WIN32)   /* (sources.txt lists both systems' files: each compiles on its own) */
 #include "os.h"
-#include "os_guest.h"
 #include "host_exports.h"
 
 #define EXPORT_ROW(ret, name, params, args) __pragma(comment(linker, "/EXPORT:" #name))

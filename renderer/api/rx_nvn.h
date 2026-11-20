@@ -265,7 +265,7 @@ void rx_nvn_write_texels(const nvn_tex *t, unsigned level, unsigned layer0, cons
                          size_t row, size_t img);
 /* the CPU is about to read memory the GPU may have written: GPU results there go to guest memory now */
 void rx_nvn_invalidate(uint64_t gpu, uint64_t size);
-void rx_nvn_pool_created(uint64_t gpu, uint64_t size);   /* (the back end may import it early) */
+void rx_nvn_pool_created(uint64_t gpu, uint64_t size);
 /* the CPU set an event's value (nvnEventSignal): in order with the submits, for the GPU's waits on it */
 void rx_nvn_event_signal(uint64_t gpu, uint32_t value);
 

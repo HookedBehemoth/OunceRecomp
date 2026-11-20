@@ -49,8 +49,7 @@ game and stays on your PC.
 
 ### Run one game at a time
 
-A game holds about 10 GB of guest memory in a memfd shared with the GPU, which RSS does not show, and a GPU reset kills
-every run beside it. Pass `--exclusive` to `ounce run` and `ounce test`: it waits until no other build or game run is
+A game holds about 10 GB of guest memory, and a GPU reset kills every run beside it. Pass `--exclusive` to `ounce run` and `ounce test`: it waits until no other build or game run is
 going, and a run also waits until `limits.run_free_mem_gb` (default 14) GB of memory is free. Do not wrap `ounce` in
 `flock`. After `VK_ERROR_DEVICE_LOST`, `journalctl -k` names the ring and thread that hung; `ounce run` prints the
 kernel's GPU reset lines itself.

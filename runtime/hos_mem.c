@@ -120,11 +120,7 @@ static void discard_pages(uint64_t addr, uint64_t size) {
     if (keep < 0) keep = setting_bool(SET_KEEP_FREED_PAGES);
     if (hi <= lo || keep) return;
 #if !defined(__EMSCRIPTEN__)
-    extern int rx_guest_imported(uint64_t lo, uint64_t hi);
-    /* (pages a dma-buf import holds stay where they are, zeroed: a hole punched under one would leave the GPU on
-       the old pages and the game on new ones) */
-    if (rx_guest_imported(lo, hi)) memset(GP(lo), 0, (size_t)(hi - lo));
-    else os_guest_discard(GP(lo), (size_t)(hi - lo));
+    os_guest_discard(GP(lo), (size_t)(hi - lo));
 #endif
 }
 
@@ -259,11 +255,7 @@ HLE(_ZN2nn2os15FreeMemoryPagesEmm) {
     }
     if (ARG(0) + ARG(1) > (1ULL << 32)) {   /* (mkw-recomp: the pair of AllocateMemoryPages' commit above) */
         const uint64_t lo = (ARG(0) + 0xFFF) & ~0xFFFULL, hi = (ARG(0) + ARG(1)) & ~0xFFFULL;
-        /* (pages the Vulkan back end imported, as part of a pool's 16 MB chunk, stay committed and are zeroed: the GPU
-           still maps them, and decommitted pages under an import faulted the device. Read as zero, as freed pages) */
-        extern int rx_guest_imported(uint64_t lo, uint64_t hi);
-        if (hi > lo && rx_guest_imported(lo, hi)) memset(GP(lo), 0, (size_t)(hi - lo));
-        else if (hi > lo) os_guest_discard(GP(lo), (size_t)(hi - lo));   /* (kept mapped, the pages read as zero) */
+        if (hi > lo) os_guest_discard(GP(lo), (size_t)(hi - lo));   /* (kept mapped, the pages read as zero) */
         RET(0);
         return;
     }

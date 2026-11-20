@@ -1,7 +1,6 @@
 # Pool users
 
-This page describes what the game does with the gsys object blocks that are still on layer 0, and how each one can fit
-a claim kind. Read it before you claim one of these makers in `games/oot/patches/pools.c`, or before you write a patch
+This page describes what the game does with the gsys object blocks, and how each one fits a claim kind. Read it before you claim one of these makers in `games/oot/patches/pools.c`, or before you write a patch
 that changes how the game shares memory between the CPU and the GPU. The claim kinds and the plan are in
 [pool claims](pool-claims.md).
 
@@ -66,7 +65,7 @@ DKB has the same object: `cull_geometry_mgr_memory` (0x804c0d84), made by 0x804b
 | GPU users | The culling programs append with atomics (group count by atomicMax, items by atomicAdd), reset the other records themselves, and bind whole lists as written storage. Indirect mesh draws read the records. |
 | Flow per frame | CPU zeroes the first records, then the GPU culling appends, then indirect draws read the records; two frames later the CPU reads and zeroes the headers. |
 | Desktop match | No. The CPU resets data the GPU owns, and the CPU reads 0x40 bytes out of lists of up to 4.4 MB. Change the game: replace the resets with GPU fills ({0, 1, 1, 0} per first record) at the start of the culling, and copy the six headers into a small Readback ring after the culling, which `report_reader_b` reads. The lists then become VRAM. |
-| Confidence and census | High for the flow (the existing patches in `mesh_lists.c`, `mesh_args.c` and `pools.c` document the stores). The foliage pass's 6.1 ms under VRAM is not explained: the resets are reported, and reports reach CPU-visible VRAM. The likely cause is order: a reported reset is copied at the next submission, which may be the previous frame's. Count resets and culling dispatches per submission, and compare the appended counts with layer 0. |
+| Confidence and census | High for the flow (the existing patches in `mesh_lists.c`, `mesh_args.c` and `pools.c` document the stores). The foliage pass's 6.1 ms under VRAM is not explained: the resets are reported, and reports reach CPU-visible VRAM. The likely cause is order: a reported reset is copied at the next submission, which may be the previous frame's. Count resets and culling dispatches per submission. |
 
 ## The vegetation task blocks (`cull_task_block_create`)
 
@@ -78,7 +77,7 @@ four calls: two in `cull_gpu_object_b_create` (object b's task records) and two 
 | Question | Answer |
 |---|---|
 | System and data | Object b's blocks: the task count and records of the vegetation culling. `cull_task_block_fill`'s: per-scene vegetation parameters, written once. The heap pool `cull_task_block_fill` grows is shared: `cull_address_block_create`'s one-word block (an 8-byte GPU address) lands in it later. |
-| CPU users | `cull_veg_task_records_write` (main thread, each frame) writes object b's count and count x 0x40 bytes of records, both reported. `cull_task_block_fill` writes its block once, after making it, in the same call. `cull_address_block_create` (SceneLowPriority, after `cull_task_block_fill`) stores a ubo object's GPU address into its one-word block (0x80c64a28). No CPU reader: the census under layer 0 and under VRAM counts no CPU read of either block. |
+| CPU users | `cull_veg_task_records_write` (main thread, each frame) writes object b's count and count x 0x40 bytes of records, both reported. `cull_task_block_fill` writes its block once, after making it, in the same call. `cull_address_block_create` (SceneLowPriority, after `cull_task_block_fill`) stores a ubo object's GPU address into its one-word block (0x80c64a28). No CPU reader: the census counts no CPU read of either block. |
 | GPU users | Compute only. `a54f19e927d8faef` and `383a566958350efe` reach object b's blocks as storage buffers whose address and size words sit in a uniform buffer (c4+0x40 and c4+0x80), both declared written. Programs that store to global memory (`3e6fe279463b020e`, `4247f1b4c3ce6cf3`, `5b9ba94d1c822e80`, `78ccf14779ec3efb` and others) hold the blocks' base addresses in their small storage buffers, and `cull_address_block_create`'s word is one of those addresses. |
 | Flow per frame | CPU writes object b's count and records, the culling dispatches read them and write the GPU's part of the block, and later dispatches read that. `cull_task_block_fill`'s block is read only, through the stored address. |
 | Desktop match | VRAM for all four, with the CPU's writes reported. |

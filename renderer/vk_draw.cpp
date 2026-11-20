@@ -953,7 +953,7 @@ void drawlog(const List* l, const char* what, const DrawProg* p, const Dyn* d, u
                 for (int j = 0; j < 8 && k < 7000; j++)
                     if (w[j] >> 32 >= 0x10 && w[j] >> 32 < 0x200)
                         k += std::snprintf(b + k, sizeof b - k, " [+%d %#llx%s]", 8 * j, (unsigned long long)w[j],
-                                           claims_bound(w[j], w[j] + 16) ? "" : " not in a region");
+                                           claims_in_region(w[j]) ? "" : " not in a region");
             }
         k += std::snprintf(b + std::min<int>(k, (int)sizeof b - 1), k < (int)sizeof b - 1 ? sizeof b - 1 - k : 1, " discard %d poly %u front %u", (int)s.raster_discard, s.poly.mode, s.poly.front);
         // (M4h: every texture descriptor: a driver bank's word, a game buffer's word (read now: a diagnosis), a second word and its

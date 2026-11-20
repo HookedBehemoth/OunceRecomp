@@ -31,7 +31,7 @@ KIND = {0: "block cv", 1: "block arbiter", 2: "sleep", 3: "block host", 4: "vcor
 BLOCKS = (0, 1, 2, 3)
 SITES = {1: "nvnSyncWait", 2: "nvnQueueFinish", 3: "nvnWindowAcquireTexture", 4: "nvnQueuePresentTexture", 5: "nvnQueueSubmitCommands",
          6: "fw_flush", 7: "thread join", 8: "present poll", 9: "fs open", 10: "fs read", 11: "socket poll", 12: "svc",
-         13: "rx_guest_imported", 14: "rx_nvn_vmap_changing"}
+         14: "rx_nvn_vmap_changing"}
 
 
 def load(folder):

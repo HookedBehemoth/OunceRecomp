@@ -11,7 +11,6 @@
 #include <cstdlib>
 
 #include "os.h"
-#include "os_guest.h"
 #include "host_exports.h"
 
 namespace {

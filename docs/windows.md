@@ -48,13 +48,7 @@ goldens, recordings) `%LOCALAPPDATA%\ounce\data`. The game folder holds `<exe>.e
   unhandled-exception filter. `runtime/os/os_crt_windows.h` gives the POSIX names the host's C uses their UCRT spelling;
   the builder force-includes it on Windows.
 - **The guest window.** `runtime/os/os_guest_windows.c` reserves the 512 GB window and commits what the runtime hands
-  out (`os_guest_commit`, from `hos_commit`) or what the game touches first (a fault handler). Ranges reach the GPU as
-  host pointers (`VK_EXT_external_memory_host`) and stay committed once exported.
-- **The claims' regions.** As on Linux, each pool the GPU reads has a region: a plain buffer over the pool's range in
-  an arena ([pool claims](direct/pool-claims.md)). A layer-0 claim's region binds into a 64 MB arena of the guest window
-  imported once as a host pointer (an import costs about 11 ms however small); a VRAM claim's is device-local memory.
-  NVIDIA's Windows driver gives host-pointer imports system memory, which is why the 3D scenes are slow there until
-  the pools move off layer 0.
+  out (`os_guest_commit`, from `hos_commit`) or what the game touches first (a fault handler).
 - **The renderer's calls into the game.** A DLL cannot import from an executable it does not know by name, so
   `renderer/api/host_exports.h` lists what the renderer calls; the executable exports exactly those
   (`runtime/os/os_exports_windows.c`) and the renderer finds them by name (`renderer/vk_host_windows.cpp`).

@@ -284,15 +284,6 @@ unsafe fn device_checks(vk: &mut Vk, out: &mut Vec<Item>) {
         ] {
             out.push(item(key, has(ext), if has(ext) { ext.to_string() } else { format!("{ext} missing") }));
         }
-        // (the game's memory is handed over as dma-bufs, on Windows as host pointers (runtime/os/os_guest.h): without
-        // these the back end starts with layer 0 off)
-        #[cfg(unix)]
-        let memory_exts = [("external_memory_fd", "VK_KHR_external_memory_fd"), ("dma_buf", "VK_EXT_external_memory_dma_buf")];
-        #[cfg(windows)]
-        let memory_exts = [("external_memory_host", "VK_EXT_external_memory_host")];
-        for (key, ext) in memory_exts {
-            out.push(optional(key, has(ext), if has(ext) { ext.to_string() } else { format!("{ext} missing: the game's memory is not mapped on the GPU (layer 0 off)") }));
-        }
         // (null descriptors: VK_KHR_robustness2, or the same structure as VK_EXT_robustness2)
         let robust2_ext = if has("VK_KHR_robustness2") { Some("VK_KHR_robustness2") } else if has("VK_EXT_robustness2") { Some("VK_EXT_robustness2") } else { None };
         out.push(item("robustness2", robust2_ext.is_some(), robust2_ext.unwrap_or("VK_KHR_robustness2 missing")));
@@ -372,43 +363,20 @@ unsafe fn device_checks(vk: &mut Vk, out: &mut Vec<Item>) {
         }
         let m7_ok = m7_ext && m7.on[0] != 0;
         out.push(optional("maintenance7", m7_ok, if m7_ok { "VK_KHR_maintenance7" } else { "no VK_KHR_maintenance7: the game's command jobs are not executed" }));
-        // (VkPhysicalDeviceFeatures: sparseBinding is field 44, sparseResidencyBuffer 45, sparseResidencyAliased 52)
-        let sparse_res = f2.on[44] != 0 && f2.on[45] != 0 && f2.on[52] != 0;
-        out.push(optional("sparse_residency", sparse_res, if sparse_res { "aliased sparse buffers" } else { "no aliased sparse buffers: the game's memory is not mapped on the GPU (layer 0 off)" }));
-        // the queues: graphics and compute in one family; a sparse-binding family without either
+        // (VkPhysicalDeviceFeatures: sparseBinding is field 44, sparseResidencyBuffer 45; the null window is a sparse
+        // buffer with nothing bound)
+        let sparse_res = f2.on[44] != 0 && f2.on[45] != 0;
+        out.push(optional("sparse_residency", sparse_res, if sparse_res { "sparse buffers" } else { "no sparse buffers: shader reads outside the game's GPU pools are not zero" }));
+        // the queues: graphics and compute in one family
         let mut nq = 0u32;
         queues(d, &mut nq, null_mut());
         let mut qb = vec![0u8; 24 * nq as usize];
         queues(d, &mut nq, qb.as_mut_ptr());
         let flags: Vec<u32> = qb.chunks_exact(24).map(|q| u32::from_le_bytes(q[..4].try_into().unwrap())).collect();
         out.push(item("graphics_queue", flags.iter().any(|f| f & 3 == 3), "a graphics and compute family"));
-        let sparse = flags.iter().any(|f| f & 8 != 0 && f & 3 == 0);
-        let any_sparse = flags.iter().any(|f| f & 8 != 0);
-        out.push(optional("sparse_queue", sparse, if sparse { "a sparse-binding family" } else if any_sparse { "no sparse-binding family of its own: binds on a graphics or compute queue" } else { "no sparse-binding family: the game's memory is not mapped on the GPU (layer 0 off)" }));
         if let Some(f) = destroy {
             f(vk.instance, null());
         }
-    }
-}
-
-/// what a player does when /dev/udmabuf cannot be opened
-#[cfg(unix)]
-pub const UDMABUF_FIX: &str = "To fix it: load the module (sudo modprobe udmabuf; to keep it, add udmabuf to /etc/modules-load.d/udmabuf.conf) and let your user open it (the group that owns /dev/udmabuf, often kvm: sudo usermod -aG kvm $USER, then log in again)";
-
-/// /dev/udmabuf, through which the back end imports the game's memory as dma-bufs
-#[cfg(windows)]
-fn udmabuf() -> Item {
-    Item { key: "udmabuf", state: "info", value: "not used on Windows: the game's memory reaches the GPU as host pointers".into() }
-}
-
-#[cfg(unix)]
-fn udmabuf() -> Item {
-    let dev = std::fs::OpenOptions::new().read(true).write(true).open("/dev/udmabuf");
-    let limit = std::fs::read_to_string("/sys/module/udmabuf/parameters/size_limit_mb").ok().and_then(|s| s.trim().parse::<u64>().ok());
-    match (dev, limit) {
-        (Ok(_), Some(mb)) => item("udmabuf", true, format!("/dev/udmabuf, {mb} MB per buffer")),
-        (Err(e), _) => optional("udmabuf", false, format!("/dev/udmabuf cannot be opened ({e}): the game's memory is not mapped on the GPU (layer 0 off), which costs speed. {}", UDMABUF_FIX)),
-        (Ok(_), None) => optional("udmabuf", false, "udmabuf's size_limit_mb cannot be read; the game's memory is not mapped on the GPU (layer 0 off)"),
     }
 }
 
@@ -437,7 +405,6 @@ fn sdl() -> Item {
 
 pub fn command() {
     let mut items = checks();
-    items.push(udmabuf());
     items.push(sdl());
     let failed: Vec<&str> = items.iter().filter(|i| i.state == "fail").map(|i| i.key).collect();
     for i in &items {

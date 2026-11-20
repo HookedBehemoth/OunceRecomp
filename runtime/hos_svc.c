@@ -453,11 +453,8 @@ SVC(0x2D, UnmapPhysicalMemory, 2, 1) {   /* (address, size): the pages read as z
         c->x[0] = 0xCA01;
         return;
     }
-    /* (pages under a Vulkan import stay committed, zeroed: hos_mem.c FreeMemoryPages) */
-    extern int rx_guest_imported(uint64_t lo, uint64_t hi);
     const uint64_t lo = c->x[0] & ~0xFFFULL, hi = (c->x[0] + c->x[1] + 0xFFF) & ~0xFFFULL;
-    if (rx_guest_imported(c->x[0], c->x[0] + c->x[1])) memset(GP(c->x[0]), 0, (size_t)c->x[1]);
-    else os_guest_discard(GP(lo), (size_t)(hi - lo));
+    os_guest_discard(GP(lo), (size_t)(hi - lo));
     c->x[0] = R_OK;
 }
 /* (-, name) -> (result, session handle): (runtime) SDK code that resolves a service through "sm:" (nn::sm::Initialize,

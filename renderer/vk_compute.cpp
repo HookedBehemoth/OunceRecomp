@@ -949,13 +949,13 @@ void trace_dispatch(const Variant& v, const List* l, const uint8_t* bank, uint32
     for (int i = 0; i < 16 && k < 4000; i++)
         if (c.ssbo[i].addr) {
             k += std::snprintf(b + k, sizeof b - k, " s%d=%#llx+%#llx", i, (unsigned long long)c.ssbo[i].addr, (unsigned long long)c.ssbo[i].size);
-            if (v.info.uses_global_memory && c.ssbo[i].size && c.ssbo[i].size <= 0x40) {   // (a table of pointers: each in layer 0 or not)
+            if (v.info.uses_global_memory && c.ssbo[i].size && c.ssbo[i].size <= 0x40) {   // (a table of pointers: each in a region or not)
                 uint64_t w[8]{};
                 host->gpu_read(c.ssbo[i].addr, w, std::min<uint64_t>(c.ssbo[i].size, sizeof w));
                 for (int j = 0; j < 8 && k < 4000; j++) {
                     if (!w[j]) continue;
                     k += std::snprintf(b + k, sizeof b - k, " [+%d %#llx%s]", 8 * j, (unsigned long long)w[j],
-                                       claims_bound(w[j], w[j] + 16) ? "" : " not in a region");
+                                       claims_in_region(w[j]) ? "" : " not in a region");
                 }
             }
         }

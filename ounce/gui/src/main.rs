@@ -459,16 +459,6 @@ impl eframe::App for App {
 
 impl App {
     fn game_screen(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        // (the first start's warning: /dev/udmabuf, which the player fixes once, with the probe's text)
-        if let Some((_, state, value)) = self.probe.items.iter().find(|i| i.0 == "udmabuf" && i.1 != "pass") {
-            egui::Frame::group(ui.style()).show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    dot(ui, state_color(state));
-                    ui.label(value.as_str());
-                });
-            });
-            ui.add_space(8.0);
-        }
         if path_row(ui, "The dump: a .nup file, or a folder with exefs/ and romfs/", &mut self.dump, true) {
             self.check_dump(ctx);
         }

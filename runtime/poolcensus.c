@@ -2,7 +2,7 @@
    the submissions that use them (docs/direct/pool-claims.md, "The census"). It never changes what the game or the back end
    does: a run with it differs only in time.
 
-   The value picks the pools: `layer0` (the default for 1), claim names (`vram`, `upload`, `readback`, `loadonce`),
+   The value picks the pools: claim names (`vram`, `upload`, `readback`, `loadonce`; `1` or none: all four, every pool the GPU reads),
    `by:<text>` (the claiming patch's name holds the text) or a hex guest address (the pool holding it), joined by `+`;
    `whole` arms every page of a picked pool from its creation against writes and reads, not only the pages submissions bind
    (for data shaders reach through stored addresses; a read of a page no bound GPU work writes counts as "unbound").
@@ -103,18 +103,18 @@ static int64_t start_present = -1;
 static void pc_parse(void) {
     char v[512];
     snprintf(v, sizeof v, "%s", setting_str(SET_DBG_POOLCENSUS));
-    static const char *const names[NVN_CLAIM_KINDS] = {"", "textures", "targets", "host", "vram", "upload", "readback", "loadonce", "layer0"};
+    static const char *const names[NVN_CLAIM_KINDS] = {"", "textures", "targets", "host", "vram", "upload", "readback", "loadonce"};
     int any = 0;
     for (char *t = strtok(v, "+, "); t; t = strtok(NULL, "+, ")) {
         if (!strcmp(t, "whole")) { whole = 1; continue; }
-        if (!strcmp(t, "1")) { pick_claim[NVN_CLAIM_LAYER0] = any = 1; continue; }
+        if (!strcmp(t, "1")) continue;
         if (!strncmp(t, "by:", 3) && n_by < 4) { snprintf(pick_by[n_by++], 64, "%s", t + 3), any = 1; continue; }
         int k = 1;
         while (k < NVN_CLAIM_KINDS && strcmp(t, names[k])) k++;
         if (k < NVN_CLAIM_KINDS) { pick_claim[k] = any = 1; continue; }
         if (n_addr < 8 && (t[0] == '0' || strchr("123456789abcdef", t[0]))) pick_addr[n_addr++] = strtoull(t, NULL, 16), any = 1;
     }
-    if (!any) pick_claim[NVN_CLAIM_LAYER0] = 1;
+    if (!any) pick_claim[NVN_CLAIM_VRAM] = pick_claim[NVN_CLAIM_UPLOAD] = pick_claim[NVN_CLAIM_READBACK] = pick_claim[NVN_CLAIM_LOAD_ONCE] = 1;
 }
 
 int poolcensus_on(void) {
@@ -238,9 +238,8 @@ static void pc_start(void) {
             setting_str(SET_DBG_POOLCENSUS));
 }
 
-static int pc_picked(uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, const char *by) {
-    if (claim < NVN_CLAIM_KINDS && pick_claim[claim] && !(claim == NVN_CLAIM_LAYER0 && (flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS)))
-        return 1;
+static int pc_picked(uint64_t gpu, uint64_t size, uint32_t claim, const char *by) {
+    if (claim < NVN_CLAIM_KINDS && pick_claim[claim]) return 1;
     for (int i = 0; i < n_by; i++)
         if (by && strstr(by, pick_by[i])) return 1;
     for (int i = 0; i < n_addr; i++)
@@ -250,7 +249,7 @@ static int pc_picked(uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim
 
 /* nvnMemoryPoolInitialize: a pool made, on the making thread (its guest call chain names the maker) */
 void poolcensus_pool(Ctx *c, uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, const char *by) {
-    if (!poolcensus_on() || !size || !pc_picked(gpu, size, flags, claim, by)) return;
+    if (!poolcensus_on() || !size || !pc_picked(gpu, size, claim, by)) return;
     pc_start();
     uint64_t chain[CHAIN] = {c->x[30]}, fp = c->x[29];
     for (int k = 1; k < CHAIN && fp && !(fp & 7) && hos_guest_range(fp, 16); k++) chain[k] = G64(fp + 8), fp = G64(fp);
@@ -398,7 +397,7 @@ static void pc_pc_name(uintptr_t pc, char *out, size_t cap) {
     snprintf(out, cap, "%s+%#lx", mb ? (slash ? slash + 1 : mod) : "?", (unsigned long)(pc - mb));
 }
 
-static const char *const kClaim[NVN_CLAIM_KINDS] = {"none", "textures", "targets", "host", "vram", "upload", "readback", "load once", "layer 0"};
+static const char *const kClaim[NVN_CLAIM_KINDS] = {"none", "textures", "targets", "host", "vram", "upload", "readback", "load once"};
 
 static void pc_summary(void) {
     FILE *f = fopen("poolcensus.txt", "w");

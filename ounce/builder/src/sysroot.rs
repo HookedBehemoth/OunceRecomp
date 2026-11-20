@@ -75,7 +75,7 @@ pub fn key() -> String {
 
 fn complete(dir: &Path) -> bool {
     std::fs::read_to_string(dir.join("sysroot.txt")).is_ok_and(|t| t == recipe())
-        && [format!("{LIB}/Scrt1.o"), format!("{GCC}/crtbeginS.o"), "usr/include/stdio.h".into(), "usr/include/linux/udmabuf.h".into()]
+        && [format!("{LIB}/Scrt1.o"), format!("{GCC}/crtbeginS.o"), "usr/include/stdio.h".into()]
             .iter()
             .all(|f| dir.join(f).is_file())
 }

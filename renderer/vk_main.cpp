@@ -170,19 +170,6 @@ bool create_device() {
         return false;
     }
     want.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
-    if (has_extension(exts, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) && has_extension(exts, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME)) {
-        want.push_back(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME), want.push_back(VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
-        dev.dma_buf_import = true;
-    }
-    if (has_extension(exts, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME)) {
-        want.push_back(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
-        dev.host_import = true;
-        VkPhysicalDeviceExternalMemoryHostPropertiesEXT hp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
-        VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
-        p2.pNext = &hp;
-        vkGetPhysicalDeviceProperties2(dev.physical, &p2);
-        dev.host_align = hp.minImportedHostPointerAlignment;
-    }
 
     // the queue: one family for graphics and compute
     vkGetPhysicalDeviceQueueFamilyProperties(dev.physical, &n, nullptr);
@@ -339,7 +326,6 @@ void pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, co
     count(R_POOL_NATIVE);
     claims_pool(gpu, size, flags, claim, by, on);
 }
-int guest_imported(uint64_t lo, uint64_t hi) { return claims_bound(lo, hi) ? 1 : 0; }
 
 MkwVkRenderer table;
 
@@ -407,7 +393,6 @@ extern "C" MKWVK_EXPORT const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
     table.nvn_write_texels = write_texels;
     table.nvn_invalidate = invalidate;
     table.nvn_pool_created = pool_created;
-    table.guest_imported = guest_imported;
     table.nvn_texture_created = texture_created;
     table.nvn_program_set = program_set;
     table.nvn_pool_native = pool_native;

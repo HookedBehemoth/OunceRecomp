@@ -1,4 +1,4 @@
-/* What ounce_renderer calls in the game executable: os.h's and os_guest.h's functions and hos_mem_ledger, one row
+/* What ounce_renderer calls in the game executable: os.h's functions and hos_mem_ledger, one row
    each as X(return type, name, (parameters), (arguments)).
 
    On Linux the executable exports them by pattern (--export-dynamic-symbol=os_*) and the loader binds the library's
@@ -6,7 +6,7 @@
    list is both sides of the link there: runtime/os/os_exports_windows.c exports exactly these from the executable,
    and renderer/vk_host_windows.cpp defines each as a thunk to the executable's export, found by name at its first call
    (a missing one stops the renderer, naming it). A call the renderer makes outside this list is an unresolved symbol
-   at the renderer's link on Windows: add its row here. Include os.h and os_guest.h first. */
+   at the renderer's link on Windows: add its row here. Include os.h first. */
 #ifndef MKWVK_HOST_EXPORTS_H
 #define MKWVK_HOST_EXPORTS_H
 #include <stddef.h>
@@ -32,9 +32,6 @@ size_t hos_mem_ledger(char *out, size_t cap, uint64_t *ours, uint64_t *guest_com
     X(int64_t, os_file_size, (os_file *f), (f))                                                                       \
     X(bool, os_file_trylock, (os_file *f), (f))                                                                       \
     X(int64_t, os_file_write_at, (os_file *f, const void *buf, size_t n, uint64_t at), (f, buf, n, at))               \
-    X(void, os_gpu_handle_close, (os_gpu_handle *h), (h))                                                             \
-    X(int, os_guest_export, (uint64_t offset, uint64_t size, os_gpu_handle *out), (offset, size, out))                \
-    X(bool, os_guest_exportable, (uint64_t *max_bytes, const char **note), (max_bytes, note))                         \
     X(os_lib *, os_lib_open, (const char *path), (path))                                                              \
     X(void *, os_lib_sym, (os_lib *l, const char *name), (l, name))                                                   \
     X(void, os_mem_use_get, (os_mem_use *out), (out))                                                                 \

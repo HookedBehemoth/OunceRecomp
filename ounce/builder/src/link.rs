@@ -95,7 +95,7 @@ pub fn exe_args(x: &Exe, s: &Sysroot) -> Vec<String> {
     if let Some(m) = x.map {
         a.push(format!("-Map={}", p(m)));
     }
-    // (--export-dynamic-symbol: what ounce_renderer.so calls in the executable: os.h's and os_guest.h's os_*, and
+    // (--export-dynamic-symbol: what ounce_renderer.so calls in the executable: os.h's os_*, and
     // hos_mem_ledger)
     a.push("--gc-sections".into());
     a.push("--export-dynamic-symbol=os_*".into());
