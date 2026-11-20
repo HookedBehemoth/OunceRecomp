@@ -143,23 +143,53 @@ PATCH_AT(0x80c4d354, word(0xf9405be8), before, none, pools_agl_driver_dl_end) { 
 PATCH_AT(0x80c4d3a0, word(0x97e35380), before, none, pools_agl_driver_dl_b) { nvn_claim_begin(NVN_CLAIM_HOST, "agl_driver_mgr_dl lists"); }
 PATCH_AT(0x80c4d3a4, word(0x52802d00), before, none, pools_agl_driver_dl_b_end) { nvn_claim_end(); }
 
-/* the GPU culling lists' counters the CPU zeroes after reading them: cull_gpu_lists_reset's and f_80361a00's appended
-   counts (str wzr, [list, off]) and report_reader_b's records (stp xzr, xzr). They act once the lists leave layer 0 */
-PATCH_AT(0x80361d8c, word(0xb8286a7f), after, none, pools_cull_count_zeroed, as(x19, list), as(x8, off)) { nvn_claim_write(list + off, 4); }
-PATCH_AT_SITE(0x8036207c, word(0xb8286a7f), after, none, pools_cull_count_zeroed, x19, x8);
-PATCH_AT_SITE(0x803620e4, word(0xb8286a7f), after, none, pools_cull_count_zeroed, x19, x8);
-PATCH_AT_SITE(0x8036214c, word(0xb8286a7f), after, none, pools_cull_count_zeroed, x19, x8);
-PATCH_AT_SITE(0x803621b4, word(0xb8286a7f), after, none, pools_cull_count_zeroed, x19, x8);
-PATCH_AT_SITE(0x8036221c, word(0xb8286a7f), after, none, pools_cull_count_zeroed, x19, x8);
-PATCH_AT_SITE(0x80362288, word(0xb8286a7f), after, none, pools_cull_count_zeroed, x19, x8);
-PATCH_AT_SITE(0x8036287c, word(0xb8286a7f), after, none, pools_cull_count_zeroed, x19, x8);
-PATCH_AT_SITE(0x803628e4, word(0xb8286a7f), after, none, pools_cull_count_zeroed, x19, x8);
-PATCH_AT_SITE(0x8036294c, word(0xb8286a7f), after, none, pools_cull_count_zeroed, x19, x8);
-PATCH_AT_SITE(0x80362bb4, word(0xb8286a7f), after, none, pools_cull_count_zeroed, x19, x8);
-PATCH_AT_SITE(0x80362c1c, word(0xb8286a7f), after, none, pools_cull_count_zeroed, x19, x8);
-PATCH_AT_SITE(0x80362c84, word(0xb8286a7f), after, none, pools_cull_count_zeroed, x19, x8);
-PATCH_AT_SITE(0x80361b6c, word(0xb8286adf), after, none, pools_cull_count_zeroed, x22, x8);
-PATCH_AT(0x8036321c, word(0xa9007d1f), after, none, pools_cull_record_zeroed, as(x8, rec)) { nvn_claim_write(rec, 16); }
-PATCH_AT_SITE(0x80363244, word(0xa9007d1f), after, none, pools_cull_record_zeroed, x8);
-PATCH_AT(0x8036326c, word(0xa9017d1f), after, none, pools_cull_record_zeroed_10, as(x8, rec)) { nvn_claim_write(rec + 0x10, 16); }
-PATCH_AT(0x80363294, word(0xa9027d1f), after, none, pools_cull_record_zeroed_20, as(x8, rec)) { nvn_claim_write(rec + 0x20, 16); }
+/* ---- the GPU culling objects (docs/direct/pool-users.md, "The GPU culling lists"; debug.poolcensus in Kokiri and Market).
+   Object a's lists, instance buffers, indirect arguments and result lists are the GPU's: VRAM. The CPU's resets of their
+   first records are made on the GPU and the counts it reads are copied out of their records alone (mesh_lists.c,
+   mesh_args.c) */
+PATCH_FUNC(0x80c58a80, word(0xd503237f), body(0xd48e5979b49a3213), aapcs, x0, pools_cull_object_a, orig) {
+    CLAIM("cull_gpu_object_a_create", NVN_CLAIM_VRAM);
+}
+/* object b (the vegetation culling) is claimed by its makers, not as a whole: its construction also allocates from a
+   general heap (f_80c59c30), which may grow that heap by a pool other systems share (claimed VRAM with the object, the
+   grass went). Its CPU-written task records and arguments (f_80c5f870's and f_80c5da90's pools: the CPU writes them each
+   frame, binds only read them) are Upload; its two small result blocks (ubo_object_pool_alloc at 0x80c597e0 and
+   0x80c59824) that f_80586fd0 reads once their submission completed Readback */
+PATCH_FUNC(0x80c5f870, word(0xd503237f), body(0x98f5d55e007fed32), aapcs, x0, pools_80c5f870, orig) {
+    CLAIM("f_80c5f870", NVN_CLAIM_UPLOAD);
+}
+/* f_80c5da90: a generic maker (object b's task records, f_80cb2a40's, ...). As Upload the grass goes (shaders reach object
+   b's pools through stored addresses, one is never bound), as VRAM the leaves too (other systems' CPU writes): open */
+PATCH_FUNC(0x80c5da90, word(0xd503237f), body(0x36562b018a365991), aapcs, x0, pools_80c5da90, orig) {
+    CLAIM("f_80c5da90", NVN_CLAIM_LAYER0);
+}
+/* f_80365950 (veg_task_records_write, from f_80586fd0 on the main thread) writes f_80c5da90's task records each frame: the
+   count at the list's first record (`str w24, [x23, x8]`) and count x 0x40 bytes of records (a memcpy). Shaders reach
+   them through stored addresses, not binds (one of the two pools is never bound): reported */
+PATCH_AT(0x803659fc, word(0xb8286af8), after, none, pools_veg_count, as(x23, list), as(x8, off)) { nvn_claim_write(list + off, 4); }
+/* (after the memcpy: its destination as the function computes it, list + layout[+0x4c], x20 the list's buffer object) */
+PATCH_AT(0x80365b64, word(0x94e3f203), after, none, pools_veg_records, as(x20, buf), as(x23, list), as(x24, count)) {
+    const uint64_t dst = list + G32(G64(G64(buf + 0x10)) + 0x4c);
+    nvn_claim_write(dst, (uint64_t)(uint32_t)count << 6);
+}
+PATCH_AT(0x80c597e0, word(0x97e31f74), before, none, pools_cull_b_results) { nvn_claim_begin(NVN_CLAIM_READBACK, "cull_gpu_object_b_create results"); }
+PATCH_AT(0x80c597e4, word(0xb9406688), before, none, pools_cull_b_results_end) { nvn_claim_end(); }
+PATCH_AT(0x80c59824, word(0x97e31f63), before, none, pools_cull_b_results_b) { nvn_claim_begin(NVN_CLAIM_READBACK, "cull_gpu_object_b_create results"); }
+PATCH_AT(0x80c59828, word(0xb9406688), before, none, pools_cull_b_results_b_end) { nvn_claim_end(); }
+/* f_80c576b0's two lists (0x20000 each, made with cull_gpu_objects_create's object b): the GPU appends to them and
+   actor_records_read_a reads their counts once their submission completed, then zeroes them (`str wzr, [x21, x8]`, eleven
+   stores): Readback, the zeroing made on the GPU */
+PATCH_FUNC(0x80c576b0, word(0xd503237f), body(0x006c33e34ee6fc7f), aapcs, x0, pools_80c576b0, orig) {
+    CLAIM("f_80c576b0", NVN_CLAIM_LAYER0);
+}
+PATCH_AT(0x82c1dcc8, word(0xb8286abf), after, none, pools_actor_count_zeroed, as(x21, list), as(x8, off)) { nvn_claim_fill(list + off, 4, 0); }
+PATCH_AT_SITE(0x82c1dcfc, word(0xb8286abf), after, none, pools_actor_count_zeroed, x21, x8);
+PATCH_AT_SITE(0x82c1dd30, word(0xb8286abf), after, none, pools_actor_count_zeroed, x21, x8);
+PATCH_AT_SITE(0x82c1dd64, word(0xb8286abf), after, none, pools_actor_count_zeroed, x21, x8);
+PATCH_AT_SITE(0x82c1dd98, word(0xb8286abf), after, none, pools_actor_count_zeroed, x21, x8);
+PATCH_AT_SITE(0x82c1ddcc, word(0xb8286abf), after, none, pools_actor_count_zeroed, x21, x8);
+PATCH_AT_SITE(0x82c1de00, word(0xb8286abf), after, none, pools_actor_count_zeroed, x21, x8);
+PATCH_AT_SITE(0x82c1de34, word(0xb8286abf), after, none, pools_actor_count_zeroed, x21, x8);
+PATCH_AT_SITE(0x82c1de64, word(0xb8286abf), after, none, pools_actor_count_zeroed, x21, x8);
+PATCH_AT_SITE(0x82c1dea8, word(0xb8286abf), after, none, pools_actor_count_zeroed, x21, x8);
+PATCH_AT_SITE(0x82c1ded8, word(0xb8286abf), after, none, pools_actor_count_zeroed, x21, x8);

@@ -173,7 +173,11 @@ struct Region {
     // submission that writes them. Bound ranges never copy them again, so a copy cannot overwrite what the GPU wrote)
     std::atomic<std::atomic<uint64_t>*> gpu{nullptr};
     std::atomic<bool> listed{false};
+    // (a VRAM claim's ranges the CPU reads, merged and sorted (reads_mu): copied out after each submission that writes it)
+    std::atomic<bool> has_reads{false};
+    std::vector<std::pair<uint64_t, uint64_t>> reads;
 };
+std::mutex reads_mu;
 /// the bits [a, b) of a 64-bit word (b <= 64)
 inline uint64_t bits(uint64_t a, uint64_t b) { return (b == 64 ? ~0ull : (1ull << b) - 1) & ~((1ull << a) - 1); }
 /// a load-once region's pages [lo, hi) all copied: its uses need no note
@@ -662,6 +666,7 @@ void measure(ClaimSubImpl& s, const std::vector<BoundRange>& raw) {
 // (debug.claimcheck) the check's command buffers: a pool of its own, used under vk_sync.cpp's mu, each one given back once
 // the GPU is past it
 PFN_vkCmdCopyBuffer copy_buffer = nullptr;
+PFN_vkCmdFillBuffer fill_buffer = nullptr;
 std::mutex check_mu;
 VkCommandPool check_pool = VK_NULL_HANDLE;
 std::vector<VkCommandBuffer> check_free;
@@ -674,6 +679,7 @@ VkCommandBuffer check_buffer() {
         pi.queueFamilyIndex = dev.queue_family;
         vkCreateCommandPool(dev.device, &pi, nullptr, &check_pool);
         copy_buffer = (PFN_vkCmdCopyBuffer)vkGetDeviceProcAddr(dev.device, "vkCmdCopyBuffer");
+        fill_buffer = (PFN_vkCmdFillBuffer)vkGetDeviceProcAddr(dev.device, "vkCmdFillBuffer");
     }
     if (!check_free.empty()) {
         VkCommandBuffer cb = check_free.back();
@@ -823,6 +829,11 @@ void note_list(ClaimSub* s, DirtyAcc& acc, const List* l, int depth) {
         if ((1u << b.use) & kGpuWrites) {
             s->gpu_writes.push_back({r, b.lo, hi});
             if (r->claim == NVN_CLAIM_READBACK && (1u << b.use) & kOutUses) s->outs.push_back({r, b.lo, hi});
+            else if (r->has_reads.load(std::memory_order_acquire) && (1u << b.use) & kOutUses) {
+                std::lock_guard lk(reads_mu);
+                for (const auto& [a, e] : r->reads)
+                    if (a < hi && e > b.lo) s->outs.push_back({r, std::max(a, b.lo), std::min(e, hi)});
+            }
         } else if (r->claim == NVN_CLAIM_UPLOAD || r->claim == NVN_CLAIM_READBACK) {
             mark_dirty(acc, r, b.lo, hi);
         }
@@ -1012,7 +1023,13 @@ struct Cancel {
     uint64_t lo, hi, upto;
 };
 std::deque<Cancel> cancels;
+struct Fill {
+    uint64_t lo, hi;
+    uint32_t value;
+};
+std::vector<Fill> fills;   // (report_mu: the resets for the next first copy, in their order)
 uint64_t first_seq = 0;   // (report_mu: first copies made)
+std::atomic<int64_t> st_fills{0}, st_fill_bytes{0}, st_read_windows{0};
 std::atomic<int64_t> st_reports{0}, st_report_bytes{0}, st_out_subs{0}, st_out_ranges{0}, st_out_bytes{0}, st_out_dropped{0};
 
 // (debug.claimcheck) the pages the GPU owns that the CPU can write: a VRAM claim's from its copy, and those of Upload and
@@ -1091,13 +1108,14 @@ void owned_scan() {
     if (found) st_mismatches.fetch_add(found, std::memory_order_relaxed);
 }
 
-/// the CPU's reported ranges into ups, a run per region of the back end's own copied memory
-void take_reported(ClaimSub* s, std::vector<Up>& ups) {
+/// the CPU's reported ranges into ups, a run per region of the back end's own copied memory, and the resets into fs
+void take_reported(ClaimSub* s, std::vector<Up>& ups, std::vector<Fill>& fs) {
     std::vector<std::pair<uint64_t, uint64_t>> mine;
     {
         std::lock_guard lk(report_mu);
         s->seq = ++first_seq;
         mine.swap(reported);
+        fs.swap(fills);
     }
     for (const auto& [lo, hi] : mine)
         for (uint64_t a = lo; a < hi;) {
@@ -1208,11 +1226,59 @@ void claims_cpu_write(uint64_t lo, uint64_t size) {
     }
 }
 
+void claims_gpu_fill(uint64_t lo, uint64_t size, uint32_t value) {
+    if (!size || state.load(std::memory_order_acquire) != 1) return;
+    if ((lo | size) & 3) {
+        logf("direct: claims: ERROR: a fill of %#llx+%#llx is not 4-byte aligned", (unsigned long long)lo, (unsigned long long)size);
+        return;
+    }
+    {
+        std::lock_guard lk(report_mu);
+        fills.push_back({lo, lo + size, value});
+        cancels.push_back({lo, lo + size, first_seq});
+    }
+    st_fills.fetch_add(1, std::memory_order_relaxed), st_fill_bytes.fetch_add((int64_t)size, std::memory_order_relaxed);
+    if (track_check) {
+        std::lock_guard lk(owned_mu);
+        owned_rehash(lo, lo + size);
+    }
+}
+
+void claims_read_window(uint64_t lo, uint64_t size) {
+    if (!size || state.load(std::memory_order_acquire) != 1) return;
+    Region* r = region_at(lo);
+    if (!r || r->claim != NVN_CLAIM_VRAM || lo + size > r->hi) {
+        static std::atomic<int> told{0};
+        if (told.fetch_add(1) < 8)
+            logf("direct: claims: ERROR: a read window %#llx+%#llx outside a VRAM claim: %s", (unsigned long long)lo, (unsigned long long)size,
+                 pool_name(lo).c_str());
+        return;
+    }
+    std::lock_guard lk(reads_mu);
+    auto& w = r->reads;
+    auto it = std::lower_bound(w.begin(), w.end(), std::make_pair(lo, uint64_t(0)));
+    if (it != w.begin() && std::prev(it)->second >= lo + size && std::prev(it)->first <= lo) return;   // (held already)
+    if (it != w.end() && it->first == lo && it->second >= lo + size) return;
+    w.insert(it, {lo, lo + size});
+    size_t k = 0;   // (merged)
+    for (size_t i = 1; i < w.size(); i++)
+        if (w[i].first <= w[k].second) w[k].second = std::max(w[k].second, w[i].second);
+        else w[++k] = w[i];
+    w.resize(k + 1);
+    st_read_windows.fetch_add(1, std::memory_order_relaxed);
+    r->has_reads.store(true, std::memory_order_release);
+}
+
 void claims_cpu_reads(uint64_t lo, uint64_t size) {
     if (!track_check || !size || state.load(std::memory_order_acquire) != 1) return;
     Region* r = region_at(lo);
     if (!r || r->claim == NVN_CLAIM_READBACK || r->claim == NVN_CLAIM_LAYER0 || r->claim == NVN_CLAIM_VRAM) {
         if (!r || r->claim != NVN_CLAIM_VRAM) return;
+        if (r->has_reads.load(std::memory_order_acquire)) {   // (the game invalidates a list to read its header: a range it copies out)
+            std::lock_guard lk(reads_mu);
+            for (const auto& [a, e] : r->reads)
+                if (a < lo + size && e > lo) return;
+        }
     } else if (!any_gpu_written(r, lo, std::min(lo + size, r->hi))) {
         return;
     }
@@ -1284,7 +1350,8 @@ VkCommandBuffer claims_sub_prepare(ClaimSub* s, ClaimPrep what) {
     for (Region* r : regions)
         if (r->pages) take_dirty(r, ups);
         else r->listed.store(false);
-    take_reported(s, ups);
+    std::vector<Fill> fs;
+    take_reported(s, ups, fs);
     uint64_t up_total = 0;
     for (const Up& u : ups) up_total += u.hi - u.lo;
     std::vector<uint64_t> up_at(ups.size());   // (each upload's place in the staging chunk)
@@ -1370,6 +1437,14 @@ VkCommandBuffer claims_sub_prepare(ClaimSub* s, ClaimPrep what) {
                            VK_ACCESS_2_MEMORY_WRITE_BIT, 0});
         st_checked_ranges.fetch_add((int64_t)part->checked.size(), std::memory_order_relaxed);
         st_checked_bytes.fetch_add((int64_t)total, std::memory_order_relaxed);
+    }
+    if (!fs.empty()) {   // (the resets, after the copies: a reset wins over an older copy of its bytes)
+        record_dep(cb, Dep{VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                           VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, 0});
+        for (const Fill& f : fs)
+            if (Region* r = region_at(f.lo); r && r->pages && r->buffer && f.hi <= r->hi) fill_buffer(cb, r->buffer, f.lo - r->lo, f.hi - f.lo, f.value);
+        record_dep(cb, Dep{VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT, 0});
     }
     vkEndCommandBuffer(cb);
     st_up_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count(),
@@ -1608,8 +1683,9 @@ Region* claim_use(List* l, ClaimUse use, uint64_t gpu, uint64_t size) {
     }
     // (noted where a copy needs it: Upload and load-once claims; every claim while the check or the measurement runs. A
     // range that overlaps or follows the list's last one of the same region and use extends it, but for the measurement)
-    if (l && r->claim == NVN_CLAIM_READBACK && (1u << use) & kOutUses) l->outs = true;
-    if (l && (track_all || r->claim == NVN_CLAIM_UPLOAD || r->claim == NVN_CLAIM_READBACK ||
+    const bool windowed = r->has_reads.load(std::memory_order_relaxed) && (1u << use) & kOutUses;
+    if (l && (r->claim == NVN_CLAIM_READBACK || windowed) && (1u << use) & kOutUses) l->outs = true;
+    if (l && (track_all || r->claim == NVN_CLAIM_UPLOAD || r->claim == NVN_CLAIM_READBACK || windowed ||
               (r->claim == NVN_CLAIM_LOAD_ONCE && !all_copied(r, gpu, hi)))) {
         const uint32_t n = (uint32_t)std::min<uint64_t>(size, UINT32_MAX);
         if (!l->bound.empty()) {
@@ -1654,12 +1730,14 @@ void claims_stats(char* out, size_t cap) {
     const size_t k = std::strlen(out);
     std::snprintf(out + k, cap - k, "; uploads since the start: %lld submissions, %lld ranges, %lld MB, %lld whole regions, %.1f ms on the "
                   "submitting threads, %lld ranges or pages left to the GPU (it writes them); load-once pages copied %lld; staging %zu chunks; noted in %.1f ms; guest reads %.1f ms; after held event waits %lld refreshes, %lld KB again in %.1f ms; "
-                  "copied out %lld submissions, %lld ranges, %lld MB, %lld KB of them dropped for the CPU's later writes; CPU writes reported %lld, %lld KB",
+                  "copied out %lld submissions, %lld ranges, %lld MB, %lld KB of them dropped for the CPU's later writes; CPU writes reported %lld, %lld KB; "
+                  "resets made on the GPU %lld, %lld KB; read windows %lld",
                   (long long)st_up_subs.load(), (long long)st_up_ranges.load(), (long long)(st_up_bytes.load() >> 20), (long long)st_up_whole.load(),
                   st_up_ns.load() / 1e6, (long long)st_up_skipped_gpu.load(), (long long)st_up_once.load(), staging.size(), st_note_ns.load() / 1e6, st_memcpy_ns.load() / 1e6, (long long)st_refreshes.load(),
                   (long long)(st_refreshed.load() >> 10), st_refresh_ns.load() / 1e6, (long long)st_out_subs.load(), (long long)st_out_ranges.load(),
                   (long long)(st_out_bytes.load() >> 20), (long long)(st_out_dropped.load() >> 10), (long long)st_reports.load(),
-                  (long long)(st_report_bytes.load() >> 10));
+                  (long long)(st_report_bytes.load() >> 10), (long long)st_fills.load(), (long long)(st_fill_bytes.load() >> 10),
+                  (long long)st_read_windows.load());
 }
 
 }  // namespace hsd

@@ -1220,3 +1220,8 @@
 812618c0 vfx_particle_init_callbacks      # docs/direct/pool-users.md: Vfx3: a new particle's setup; runs the emitter plugins' callbacks (slots 0x3b8, 0x3b0, 0x358, 0x380; the 0x380 call at 0x81261e08 writes the particle record)
 831f8620 texdata_snapshot_textures        # docs/direct/pool-users.md: "SnapShotTexture" and "CopySnapShotTexture": texture storage by ubo_object_block_alloc and dta_alloc_b
 80dd8280 texdata_block_alloc              # docs/direct/pool-users.md: a texture-storage block by ubo_object_block_alloc (texdata_storage_block, the PNG and TGA serializers, tera_unit_textures_init)
+80365950 cull_veg_task_records_write      # games/oot/patches/pools.c: writes object b's task count (str w24 at the list's first record) and count x 0x40 bytes of records (memcpy) into f_80c5da90's pools each frame; from f_80586fd0
+80c5da90 cull_task_block_create           # games/oot/patches/pools.c: a generic ubo block maker (cull_gpu_object_b_create's task records, f_80cb2a40's): shaders reach object b's through stored addresses # ?
+80c5f870 cull_records_block_create        # games/oot/patches/pools.c: two CPU-written record blocks (+0x2c4, +0x318) that actor_records_read_b writes and binds read: Upload
+80c576b0 cull_gather_lists_create         # games/oot/patches/pools.c: object b's "GatherLeaf", "GatherUndergrowth", "GatherTurf" lists (ubo blocks 0x1e000 and 0x2000) the GPU appends to and actor_records_read_a reads and zeroes
+80c59c30 cull_heap_slots_init             # games/oot/patches/pools.c: object b's 0x100-byte slots from a general heap (may grow it by a pool) # ?

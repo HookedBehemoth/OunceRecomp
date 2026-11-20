@@ -30,3 +30,11 @@ void nvn_claim_end(void);
    counter the reader zeroes), or data only shaders reach. A writer patch reports it after the write; the next submission
    copies it in, and a copy out of the GPU's older value does not land over it */
 void nvn_claim_write(uint64_t addr, uint64_t size);
+/* A CPU reset of memory the GPU owns (an appended count, an indirect record), made on the GPU: [addr, addr + size) filled
+   with the 32-bit value before the next submission's work (4-byte aligned). A patch calls it after the game's own store,
+   which then stays in guest memory only; a copy out of the GPU's older value does not land over it */
+void nvn_claim_fill(uint64_t addr, uint64_t size, uint32_t value);
+/* The CPU reads [addr, addr + size) of a VRAM pool the GPU writes (a list's header in a list of megabytes): after each
+   submission whose work writes the pool, the range is copied out and lands in guest memory when the submission completes,
+   before any wait on it returns. Declared once; the rest of the pool stays the GPU's */
+void nvn_claim_read(uint64_t addr, uint64_t size);

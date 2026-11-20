@@ -226,6 +226,10 @@ void claims_sub_sent(ClaimSub* s, uint64_t value);
 /// copied into its region by the next submission's first copy, and dropped from the copies out of submissions whose first
 /// copy came before (nvn_claim_write)
 void claims_cpu_write(uint64_t lo, uint64_t size);
+/// A CPU reset of memory the GPU owns, made by a fill before the next submission's work (nvn_claim_fill)
+void claims_gpu_fill(uint64_t lo, uint64_t size, uint32_t value);
+/// The CPU reads guest [lo, lo + size) of a VRAM pool: copied out after each submission that writes the pool (nvn_claim_read)
+void claims_read_window(uint64_t lo, uint64_t size);
 /// (debug.claimcheck) the game invalidates guest [lo, lo + size) to read it: an error where the GPU writes it outside a
 /// Readback claim. Never a signal for a copy
 void claims_cpu_reads(uint64_t lo, uint64_t size);

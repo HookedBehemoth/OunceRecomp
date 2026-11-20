@@ -14,15 +14,23 @@
    record 0 is at [x19 + 32] + u32([[x19 + 24]] + 4), records 1-3 at [x19 + 32] + u32([[x19 + 24]] + 16), the addresses the
    function itself computes. The row checks that x8 is that second address (else it writes nothing and counts it).
 
+   The records are the GPU's (the lists are VRAM, mesh_lists.c): the row makes the same {0, 1, 1, 0} on the GPU before the
+   next submission's work (nvn_claim_fill), and names the four records as read by the CPU (nvn_claim_read), so after a
+   submission that writes the list the GPU copies out its 0x40-byte header, not the list.
+
    Check that it applies: the 600-present line "direct patch mesh args" (headers a frame, mismatches 0). */
 #include "patches.h"
 #include "os.h"
+#include "nvn_claims.h"
 
 static struct { volatile int64_t headers, mismatch, outside; } n;
 
 static void put(uint64_t rec) {   /* {0, 1, 1, 0}: the counts' words stay as the game zeroed them */
     if (!hos_guest_range(rec, 16)) { os_atomic_inc(&n.outside); return; }
     G32(rec + 4) = 1, G32(rec + 8) = 1;
+    nvn_claim_fill(rec, 4, 0);
+    nvn_claim_fill(rec + 4, 8, 1);
+    nvn_claim_fill(rec + 12, 4, 0);
 }
 
 /* (x19 the list slot's object, x8 the address of records 1-3) */
@@ -34,6 +42,8 @@ PATCH_AT(0x80363294, word(0xa9027d1f), after, none, mesh_args_header, as(x19, ob
     const uint64_t r0 = base + G32(layout + 4), r1 = base + G32(layout + 16);
     if (r1 != x8) { os_atomic_inc(&n.mismatch); return; }
     put(r0), put(r1), put(r1 + 16), put(r1 + 32);
+    nvn_claim_read(r0, 16);
+    nvn_claim_read(r1, 48);
     os_atomic_inc(&n.headers);
 }
 
