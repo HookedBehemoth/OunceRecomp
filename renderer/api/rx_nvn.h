@@ -53,14 +53,14 @@ typedef struct { uint32_t magic, flags, origin, depth_mode; } nvn_dev;
 typedef struct { void *dev; uint32_t flags; uint64_t cmd_sz, comp_sz, ctl_sz, flush; uint64_t mem, mem_sz; } nvn_queue_builder;
 typedef struct { uint32_t magic; uint64_t submits; } nvn_queue;
 
-/* a memory pool: mem = guest address of its storage (0: a virtual pool), gpu = its GPU address. (renderer) The object
-   is guest memory, so it holds no host pointers: a virtual pool's page table is found by its GPU address. */
+/* a memory pool: mem = guest address of its storage (0: a virtual pool), gpu = its GPU address, claim = the game patch's
+   claim that covered its creation (runtime/nvn_claims.h). The object is guest memory, so it holds no host pointers. */
 typedef struct { void *dev; uint64_t mem; uint64_t size; uint32_t flags; } nvn_pool_builder;   /* mem: guest address */
 typedef struct {
     uint32_t magic, flags;
     uint64_t mem;                         /* guest address of the storage (0 for a virtual pool) */
-    uint64_t size, gpu;                   /* GPU address: the guest address, or a virtual pool's range above 4 GB */
-    uint64_t reserved;
+    uint64_t size, gpu;                   /* GPU address: the guest address, or a virtual pool's range above 1 TB */
+    uint32_t claim, reserved;
 } nvn_pool;
 typedef struct { const nvn_pool *pool; int64_t off; int32_t n; } nvn_dpool;   /* texture / sampler descriptor pool */
 
@@ -70,10 +70,11 @@ typedef struct { uint32_t magic; nvn_pool *pool; int64_t off; uint64_t size; } n
 typedef struct {
     void *dev; nvn_texdesc d; nvn_pool *pool; int64_t off;
     uint8_t has_layout, layout[8];
-    uint64_t pkg_data;                    /* SetPackagedTextureData (guest address): copied into the storage at Initialize */
+    uint64_t pkg_data;                    /* SetPackagedTextureData (guest address): never copied (nvn_tex.packaged) */
 } nvn_tex_builder;
 typedef struct {
     uint32_t magic; nvn_texdesc d; uint8_t has_layout, layout[8];
+    uint8_t packaged;                     /* initialized with packaged texture data: its texels are the store's or nothing */
     nvn_texlayout L;
     uint64_t gpu;                         /* GPU address of the storage (pool gpu + offset) */
     const nvn_pool *pool; int64_t off;
@@ -265,9 +266,6 @@ void rx_nvn_write_texels(const nvn_tex *t, unsigned level, unsigned layer0, cons
 /* the CPU is about to read memory the GPU may have written: GPU results there go to guest memory now */
 void rx_nvn_invalidate(uint64_t gpu, uint64_t size);
 void rx_nvn_pool_created(uint64_t gpu, uint64_t size);   /* (the back end may import it early) */
-/* virtual pages [gpu, gpu + size) mapped now are about to be unmapped or remapped: what the GPU drew into textures
-   there goes into their memory first (the back end) */
-void rx_nvn_vmap_changing(uint64_t gpu, uint64_t size);
 /* the CPU set an event's value (nvnEventSignal): in order with the submits, for the GPU's waits on it */
 void rx_nvn_event_signal(uint64_t gpu, uint32_t value);
 

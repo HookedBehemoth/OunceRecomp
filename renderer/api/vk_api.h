@@ -13,7 +13,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 16
+#define MKWVK_API_VERSION 18
 /* (renderer) the controls' names (runtime/nn_hid.c, runtime/media/pad_sdl.c, the pad_ and key_ lines of ounce_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position, SDL's order (the bottom face
    button first: A on an Xbox pad, cross on a DualSense) */
@@ -67,8 +67,6 @@ typedef struct MkwVkHost {
        them (runtime/nvdrv.c) */
     int (*gpu_pools)(uint64_t (*out)[2], int max);
     uint32_t (*maps_generation)(void);
-    /* a number that changes with every mapping of NVN's virtual pools' pages (MapVirtual: sparse textures) */
-    uint32_t (*vmap_generation)(void);
     /* the logical processors kept from the game's threads, for the replay thread (0: none) */
     uint64_t (*reserved_cpus)(void);
     /// Zeroed guest memory of the renderer's own (address space above the heap, never freed; 0 when none is left):
@@ -116,6 +114,9 @@ typedef struct MkwVkHost {
     double (*setting_float)(int id);
     const char *(*setting_str)(int id);
     int (*setting_given)(int id);
+    /* (version 18) the guest's call of nvnTextureInitialize on this thread, for the texture the back end is told of now:
+       its return address and its caller's (0 for a texture told of later) */
+    void (*texture_site)(uint64_t out[2]);
 } MkwVkHost;
 
 /* what the back end gives the executable: the rx_* functions (renderer/api/rx_nvn.h, rx_core) */
@@ -146,9 +147,6 @@ typedef struct MkwVkRenderer {
     void (*nvn_pool_created)(uint64_t gpu, uint64_t size);   /* a memory pool made (non-virtual): imported early */
     /* whether the GPU may use guest memory in [lo, hi) through an import (the host keeps such pages committed) */
     int (*guest_imported)(uint64_t lo, uint64_t hi);
-    /* virtual pages [gpu, gpu + size) mapped now are about to be unmapped or remapped (the old mapping still in place):
-       what the GPU wrote into textures there goes into their memory first */
-    void (*nvn_vmap_changing)(uint64_t gpu, uint64_t size);
     /* a texture initialized (its storage: whether the CPU's reads of a range may need a texture's texels) */
     void (*nvn_texture_created)(const nvn_tex *t);
     /* the CPU set an event's value: in order with the submits (the GPU's waits on it) */

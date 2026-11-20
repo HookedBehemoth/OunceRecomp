@@ -5,7 +5,11 @@
 // in one device allocation at their storage offsets (the transient pool) and are kept as objects up to a bound.
 // Every image lives in VK_IMAGE_LAYOUT_GENERAL. An ASTC texture's image is in the texture store's format for it (BC7), loaded
 // or made by the game. A texture with no image this GPU can hold (a format with no Vulkan twin, a size the driver refuses)
-// gets the placeholder, counted and named; a buffer texture gets nothing.
+// gets the placeholder, counted and named; a buffer texture gets nothing. An image's texels come only from the texture
+// store, a game patch's upload, or the GPU's own writes (rendering, copies, clears): a texture the store has no record
+// of and one with packaged data that is not the store's are errors (named by the guest's call of nvnTextureInitialize,
+// and strict events), with no image. The back end never reads texture storage; the CPU's writes into it, which no
+// image gets, are found with debug.texwatch.
 #pragma once
 
 #include <atomic>

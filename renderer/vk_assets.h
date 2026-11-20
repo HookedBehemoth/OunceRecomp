@@ -52,8 +52,6 @@ void assets_note_upload(uint8_t source, uint64_t bytes, int64_t ns);
 /// (debug.assetcheck / assetdump) a region upload's bytes, sampled for a read back after the load
 void assets_check_region(Image* im, uint8_t source, uint32_t level, uint32_t layer, uint32_t layers, int32_t x, int32_t y, uint32_t w,
                          uint32_t h, const uint8_t* bytes, uint64_t n, const uint8_t* src, uint64_t row);
-/// A placeholder named (vk_image: why)
-void assets_note_placeholder(const nvn_tex* t, const char* why);
 /// A present (the Presentation Thread): the load's end found, the debug checks run
 void assets_present(uint64_t present);
 /// A job list began (the first frame in play is the first with many)

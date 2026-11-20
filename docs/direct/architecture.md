@@ -115,8 +115,13 @@ the background.
   [terrain tiles and CPU texels](terrain-texels.md).
 
 The back end has no block-linear code and no ASTC decoder; both end at the build-time [converters](converters.md). A
-texture with no prepared record draws a 1x1 zero placeholder and is counted. There is no texture cache keyed by guest
-bytes and no page tracking.
+texture's texels come only from the store, a game patch's upload or the GPU's own writes. A texture the game loads that
+the store has no record of, and a texture with packaged data that is not the store's, are errors: no image, a log line
+naming the game's call, and a strict event. There is no texture cache keyed by guest bytes and no page tracking.
+
+Virtual and physical memory pools exist only where a game patch claims them as render-target storage
+(`runtime/nvn_claims.h`): their GPU range has no memory behind it, and `nvnMemoryPoolMapVirtual` does nothing. Any
+other virtual or physical pool, and any other mapping, is an error. Sparse textures are not supported.
 
 ## Task and mesh shaders
 

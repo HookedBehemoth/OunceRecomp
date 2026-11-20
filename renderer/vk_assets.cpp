@@ -234,7 +234,7 @@ extern "C" MKWVK_EXPORT int gpu_assets_open(const char* dir) {
     S.dir = dir;
     S.idx = map_file(S.dir + "/index.bin", S.idx_n);
     if (!S.idx || S.idx_n < 128 || std::memcmp(S.idx, "HKTXIDX1", 8) || rd<uint32_t>(S.idx + 8) != 1) {
-        logf("direct: assets: no prepared texture store at %s (index.bin %s): every asset texture is the placeholder", dir,
+        logf("direct: assets: no prepared texture store at %s (index.bin %s): every asset texture is an error", dir,
              S.idx ? "of another version" : "not found");
         return 0;
     }
@@ -395,7 +395,7 @@ extern "C" MKWVK_EXPORT int gpu_asset_load(const gpu_asset_key* k) {
     } else if (!k->name) {
         l.why = "its data is not from a BNTX";
         st_miss_nobntx.fetch_add(1, std::memory_order_relaxed);
-        name_once("a texture load whose data is not from a BNTX: '%.*s' BNTX format %#x %ux%u x%u, %u mips, %u bytes: the placeholder",
+        name_once("a texture load whose data is not from a BNTX: '%.*s' BNTX format %#x %ux%u x%u, %u mips, %u bytes: no image",
                   k->name ? (int)k->name_len : 0, k->name ? k->name : "", k->format, k->width, k->height, k->layers, k->mips, k->image_size);
     } else {
         int why = 1;   // (1 no record of the name, 2 of the descriptor, 3 of its place in the file)
@@ -420,7 +420,7 @@ extern "C" MKWVK_EXPORT int gpu_asset_load(const gpu_asset_key* k) {
             } else if (r.hash != hash) {   // (two contents match: a load with data takes the first; one without none)
                 st_ambiguous.fetch_add(1, std::memory_order_relaxed);
                 name_once("'%.*s': records of two contents match its load%s", (int)k->name_len, k->name,
-                          nodata ? " (it has no data): the placeholder" : ": the first taken");
+                          nodata ? " (it has no data): no image" : ": the first taken");
                 if (nodata) l.rec = 0, why = 4;
                 break;
             }
@@ -439,7 +439,7 @@ extern "C" MKWVK_EXPORT int gpu_asset_load(const gpu_asset_key* k) {
             l.why = why == 1 ? "no record of its name" : why == 2 ? "no record of its descriptor"
                   : why == 3 ? "no record of its place in its file" : "no data and records of two contents";
             (why == 1 ? st_miss_name : why == 2 ? st_miss_desc : st_miss_place).fetch_add(1, std::memory_order_relaxed);
-            name_once("'%.*s' (BNTX format %#x %ux%u x%u, %u mips, #%d at %#x in its BNTX, %s): %s: the placeholder", (int)k->name_len,
+            name_once("'%.*s' (BNTX format %#x %ux%u x%u, %u mips, #%d at %#x in its BNTX, %s): %s: no image", (int)k->name_len,
                       k->name, k->format, k->width, k->height, k->layers, k->mips, k->data_offset ? (int)k->index : -1, k->data_offset,
                       k->path == GPU_ASSET_INPLACE ? "in place" : "loaded", l.why);
         }
@@ -460,7 +460,7 @@ extern "C" MKWVK_EXPORT void gpu_asset_rebind(const void* tex) {
 extern "C" MKWVK_EXPORT void gpu_asset_pool(uint64_t lo, uint64_t hi) {
     pool_lo.store(lo, std::memory_order_relaxed);
     pool_hi.store(hi, std::memory_order_release);
-    logf("direct: assets: the asset heap's pool %#llx + %llu MB: a texture there with no load seen is the placeholder",
+    logf("direct: assets: the asset heap's pool %#llx + %llu MB: a texture there with no load seen has no image",
          (unsigned long long)lo, (unsigned long long)((hi - lo) >> 20));
 }
 
@@ -529,7 +529,7 @@ bool assets_created(const nvn_tex* t, AssetRef& a) {
         if (!hi || t->gpu < pool_lo.load(std::memory_order_relaxed) || t->gpu >= hi) return false;
         l.why = "in the asset heap with no load seen";
         st_unseen.fetch_add(1, std::memory_order_relaxed);
-        name_once("a texture in the asset heap with no load seen: NVN format %#x %ux%ux%u, %u levels, at %#llx: the placeholder",
+        name_once("a texture in the asset heap with no load seen: NVN format %#x %ux%ux%u, %u levels, at %#llx: no image",
                   t->d.format, t->d.width, t->d.height, t->d.depth, t->d.levels, (unsigned long long)t->gpu);
     }
     st_created.fetch_add(1, std::memory_order_relaxed);
@@ -542,7 +542,7 @@ bool assets_created(const nvn_tex* t, AssetRef& a) {
         if (t->d.width != r.w || t->d.height != r.h || std::max(1u, t->d.levels) != r.mips || layers != r.layers || t->L.size != r.isz) {
             st_link_desc.fetch_add(1, std::memory_order_relaxed);
             name_once("'%.*s': the texture initialized (%ux%u x%u, %u levels, %llu bytes) is not its record's (%ux%u x%u, %u, %u): "
-                      "the placeholder", (int)r.name_len, (const char*)S.str + r.name_off, t->d.width, t->d.height, layers,
+                      "no image", (int)r.name_len, (const char*)S.str + r.name_off, t->d.width, t->d.height, layers,
                       t->d.levels, (unsigned long long)t->L.size, r.w, r.h, r.layers, r.mips, r.isz);
             a.rec = 0, a.why = "initialized with another descriptor than its record's";
         }
@@ -763,11 +763,6 @@ void assets_note_upload(uint8_t source, uint64_t bytes, int64_t ns) {
     t_bytes[i].fetch_add((int64_t)bytes, std::memory_order_relaxed);
     t_ns[i].fetch_add(ns, std::memory_order_relaxed);
     if (s.tid && s.tid == present_tid.load(std::memory_order_relaxed)) on_present[i].fetch_add(1, std::memory_order_relaxed);
-}
-
-void assets_note_placeholder(const nvn_tex* t, const char* why) {
-    (void)t;
-    (void)why;   // (named where the miss was found: the load, or the initialization)
 }
 
 void assets_job_list() { st_jobs.fetch_add(1, std::memory_order_relaxed); }

@@ -25,7 +25,6 @@
      - the font glyph cache: f_8152f540 (the shelf packer: cache, &x, &y, w, h) notes the cell for this thread; after
        f_81539300 (nn::font's plot) has written it into the atlas ([cache+0xf0], pitch [cache+0x140]), the cell's rows
        x..x+w+4, y..y+h+3 go to the atlas image (docs/direct/terrain-texels.md).
-   Packaged texture data (nvnTextureBuilderSetPackagedTextureData) is not copied into the storage (nvn_native.c).
    A line every 10 s: the asset heap's resident pages and the guest memory's (mincore), the copies skipped. */
 #include "hos.h"
 #include "patches.h"
@@ -48,7 +47,7 @@ int nvn_fmt_bpb(int format, int *bw, int *bh);
 extern const char *hos_romfs_dir;
 
 static volatile int64_t n_loads, n_load_skipped, n_load_bytes, n_inplace, n_rebind, n_compaction, n_compaction_cleared,
-    n_replace, n_pkg, n_pkg_bytes, n_tiles_unconv, n_tile_notex, n_tile_badsite, n_glyphs,
+    n_replace, n_tiles_unconv, n_tile_notex, n_tile_badsite, n_glyphs,
     n_glyph_notex, n_rebind_logged, n_tile_inside, n_tile_held, n_tile_held_max, n_tile_dropped,
     n_tile_kept_given, n_tile_kept_other;
 
@@ -101,13 +100,13 @@ static void mem_line(void *arg) {
         }
         free(v);
         hos_log("assets: resident: the asset heap %llu of %llu MB, guest memory %llu of %llu MB; copies skipped: loads %lld of %lld "
-                "(%lld MB), packaged %lld (%lld MB), compaction steps %lld (copy flag cleared %lld); in-place textures %lld, rebinds "
+                "(%lld MB), compaction steps %lld (copy flag cleared %lld); in-place textures %lld, rebinds "
                 "%lld, replaced %lld; terrain tiles %lld deswizzled (%lld MB, %.1f ms, %.3f ms the longest), %lld placeholders, %lld with no texture, "
                 "%lld odd sites, held for their texture %lld (storage addresses kept %lld, %lld dropped; given to textures initialized "
                 "there %lld, a texture of another size there %lld); glyph cells %lld (%lld with no texture)%s",
                 (unsigned long long)(heap_res * (uint64_t)pg >> 20), (unsigned long long)((heap_hi - heap_lo) >> 20),
                 (unsigned long long)(guest_res * (uint64_t)pg >> 20), (unsigned long long)(gsize >> 20), (long long)n_load_skipped,
-                (long long)n_loads, (long long)(n_load_bytes >> 20), (long long)n_pkg, (long long)(n_pkg_bytes >> 20),
+                (long long)n_loads, (long long)(n_load_bytes >> 20),
                 (long long)n_compaction, (long long)n_compaction_cleared, (long long)n_inplace, (long long)n_rebind,
                 (long long)n_replace, (long long)tiles_bl.uploads, (long long)(tiles_bl.bytes >> 20), tiles_bl.ns / 1e6,
                 tiles_bl.max_ns / 1e6, (long long)n_tiles_unconv,
@@ -320,13 +319,6 @@ PATCH_AT(0x83537d90, word(0xd503237f), before, none, assets_replace_load, as(x1,
     if (os_atomic_inc(&n_replace) <= 10)
         hos_log("assets: a Replace load (td %#llx, %llu bytes): its copy into the heap is not skipped", (unsigned long long)td,
                 (unsigned long long)size);
-}
-
-int game_skips_packaged_texels(uint64_t bytes) {
-    if (!assets_on()) return 0;
-    os_atomic_inc(&n_pkg);
-    os_atomic_add(&n_pkg_bytes, (int64_t)bytes);
-    return 1;
 }
 
 /* The texture data pool (pool 127, 2.4 GB) is made by agl::TextureDataMgr, whose nvnMemoryPoolInitialize returns to

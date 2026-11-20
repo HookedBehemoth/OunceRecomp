@@ -18,6 +18,7 @@ uint8_t *hos_guest_base(void);
 uint64_t hos_guest_size(void);
 uint8_t *hos_gpu_ptr(uint64_t va, uint64_t *avail);
 uint64_t nvn_gpu_guest(uint64_t gpu);
+void nvn_texture_site(uint64_t out[2]);
 int nvn_gpu_read(uint64_t gpu, void *dst, uint64_t n);
 int nvn_gpu_write(uint64_t gpu, const void *src, uint64_t n);
 void nvn_tex_layout(const nvn_texdesc *d, nvn_texlayout *o);
@@ -26,7 +27,6 @@ int nvn_fmt_bpb(int format, int *bw, int *bh);
 int nvn_depth_minus_w(void);
 int hos_gpu_pools(uint64_t (*out)[2], int max);
 uint32_t hos_gpu_maps_generation(void);
-uint32_t nvn_vmap_generation(void);
 uint64_t hos_reserved_cpus(void);   /* hos_thread.c */
 extern float hos_aspect_ratio;      /* hos_main.c: the guest camera aspect applied at startup, or 0 */
 uint32_t hos_pad_raw(void);         /* nn_hid.c: the gamepads and the controls, for the Insert menu */
@@ -66,10 +66,10 @@ static const MkwVkHost vk_host = {
     MKWVK_API_VERSION, host_log, hos_guest_base, hos_guest_size, hos_gpu_ptr, nvn_gpu_guest, nvn_gpu_read,
     nvn_gpu_write, host_free_pages, hos_ticks, hos_now_ns, nvn_tex_layout,
     nvn_tex_level_offset, nvn_fmt_bpb, nvn_tex_level_tiles, nvn_tex_linear_stride, nvn_depth_minus_w, hos_gpu_pools,
-    hos_gpu_maps_generation, nvn_vmap_generation, hos_reserved_cpus, host_guest_alloc,
+    hos_gpu_maps_generation, hos_reserved_cpus, host_guest_alloc,
     host_watch_guest_writes, hos_pad_raw, hos_binding, hos_bind, host_aspect_ratio, host_take_key_press,
     hos_mouse_pointer, hos_mic_count, hos_mic_name, hos_mic_select, hos_sdl_gyro_status, hos_log_flush, game_prompts_face,
-    host_romfs_dir, host_setting_int, host_setting_float, host_setting_str, host_setting_given,
+    host_romfs_dir, host_setting_int, host_setting_float, host_setting_str, host_setting_given, nvn_texture_site,
 };
 
 static const MkwVkRenderer *vk;   /* the back end, once started */
@@ -378,14 +378,6 @@ void rx_nvn_event_signal(uint64_t gpu, uint32_t value) {
         return;
     }
     if (vk && vk->nvn_event_signal) vk->nvn_event_signal(gpu, value);
-}
-/* (nvn_native.c: virtual pages about to be unmapped or remapped) the Vulkan back end writes what the GPU drew there into
-   their memory first */
-void rx_nvn_vmap_changing(uint64_t gpu, uint64_t size) {
-    /* (it may wait for the replay and the GPU's texels: a block for debug.crit) */
-    const int away = hos_block_begin(CRIT_BLOCK_OTHER, (const void *)14);
-    if (vk && vk->nvn_vmap_changing) vk->nvn_vmap_changing(gpu, size);
-    if (away) hos_block_end();
 }
 void rx_nvn_pool_created(uint64_t gpu, uint64_t size) {
     if (vk && vk->nvn_pool_created) vk->nvn_pool_created(gpu, size);

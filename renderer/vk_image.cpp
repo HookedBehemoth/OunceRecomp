@@ -105,8 +105,7 @@ uint32_t next_id = 1;
 // (counts: made, destroyed and placeholders since the last line; per reason since the start)
 std::atomic<int64_t> st_made{0}, st_destroyed{0}, st_revived{0}, st_ph{0}, st_ph_format{0},
     st_ph_refused{0}, st_buffer_tex{0}, st_registered_new{0}, st_texels{0}, st_texels_skipped{0}, st_bytes{0},
-    st_made_total{0}, st_asset_images{0}, st_asset_bytes{0}, st_asset_shared{0}, st_asset_fill_waits{0}, st_asset_fail{0},
-    st_ph_norec{0};
+    st_made_total{0}, st_asset_images{0}, st_asset_bytes{0}, st_asset_shared{0}, st_asset_fill_waits{0}, st_asset_fail{0};
 
 enum { K_NONE, K_PLAIN, K_ASSET, K_ASSET_MISS, K_LINKED_PLAIN };
 constexpr uint32_t kAssetClass = 0x80000u;
@@ -424,8 +423,7 @@ Image* get(const nvn_tex* t) {
     AssetRef a;
     AssetDesc d;
     const int kind = key_of(t, k, fi, bw, bh, bpb, &a, &d);
-    if (kind == K_NONE) return nullptr;
-    if (kind == K_ASSET_MISS) return std::call_once(placeholder_once, make_placeholder), &placeholder;
+    if (kind == K_NONE || kind == K_ASSET_MISS) return nullptr;   // (K_ASSET_MISS: an error at its creation)
     auto it = images.find(k);
     if (it != images.end()) {
         if (kind == K_ASSET) st_asset_shared.fetch_add(1, std::memory_order_relaxed);
@@ -460,15 +458,48 @@ void destroy(Image* im) {
 
 }  // namespace
 
+namespace {
+// ---- errors: textures whose texels would come from guest storage (the store, a game patch's upload, the GPU's own writes
+// are the only sources) ----
+constexpr const char* kErrNoRecord = "a texture the game loaded that the store has no record of";
+constexpr const char* kErrPackaged = "a texture with packaged data that the store has no record of";
+std::mutex errors_mu;
+struct ErrorSite {
+    const char* reason;
+    uint64_t site0, site1;
+    int nvn_format;
+    uint32_t width, height;
+    int64_t n;
+};
+std::vector<ErrorSite>& errors = *new std::vector<ErrorSite>;   // (by reason, call site and shape; a few)
+/// One texture with no source for its texels: counted by its reason, call site and shape; the first of each logged as an
+/// error and a strict event
+void texture_error(const nvn_tex* t, const char* reason, const char* why, const uint64_t* site) {
+    const uint64_t s0 = site[0], s1 = site[1];
+    {
+        std::lock_guard lk(errors_mu);
+        for (ErrorSite& e : errors)
+            if (e.reason == reason && e.site0 == s0 && e.site1 == s1 && e.nvn_format == t->d.format && e.width == t->d.width &&
+                e.height == t->d.height)
+                return void(e.n++);
+        errors.push_back({reason, s0, s1, t->d.format, t->d.width, t->d.height, 1});
+    }
+    logf("direct: ERROR: %s: texture %#llx %ux%ux%u, %u levels, NVN format %#x, target %d, initialized from %llx < %llx: %s", reason,
+         (unsigned long long)t->gpu, t->d.width, t->d.height, t->d.depth, t->d.levels, t->d.format, t->d.target,
+         (unsigned long long)s0, (unsigned long long)s1, why);
+    strict_event(reason, "texture %ux%u NVN format %#x from %llx < %llx: %s", t->d.width, t->d.height, t->d.format,
+                 (unsigned long long)s0, (unsigned long long)s1, why);
+}
+}  // namespace
+
 void image_texture_created(const nvn_tex* t) {
     if (t && t->d.target == NVN_TEXTURE_TARGET_BUFFER) return void(st_buffer_tex.fetch_add(1, std::memory_order_relaxed));
     AssetRef a;
     const bool asset = assets_created(t, a);   // (A-rt: the record its load named, kept for its serial)
-    if (asset && !a.rec && !a.plain) {
-        st_ph.fetch_add(1, std::memory_order_relaxed);
-        st_ph_norec.fetch_add(1, std::memory_order_relaxed);
-        assets_note_placeholder(t, a.why);
-    }
+    uint64_t site[2] = {};
+    host->texture_site(site);
+    if (asset && !a.rec && !a.plain) texture_error(t, kErrNoRecord, a.why, site);
+    else if (t->packaged && !(asset && a.rec)) texture_error(t, kErrPackaged, "no load of it was tied to a store record", site);
     std::unique_lock lk(images_mu);
     Image* im = get(t);
     if (!im || im->placeholder) return;
@@ -703,8 +734,7 @@ Image* image_find(const nvn_tex* t) {
     FormatInfo fi;
     int bw, bh, bpb;
     const int kind = key_of(t, k, fi, bw, bh, bpb);
-    if (kind == K_NONE) return nullptr;
-    if (kind == K_ASSET_MISS) return &placeholder;
+    if (kind == K_NONE || kind == K_ASSET_MISS) return nullptr;
     std::shared_lock lk(images_mu);
     auto it = images.find(k);
     if (it != images.end()) return it->second.get();
@@ -1006,20 +1036,31 @@ void image_stats(char* out, size_t cap) {
                   "live (%lld colour, %lld depth, %lld compressed; by their first source: %lld rendered, %lld copied or cleared, %lld "
                   "from the store, %lld terrain uploads, %lld glyph uploads, %lld texel writes, %lld never written), %.0f MB (assets: "
                   "%lld images, %.0f MB, %lld not filled; %lld textures found their content's image made, %lld waited for its fill, "
-                  "%lld fills failed); placeholders %lld (no prepared record %lld, no format %lld, refused %lld; texels "
+                  "%lld fills failed); placeholders %lld (no format %lld, refused %lld; texels "
                   "not given %lld), buffer textures %lld; made at registration %lld; texel writes %lld (%lld skipped)",
                   (long long)st_made.exchange(0), (long long)st_made_total.load(), (long long)st_destroyed.exchange(0),
                   (long long)st_revived.exchange(0), (long long)live, (long long)color, (long long)depth, (long long)bc,
                   (long long)rendered, (long long)copied, (long long)store, (long long)terrain, (long long)glyph, (long long)texels,
                   (long long)untouched, st_bytes.load() / 1048576.0, (long long)assets, st_asset_bytes.load() / 1048576.0,
                   (long long)unfilled, (long long)st_asset_shared.load(), (long long)st_asset_fill_waits.load(),
-                  (long long)st_asset_fail.load(), (long long)st_ph.load(), (long long)st_ph_norec.load(),
+                  (long long)st_asset_fail.load(), (long long)st_ph.load(),
                   (long long)st_ph_format.load(), (long long)st_ph_refused.load(), (long long)no_content, (long long)st_buffer_tex.load(),
                   (long long)st_registered_new.load(), (long long)st_texels.load(), (long long)st_texels_skipped.load());
     const size_t n = std::strlen(out);
     std::snprintf(out + n, cap > n ? cap - n : 0, "; textures loaded with no data: %lld images, written by rendering %lld, copies %lld, "
                   "texel writes %lld, clears %lld, never %lld", (long long)nd, (long long)nd_bits[0], (long long)nd_bits[1],
                   (long long)nd_bits[2], (long long)nd_bits[3], (long long)nd_never);
+    {   // (textures with no source for their texels, by reason and call site)
+        std::lock_guard lk(errors_mu);
+        size_t n4 = std::strlen(out);
+        n4 += std::snprintf(out + n4, cap > n4 ? cap - n4 : 0, "; textures with no texel source: %zu sites", errors.size());
+        for (size_t i = 0; i < errors.size() && i < 24 && n4 < cap; i++) {
+            const ErrorSite& e = errors[i];
+            n4 += std::snprintf(out + n4, cap - n4, "%s %s %llx<%llx %ux%u %#x x%lld", i ? "," : ":",
+                                e.reason == kErrNoRecord ? "no record" : "packaged",
+                                (unsigned long long)e.site0, (unsigned long long)e.site1, e.width, e.height, e.nvn_format, (long long)e.n);
+        }
+    }
     uint64_t shared_addr = 0;
     for (const auto& [g, n] : gpus) shared_addr += n > 1 ? n : 0;
     const size_t n2 = std::strlen(out);

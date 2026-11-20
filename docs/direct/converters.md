@@ -1,10 +1,11 @@
 # The asset converters
 
 This page describes the build step that turns the game's textures into the linear data the back end uploads. Read it
-when you set up a new machine, when a texture draws as a placeholder, or before you change the prepared format.
+when you set up a new machine, when the log names a texture the store has no record of, or before you change the prepared format.
 
 The back end has no block-linear code, no ASTC decoder and no run-time conversion. Every asset texture is prepared by
-this step, or it draws as a placeholder and is counted. Terrain tiles and the sky tables are not prepared: the game's
+this step. A texture the game loads that the store has no record of is an error: it gets no image, and the log names
+it and the game's call that made it. Terrain tiles and the sky tables are not prepared: the game's
 patches make their texels linear when the game loads them (see [terrain tiles and CPU texels](terrain-texels.md)).
 
 ## Rules the converter keeps

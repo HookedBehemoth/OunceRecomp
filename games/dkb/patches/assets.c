@@ -13,7 +13,6 @@
        res: the same record.
      - the compaction step f_815f0820 (worker): its movers (f_815efb08, f_815efd34, f_815f064c) copy a moved texture's
        bytes only when byte [worker+0x1c11] is 1; it is cleared at every step, so compaction moves no texels.
-   Packaged texture data (nvnTextureBuilderSetPackagedTextureData) is not copied into the storage (nvn_native.c).
    In-place files (a BNTX kept whole in memory): ui2d's layout textures (f_8088e790) and a font's BNTX (f_808aa478) note
    their file for this thread; at TextureImpl::Initialize f_80210fdc inside them, the texture is found in the store by
    its name, index and mip 0's offset in that file.
@@ -31,8 +30,8 @@ int hos_gpu_pools(uint64_t (*out)[2], int max);
 int nvn_tex_live_at(uint64_t gpu, nvn_tex *out);
 extern const char *hos_romfs_dir;
 
-static volatile int64_t n_loads, n_load_skipped, n_load_bytes, n_rebind, n_compaction, n_compaction_cleared, n_pkg,
-    n_pkg_bytes, n_inplace, n_inplace_bad, n_glyphs,
+static volatile int64_t n_loads, n_load_skipped, n_load_bytes, n_rebind, n_compaction, n_compaction_cleared,
+    n_inplace, n_inplace_bad, n_glyphs,
     n_glyph_notex;
 
 
@@ -64,11 +63,11 @@ static const char *prepared_dir(void) {
 void assets_log(void) {
     char b[512];
     texdata_line(b, sizeof b);
-    hos_log("assets: copies skipped: loads %lld of %lld (%lld MB), packaged %lld (%lld MB), compaction steps %lld (copy flag "
+    hos_log("assets: copies skipped: loads %lld of %lld (%lld MB), compaction steps %lld (copy flag "
             "cleared %lld); rebinds %lld; in-place textures %lld (not their file's %lld); glyph cells %lld (%lld with no "
             "texture)%s; %s", (long long)n_load_skipped,
             (long long)n_loads, (long long)(n_load_bytes >> 20),
-            (long long)n_pkg, (long long)(n_pkg_bytes >> 20), (long long)n_compaction, (long long)n_compaction_cleared,
+            (long long)n_compaction, (long long)n_compaction_cleared,
             (long long)n_rebind, (long long)n_inplace, (long long)n_inplace_bad, (long long)n_glyphs, (long long)n_glyph_notex,
             assets_on() ? "" : " (debug.noassets= the patches are off)", b);
 }
@@ -273,13 +272,6 @@ PATCH_AT(0x80768504, word(0xf94f4e60), after, none, assets_glyph_plotted, as(x19
     NVNcopyRegion r = {(int)x, (int)top, 0, (int)cw, (int)h, 1};
     rx_direct()->texels(GPU_TEXELS_GLYPH, &t, 0, 0, &r, GP(atlas + (uint64_t)top * pitch + x), pitch, 0);
     os_atomic_inc(&n_glyphs);
-}
-
-int game_skips_packaged_texels(uint64_t bytes) {
-    if (!assets_on()) return 0;
-    os_atomic_inc(&n_pkg);
-    os_atomic_add(&n_pkg_bytes, (int64_t)bytes);
-    return 1;
 }
 
 /* The texture heap's pools are made inside agl::TextureDataMgr::InitializeHeap (assets_heap_init f_80577140), through

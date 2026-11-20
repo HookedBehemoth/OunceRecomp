@@ -133,7 +133,6 @@ extern "C" {
     /* ---- the NVN layer's diagnostics */                                                                                    \
     B(NVN_LOG_OBJECTS, "nvn.log_objects", DEV, 0, "every NVN object made")                                                    \
     B(NVN_LOG_DEVINFO, "nvn.log_devinfo", DEV, 0, "the device's queries")                                                    \
-    S(NVN_LOG_VMAP, "nvn.log_vmap", DEV, "", "virtual mappings (a value: from that size)")                                    \
     B(NVN_LOG_POOLS, "nvn.log_pools", DEV, 0, "who makes each memory pool")                                                   \
     B(NVN_LOG_SIZES, "nvn.log_sizes", DEV, 0, "texture and buffer sizes asked for")                                           \
     B(NVN_LOG_CHMASK, "nvn.log_chmask", DEV, 0, "channel mask changes")                                                       \

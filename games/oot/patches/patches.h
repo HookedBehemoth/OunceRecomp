@@ -13,7 +13,6 @@ typedef struct { volatile int64_t uploads, bytes, ns, max_ns; } bl_stats;
 int assets_texels_bl(uint32_t source, const void *tex, const uint8_t *src, uint64_t n, bl_stats *st);   /* (an nvn_tex) */
 /* nvn_native.c nvnTextureInitialize: packaged texture data the back end never reads, its copy into the storage skipped
    (1) in direct mode */
-int game_skips_packaged_texels(uint64_t bytes);
 /* tex_dedup.c (M6f, game patch): a load with no data, td its agl::TextureData: when it is a UnifyTex alias, its
    target's NVN texture as an GPU_ASSET_SAME key (1); otherwise 0 */
 int tex_alias(uint64_t td, gpu_asset_key *k);

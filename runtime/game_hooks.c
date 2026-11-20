@@ -3,7 +3,6 @@
 
 #define WEAK __attribute__((weak))
 WEAK void game_pool_made(uint64_t gpu, uint64_t size) { (void)gpu, (void)size; }
-WEAK int game_skips_packaged_texels(uint64_t bytes) { (void)bytes; return 0; }
 WEAK void game_texture_initializing(uint64_t obj, uint64_t gpu, const void *desc, uint64_t lr) { (void)obj, (void)gpu, (void)desc, (void)lr; }
 WEAK void game_texture_initialized(const void *nvn_texture) { (void)nvn_texture; }
 WEAK const void *game_texture_moving(void) { return NULL; }

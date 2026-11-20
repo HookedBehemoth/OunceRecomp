@@ -24,7 +24,9 @@
 #include "nvn_list.h"
 #include "hos_ledger.h"
 #include "game_hooks.h"
+#include "nvn_claims.h"
 #include "renderer.h"
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -106,73 +108,47 @@ static uint64_t new_serial(void) { return (uint64_t)os_atomic_inc(&serials); }
 
 #define VPAGE 0x10000ull                     /* NVN virtual mapping granularity (64 KiB) */
 #define VBASE 0x10000000000ull               /* virtual pools' GPU addresses start at 1 TB: past the 512 GB guest window */
-/* page[i]: guest address, 0 unmapped; run[i]: how many pages from i on are contiguous in guest memory (0 unmapped).
-   A finalized pool's map stays allocated (dead), so lookups can use a map without the lock: the renderer asks
-   tens of thousands of times a frame (render targets live in virtual pools; nvn_gpu_contiguous walked up to 1 GB
-   page by page, each page a locked list walk: 8% of the replay thread) */
-struct nvn_vmap { uint64_t gpu, size; uint64_t *page; uint32_t *run; struct nvn_vmap *next; };
-static struct nvn_vmap *vmaps, *dead_vmaps;
-static os_rwlock vmap_lock = OS_RWLOCK_INIT;
-static volatile int32_t vmap_gen = 1;           /* bumped when a map is added or removed */
-static volatile int32_t vpage_gen = 1;          /* bumped by every virtual page (re)mapping too (the renderer's caches) */
-uint32_t nvn_vmap_generation(void) { return (uint32_t)vpage_gen + (uint32_t)vmap_gen; }
+/* A virtual pool exists only as a claim of render-target storage (NVN_CLAIM_TARGETS): its GPU range is an address space
+   the textures' images are keyed by, with no page table and no guest memory behind it. Nothing reads or writes it. */
 static uint64_t next_vbase = VBASE;
-/* (direct mode; rt_slots.c) GPU addresses left unused after each virtual pool: the transient targets' slots lie after
-   the end of the pool of the game's DynamicTextureAllocator, as offsets past its size, so that the game's arenas keep
-   the whole pool for their bookkeeping and the slots can be as large as the targets need. Nothing is mapped there:
-   the direct back end never reads a texture's storage. 0 with another back end (its renderer reads storage) */
-uint64_t nvn_virtual_pool_tail(void) { return rx_direct() ? 2ull << 30 : 0; }
+static os_mutex vbase_lock = OS_MUTEX_INIT;
+/* (rt_slots.c) GPU addresses left unused after each virtual pool: the transient targets' slots lie after the end of the
+   pool of the game's DynamicTextureAllocator, as offsets past its size, so that the game's arenas keep the whole pool
+   for their bookkeeping and the slots can be as large as the targets need */
+uint64_t nvn_virtual_pool_tail(void) { return 2ull << 30; }
 
-static struct nvn_vmap *vmap_find(uint64_t gpu) {
-    static _Thread_local struct nvn_vmap *last;
-    static _Thread_local int32_t last_gen;
-    struct nvn_vmap *m = last;
-    if (m && last_gen == vmap_gen && gpu >= m->gpu && gpu < m->gpu + m->size) return m;
-    os_rwlock_lock_shared(&vmap_lock);
-    for (m = vmaps; m; m = m->next)
-        if (gpu >= m->gpu && gpu < m->gpu + m->size) break;
-    last_gen = vmap_gen;
-    os_rwlock_unlock_shared(&vmap_lock);
-    last = m;
-    return m;
-}
-static void vmap_runs(struct nvn_vmap *m) {   /* (vmap_lock held exclusively) */
-    const uint64_t n = m->size / VPAGE;
-    for (uint64_t i = n; i-- > 0;)
-        m->run[i] = !m->page[i] ? 0
-                  : i + 1 < n && m->page[i + 1] && m->page[i + 1] == m->page[i] + VPAGE ? m->run[i + 1] + 1 : 1;
+/* ---- pool claims (nvn_claims.h) ---- */
+static _Thread_local struct { int kind; const char *by; } tl_claim;
+void nvn_claim_begin(int kind, const char *by) { tl_claim.kind = kind, tl_claim.by = by; }
+void nvn_claim_end(void) { tl_claim.kind = NVN_CLAIM_NONE, tl_claim.by = NULL; }
+/* An NVN memory call the back end does not serve: one loud error with the guest's call chain, and a strict event */
+static void guest_chain(Ctx *c, char *b, size_t cap);
+static void pool_error(Ctx *c, const char *reason, const char *fmt, ...) {
+    char what[300], chain[400], line[800];
+    va_list a;
+    va_start(a, fmt);
+    vsnprintf(what, sizeof what, fmt, a);
+    va_end(a);
+    guest_chain(c, chain, sizeof chain);
+    snprintf(line, sizeof line, "%s, called from %s", what, chain);
+    hos_log("nvn: ERROR: %s: %s", reason, line);
+    const gpu_fns *d = rx_direct();
+    if (d && d->host_event) d->host_event(reason, line);
 }
 
-/* (runtime) a virtual pool's page table, from the host's list by the pool's GPU address (the pool object is guest memory) */
-static struct nvn_vmap *pool_vmap(const nvn_pool *o) {
-    if (!(o->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) || o->gpu < VBASE) return NULL;
-    struct nvn_vmap *m = vmap_find(o->gpu);
-    return m && m->gpu == o->gpu ? m : NULL;
-}
 uint64_t nvn_gpu_guest(uint64_t gpu) {
     /* (mkw-recomp: nothing is mapped below the system region at 16 MB: a small address is an unbound buffer, which
-       TOTK's fully committed 4 GB window read as zeros and MKW's sparse window faults on) */
-    if (gpu < VBASE) return gpu >= HOS_SYSTEM_BASE && gpu < HOS_SPACE_END ? gpu : 0;
-    const struct nvn_vmap *m = vmap_find(gpu);
-    if (!m) return 0;
-    const uint64_t p = m->page[(gpu - m->gpu) / VPAGE];
-    return p ? p + (gpu - m->gpu) % VPAGE : 0;
+       TOTK's fully committed 4 GB window read as zeros and MKW's sparse window faults on). A virtual pool's address has
+       no guest memory */
+    return gpu >= HOS_SYSTEM_BASE && gpu < HOS_SPACE_END ? gpu : 0;
 }
 uint8_t *nvn_gpu_host(uint64_t gpu) {
     const uint64_t g = nvn_gpu_guest(gpu);
     return g ? (uint8_t *)GP(g) : NULL;
 }
-uint64_t nvn_gpu_contiguous(uint64_t gpu, uint64_t n) {
-    if (gpu < VBASE) {   /* (runtime: up to the guest window's end, not past it) */
-        if (gpu < HOS_SYSTEM_BASE || gpu >= HOS_SPACE_END) return 0;
-        return n < HOS_SPACE_END - gpu ? n : HOS_SPACE_END - gpu;
-    }
-    const struct nvn_vmap *m = vmap_find(gpu);
-    if (!m) return 0;
-    const uint64_t i = (gpu - m->gpu) / VPAGE;
-    if (!m->page[i]) return 0;
-    const uint64_t have = (uint64_t)m->run[i] * VPAGE - (gpu - m->gpu) % VPAGE;
-    return have < n ? have : n;
+uint64_t nvn_gpu_contiguous(uint64_t gpu, uint64_t n) {   /* (runtime: up to the guest window's end, not past it) */
+    if (gpu < HOS_SYSTEM_BASE || gpu >= HOS_SPACE_END) return 0;
+    return n < HOS_SPACE_END - gpu ? n : HOS_SPACE_END - gpu;
 }
 int nvn_gpu_read(uint64_t gpu, void *dst, uint64_t n) {
     uint8_t *d = (uint8_t *)dst;
@@ -303,35 +279,30 @@ NV(nvnMemoryPoolBuilderSetDefaults) { memset(P(0), 0, sizeof(nvn_pool_builder));
 NV(nvnMemoryPoolBuilderSetDevice) { ((nvn_pool_builder *)P(0))->dev = P(1); }
 NV(nvnMemoryPoolBuilderSetStorage) { ((nvn_pool_builder *)P(0))->mem = U64(1); ((nvn_pool_builder *)P(0))->size = U64(2); }
 NV(nvnMemoryPoolBuilderSetFlags) { ((nvn_pool_builder *)P(0))->flags = U32(1); }
-static void guest_chain(Ctx *c, char *b, size_t cap);
 NV(nvnMemoryPoolInitialize,
-   reads(x29, "the frame-pointer chain's return addresses hashed into the pool's creation key, which places it")) {
+   reads(x29, "the frame-pointer chain: the pool's creation key, and the error of a pool no claim covers")) {
     const nvn_pool_builder *b = (const nvn_pool_builder *)P(1);
     nvn_pool *o = (nvn_pool *)P(0);
     memset(o, 0, sizeof *o);
-    o->magic = NVN_MAGIC('P', 'O', 'O', 'L');
     o->flags = b->flags;
     o->size = b->size;
-    if (o->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) {
-        if (b->mem || !o->size || o->size % VPAGE) die("virtual pool storage %#llx size %#llx", (unsigned long long)b->mem,
-                                                       (unsigned long long)o->size);
-        struct nvn_vmap *m = (struct nvn_vmap *)calloc(1, sizeof *m);
-        m->page = (uint64_t *)calloc(o->size / VPAGE, sizeof(uint64_t));
-        m->run = (uint32_t *)calloc(o->size / VPAGE, sizeof(uint32_t));
-        if (!m->page || !m->run || o->size >= VBASE) die("virtual pool of %#llx bytes", (unsigned long long)o->size);
-        os_rwlock_lock(&vmap_lock);
-        m->gpu = next_vbase;
-        m->size = o->size;
-        next_vbase += ((o->size + VPAGE - 1) & ~(VPAGE - 1)) + nvn_virtual_pool_tail();
-        m->next = vmaps;
-        vmaps = m;
-        os_atomic_inc(&vmap_gen);
-        os_rwlock_unlock(&vmap_lock);
-        o->gpu = m->gpu;
-        OLOG("virtual pool %#llx bytes at GPU %#llx", (unsigned long long)o->size, (unsigned long long)o->gpu);
-        if (setting_given(SET_NVN_LOG_VMAP))
-            hos_log("nvn: virtual pool %#llx bytes at GPU %#llx (flags %#x, lr %#llx)", (unsigned long long)o->size,
-                    (unsigned long long)o->gpu, o->flags, (unsigned long long)c->x[30]);
+    o->claim = (uint32_t)tl_claim.kind;
+    if ((o->flags & (NVN_MEMORY_POOL_FLAGS_VIRTUAL | NVN_MEMORY_POOL_FLAGS_PHYSICAL)) && o->claim != NVN_CLAIM_TARGETS) {
+        pool_error(c, "a virtual or physical memory pool no claim covers", "nvnMemoryPoolInitialize flags %#x size %#llx",
+                   o->flags, (unsigned long long)o->size);
+        RET(0);
+        return;
+    }
+    o->magic = NVN_MAGIC('P', 'O', 'O', 'L');
+    if (o->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) {   /* (an address range only: NVN_CLAIM_TARGETS) */
+        if (b->mem || !o->size || o->size % VPAGE || o->size >= VBASE)
+            die("virtual pool storage %#llx size %#llx", (unsigned long long)b->mem, (unsigned long long)o->size);
+        os_mutex_lock(&vbase_lock);
+        o->gpu = next_vbase;
+        next_vbase += o->size + nvn_virtual_pool_tail();
+        os_mutex_unlock(&vbase_lock);
+        hos_log("nvn: virtual pool %#llx bytes at GPU %#llx: render-target storage (claimed by %s)", (unsigned long long)o->size,
+                (unsigned long long)o->gpu, tl_claim.by ? tl_claim.by : "?");
         RET(1);
         return;
     }
@@ -343,7 +314,8 @@ NV(nvnMemoryPoolInitialize,
     if (setting_bool(SET_NVN_LOG_POOLS)) {   /* (debugging) who makes each pool */
         char b[400];
         guest_chain(c, b, sizeof b);
-        hos_log("nvn: pool %#llx size %#llx flags %#x made by %s", (unsigned long long)o->gpu, (unsigned long long)o->size, o->flags, b);
+        hos_log("nvn: pool %#llx size %#llx flags %#x claim %u made by %s", (unsigned long long)o->gpu, (unsigned long long)o->size,
+                o->flags, o->claim, b);
     }
     game_pool_made(o->gpu, o->size);   /* (the patches may name the pool to the back end before its binding) */
     rx_nvn_pool_native(o->gpu, o->size, o->flags, pool_creation_key(c), 1);   /* (native-vk layer 0: placed by its flags, before any binding) */
@@ -364,26 +336,7 @@ static int no_pool(Ctx *c, const char *what) {
 NV(nvnMemoryPoolFinalize) {
     if (no_pool(c, "finalize")) return;
     nvn_pool *o = (nvn_pool *)P(0);
-    struct nvn_vmap *vm = pool_vmap(o);
-    if (vm) {   /* (its GPU range is not reused) */
-        int mapped = 0;   /* (pages still mapped: what the GPU drew there goes into their memory first) */
-        for (uint64_t k = 0; k < vm->size / VPAGE && !mapped; k++) mapped = vm->page[k] != 0;
-        if (mapped) rx_nvn_vmap_changing(vm->gpu, vm->size);
-        os_rwlock_lock(&vmap_lock);
-        int found = 0;
-        for (struct nvn_vmap **p = &vmaps; *p; p = &(*p)->next)
-            if (*p == vm) {
-                *p = vm->next;
-                found = 1;
-                break;
-            }
-        if (found) {   /* (kept: a lookup may still hold it) */
-            vm->next = dead_vmaps;
-            dead_vmaps = vm;
-        }
-        os_atomic_inc(&vmap_gen);
-        os_rwlock_unlock(&vmap_lock);
-    } else if (o->mem) {
+    if (o->mem && o->magic == NVN_MAGIC('P', 'O', 'O', 'L')) {   /* (a virtual pool's GPU range is not reused) */
         rx_nvn_pool_native(o->gpu, o->size, o->flags, 0, 0);   /* (native-vk layer 0: kept a while for an identical Initialize) */
         hos_gpu_track(o->gpu, o->size, 0);
     }
@@ -416,65 +369,16 @@ NV(nvnMemoryPoolInvalidateMappedRange) {   /* the CPU is about to read what the 
     if ((int64_t)U64(1) >= 0) rx_nvn_invalidate(o->gpu + U64(1), U64(2));
 }
 NV(nvnMemoryPoolSetDebugLabel) {}
-/* NVNmappingRequest (0x28 bytes): physical pool (guest pointer), physical offset, virtual offset, size, storage class */
-NV(nvnMemoryPoolMapVirtual) {
+/* nvnMemoryPoolMapVirtual(pool, n, NVNmappingRequest[n]): accepted, with nothing to do, only on a virtual pool claimed
+   as render-target storage (nothing reads its pages); anything else is an error */
+NV(nvnMemoryPoolMapVirtual, reads(x29, "named in the error of a mapping no claim covers")) {
     if (no_pool(c, "map virtual")) return;
-    nvn_pool *v = (nvn_pool *)P(0);
-    const int n = I(1);
-    struct nvn_vmap *vm = pool_vmap(v);
-    if (!vm || n < 0) die("MapVirtual on a pool that is not virtual");
-    const uint8_t *r = (const uint8_t *)PN(2, 0x28ull * (uint64_t)n);
-    for (int i = 0; i < n; i++) {
-        uint64_t pool, size;
-        int64_t poff, voff;
-        memcpy(&pool, r + 0x28 * i, 8);
-        memcpy(&poff, r + 0x28 * i + 8, 8);
-        memcpy(&voff, r + 0x28 * i + 16, 8);
-        memcpy(&size, r + 0x28 * i + 24, 8);
-        if (voff < 0 || poff < 0 || !size || size > vm->size || (uint64_t)voff > vm->size - size ||
-            ((uint64_t)voff | (uint64_t)poff | size) % VPAGE)
-            die("MapVirtual request %d: virtual %#llx physical %#llx size %#llx", i, (unsigned long long)voff,
-                (unsigned long long)poff, (unsigned long long)size);
-        const nvn_pool *p = pool ? (const nvn_pool *)gw(pool, sizeof(nvn_pool)) : NULL;
-        /* (runtime: the physical pages must lie in guest memory; the pool object is guest memory) */
-        if (p && (!p->mem || p->gpu != p->mem || size > p->size || (uint64_t)poff > p->size - size ||
-                  !hos_guest_range(p->gpu + (uint64_t)poff, size)))
-            die("MapVirtual request %d: physical pool", i);
-        {   /* (pages mapped now that change: what the GPU drew into textures there goes into their memory first, while
-               the old mapping holds: MK World draws its course maps' tiles in small pools and moves their pages) */
-            int mapped = 0;
-            for (uint64_t k = 0; k < size / VPAGE && !mapped; k++) mapped = vm->page[(uint64_t)voff / VPAGE + k] != 0;
-            if (mapped) rx_nvn_vmap_changing(v->gpu + (uint64_t)voff, size);
-        }
-        {   /* (nvn.log_vmap=<lowest pool GPU address, hex>: the requests into pools from there, 3000 lines; how many
-               in all every 2000) */
-            static int log_vmap = -1;
-            static uint64_t vmap_from;
-            static volatile int32_t logged, total;
-            if (log_vmap < 0) {
-                const char *e = setting_str(SET_NVN_LOG_VMAP);
-                log_vmap = *e != 0;
-                vmap_from = strtoull(e, NULL, 16);
-                if (vmap_from == 1) vmap_from = 0;
-            }
-            const int32_t t = os_atomic_inc(&total);
-            if (log_vmap && ((v->gpu >= vmap_from && os_atomic_inc(&logged) <= 3000) || t % 2000 == 0)) {
-                uint64_t nz = 0;   /* (what the physical pages hold as they are mapped) */
-                if (p && p->mem)
-                    for (uint64_t k = 0; k < size; k++) nz += ((const uint8_t *)GP(p->mem))[(uint64_t)poff + k] != 0;
-                hos_log("nvn: MapVirtual #%ld: pool %#llx (%#llx bytes) +%#llx..+%#llx -> %s %#llx+%#llx (flags %#x), %llu bytes "
-                        "not zero there (lr %#llx)", (long)t, (unsigned long long)v->gpu, (unsigned long long)v->size,
-                        (unsigned long long)voff, (unsigned long long)((uint64_t)voff + size), p ? "pool" : "unmapped",
-                        (unsigned long long)(p ? p->gpu : 0), (unsigned long long)poff, p ? p->flags : 0,
-                        (unsigned long long)nz, (unsigned long long)c->x[30]);
-            }
-        }
-        os_rwlock_lock(&vmap_lock);
-        for (uint64_t k = 0; k < size / VPAGE; k++)
-            vm->page[(uint64_t)voff / VPAGE + k] = p ? p->gpu + (uint64_t)poff + k * VPAGE : 0;
-        vmap_runs(vm);
-        os_atomic_inc(&vpage_gen);
-        os_rwlock_unlock(&vmap_lock);
+    const nvn_pool *v = (const nvn_pool *)P(0);
+    if (v->magic != NVN_MAGIC('P', 'O', 'O', 'L') || !(v->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) || v->claim != NVN_CLAIM_TARGETS) {
+        pool_error(c, "nvnMemoryPoolMapVirtual on a pool no claim covers", "pool flags %#x size %#llx, %d requests", v->flags,
+                   (unsigned long long)v->size, I(1));
+        RET(0);
+        return;
     }
     RET(1);
 }
@@ -762,7 +666,11 @@ static int log_tex(const nvn_tex *o) {
     return on && o->d.width == lw && o->d.height == lh;
 }
 static _Thread_local uint64_t tl_moved_serial;   /* (M6f: the serial a texture moved by compaction keeps) */
-NV(nvnTextureInitialize) {
+/* (the back end, at the texture's creation on this thread) the guest's call of nvnTextureInitialize: its return address
+   and its caller's */
+static _Thread_local uint64_t tl_init_site[2];
+void nvn_texture_site(uint64_t out[2]) { out[0] = tl_init_site[0], out[1] = tl_init_site[1]; }
+NV(nvnTextureInitialize, reads(x29, "the caller's frame: its return address names the texture's creator")) {
     os_atomic_inc(&nvn_texture_inits);
     const nvn_tex_builder *b = CTB(P(1));
     game_texture_initializing(c->x[0], b->pool ? POOL(b->pool)->gpu + (uint64_t)b->off : 0, &b->d, c->x[30]);
@@ -781,10 +689,9 @@ NV(nvnTextureInitialize) {
     memcpy(o->layout, b->layout, 8);
     nvn_tex_layout(&o->d, &o->L);
     o->gpu = b->pool ? POOL(b->pool)->gpu + (uint64_t)b->off : 0;
-    if (b->pkg_data && !game_skips_packaged_texels(o->L.size)) {   /* packaged data: copied into the storage (a CPU write the
-                                                                       dirty tracking sees; direct mode: never read, skipped) */
-        if (!o->gpu || !nvn_gpu_write(o->gpu, gw(b->pkg_data, o->L.size), o->L.size)) die("packaged texture data without storage");
-    }
+    o->packaged = b->pkg_data != 0;   /* (never copied into the storage: the back end takes its texels from the store) */
+    tl_init_site[0] = c->x[30];
+    tl_init_site[1] = c->x[29] && !(c->x[29] & 7) && hos_guest_range(c->x[29] + 8, 8) ? G64(c->x[29] + 8) : 0;
     const int moved = tl_moved_serial && o == game_texture_moving();   /* (M6f: the second half of a move) */
     o->serial = moved ? tl_moved_serial : new_serial();
     tl_moved_serial = 0;
