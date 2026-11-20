@@ -103,11 +103,11 @@ gathers each loop's range and reports it where the loop's paths meet.
 | Question | Answer |
 |---|---|
 | System and data | One module (vtable 0x84c7d108) makes both. Its scene step `probe_module_scene_init` runs `probe_storage_init` (the 0x581000 storage block, zeroed at creation) and `probe_bake_load` ("BakeProbe": baked probe files). Its job `probe_calc_block_init` makes `gpu_calc_block_create`'s 150 MB block, split into five ubo objects that the CPU fills at creation. |
-| CPU users | At creation: header copies, data copies and zeroing. In play: about 26 pages a frame in the 150 MB block (survey); the writer is not identified. |
-| GPU users | Shaders reach the block through stored addresses, not bindings. |
-| Flow per frame | Probe data is streamed into the block by the CPU and read by shaders through addresses. |
-| Desktop match | Upload fits only with writer reports, because no binding names the ranges. The patch goes on the streaming writer once the census names it. If `ounce profile` waits for a value the GPU writes into these blocks, that range needs Readback. |
-| Confidence and census | Low: what the probes hold is unknown. Page-watch the 150 MB block and the 0x581000 block to name the writers. If profile runs never settle, check whether the loader polls a GPU-written word in them. |
+| CPU users | At creation, in `gpu_calc_block_create` after it makes the pool: a header pair, 0x40 bytes of constants, count x 16 bytes of data, count x 0x20-byte entries (0 and 1.0) at the fourth object, count x 0x80 bytes zeroed at the fifth (in Kokiri 35 MB and 116 MB). In play: `probe_calc_stream_write` (count x 16 bytes a frame), `probe_bake_records_write` on the BakeProbe thread (0x80-byte records into the fifth object, 0x20-byte ones into the fourth, both at x2's indexes), `probe_calc_fields_write` (the small block). No CPU reader. |
+| GPU users | Never bound: global-memory programs reach it through addresses in their small storage buffers (`cc62764061c44f6a`, `6935123dc8e37bca`, `5b0baadba86c1489` at +0, +0x40, +0x80, +0x680, +0x2190680: the objects' bases). |
+| Flow per frame | The CPU streams probe data in, the shaders read it through the stored addresses. |
+| Desktop match | VRAM, every CPU write reported. |
+| What blocked it | The creation's fill takes tens of milliseconds, and a submission's whole copy came between the pool's making and the fill: now the scope's end copies again. `probe_bake_records_write`'s report read the second loop's index from x1; the loop reads x2's first word (it keeps x2 at [sp + 8]). |
 
 `texdata_storage_block` (0x30e000) is `texdata_model_procedural`'s, through `texdata_block_alloc`; its users are not
 traced yet.
@@ -141,8 +141,7 @@ traced yet.
 2. **GeometryCullingMgr split:** the views' arrays are Readback with each address store reported (their small pool also
    holds the exposure record, whose writes are reported), the block VRAM.
 3. **Vfx3:** the plugin setters, the new-buffer fill and the dirty-range copy report their writes.
-4. **The probe module:** the storage block is VRAM with bake::ModuleMgr's records reported. The 150 MB calc block's
-   writers report, but a scene's load writes it again outside its maker's scope: it stays on layer 0.
+4. **The probe module:** the storage block and both calc blocks are VRAM, their writers reported.
 5. **The depth grid:** its slots are Readback with the camera copy reported. The query's records and per-id state stay on
    layer 0 until the writer that the census does not attribute is found.
 6. **The per-frame dedicated pool:** open.

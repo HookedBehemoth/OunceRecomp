@@ -261,26 +261,29 @@ PATCH_AT(0x803667c8, word(0xb9400688), before, none, pools_query_state_end) { nv
 PATCH_AT(0x80365c00, word(0x94e3f1dc), after, none, pools_grid_camera, as(x0, dst)) { nvn_claim_write(dst, 0x2420); }
 
 /* ---- the probe module's calc blocks (gpu_calc_block_create, from probe_calc_block_init: 150 MB, and f_80c5c450 beside
-   probe_bake_load: 0x2000). Never bound: shaders reach them through stored addresses. Their CPU writers hand their bytes
-   over (debug.poolcensus, Kokiri). f_80c5c450's is VRAM; the 150 MB one stays on layer 0: as VRAM the check still finds about 6,000 pages
-   changed, gpu_calc_block_create writing the 150 MB pool again on sead::MainThread at a scene's load (present 231 in
-   Kokiri), after the pool's first copy and outside any scope that made a pool. Open:
-   - f_806ad760's memcpy of count ([x19 + 0x78]) x 16 bytes (ModuleSystemWorker, about 26 pages a present);
-   - the BakeProbe thread's f_80711820: count ([x3 + 0x30]) records of 0x80 bytes at [x0 + 0x300] + 0x80 x [x2 + 8], and
-     count ([x3 + 0x20]) of 0x20 at [x0 + 0x270] + 0x20 x [x1];
-   - f_806ace20's six 8-byte fields at the f_80c5c450 block's current half (x20, its last store at 0x806acfdc) */
-PATCH_AT(0x806accec, word(0x9416be2d), before, none, pools_probe_calc) { nvn_claim_begin(NVN_CLAIM_LAYER0, "probe_calc_block_init calc block"); }
+   probe_bake_load: 0x2000; docs/direct/pool-users.md, "The probe module"). Never bound: shaders reach them through
+   stored addresses: VRAM. gpu_calc_block_create fills its five ubo objects after making the pool, inside the claim's
+   scope (the scope's end copies them). Later writers, reported:
+   - probe_calc_stream_write's memcpy of count ([x19 + 0x78]) x 16 bytes (about 26 pages a present);
+   - the BakeProbe thread's probe_bake_records_write: count ([x3 + 0x30]) records of 0x80 bytes at [x0 + 0x300] + 0x80 x
+     [x2 + 8], and count ([x3 + 0x20]) of 0x20 at [x0 + 0x270] + 0x20 x [x2];
+   - probe_calc_fields_write's six 8-byte fields at the f_80c5c450 block's current half (x20, its last store at
+     0x806acfdc) */
+PATCH_AT(0x806accec, word(0x9416be2d), before, none, pools_probe_calc) { nvn_claim_begin(NVN_CLAIM_VRAM, "probe_calc_block_init calc block"); }
 PATCH_AT(0x806accf0, word(0x36000420), before, none, pools_probe_calc_end) { nvn_claim_end(); }
 PATCH_AT(0x80c5c55c, word(0x94000011), before, none, pools_probe_bake_calc) { nvn_claim_begin(NVN_CLAIM_VRAM, "f_80c5c450 calc block"); }
 PATCH_AT(0x80c5c560, word(0xa94b4ff4), before, none, pools_probe_bake_calc_end) { nvn_claim_end(); }
 PATCH_AT(0x806ad880, word(0x94d6d2bc), after, none, pools_probe_stream, as(x0, dst), as(x21, count)) { nvn_claim_write(dst, (uint64_t)count << 4); }
 PATCH_AT(0x806acfdc, word(0xf9001288), after, none, pools_probe_fields, as(x20, at)) { nvn_claim_write(at, 0x28); }
 PATCH_FUNC(0x80711820, word(0xd503237f), body(0x73bee5ec6ea59328), aapcs, x0, pools_bake_probe_records, orig, as(x0, obj),
-           as(x1, idx2), as(x2, idx1), as(x3, counts)) {
-    const uint64_t r = guest_orig(orig);
+           as(x2, idx), as(x3, counts)) {
+    /* (the destinations as the function reads them at its start: both indexes are x2's words, +8 and +0 (it keeps x2 at
+       [sp + 8] for the second loop)) */
+    const uint64_t d1 = G64(obj + 0x300) + 0x80ull * G32(idx + 8), d2 = G64(obj + 0x270) + 0x20ull * G32(idx);
     const int32_t n1 = (int32_t)G32(counts + 0x30), n2 = (int32_t)G32(counts + 0x20);
-    if (n1 > 0) nvn_claim_write(G64(obj + 0x300) + 0x80ull * G32(idx1 + 8), 0x80ull * (uint64_t)n1);
-    if (n2 > 0) nvn_claim_write(G64(obj + 0x270) + 0x20ull * G32(idx2), 0x20ull * (uint64_t)n2);
+    const uint64_t r = guest_orig(orig);
+    if (n1 > 0) nvn_claim_write(d1, 0x80ull * (uint64_t)n1);
+    if (n2 > 0) nvn_claim_write(d2, 0x20ull * (uint64_t)n2);
     return r;
 }
 
