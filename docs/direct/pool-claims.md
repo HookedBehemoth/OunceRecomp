@@ -152,7 +152,8 @@ Measured in OoT's Kokiri test (`debug.replog`, `nvn.log_pools`):
 **Known gap: Vfx3's particle streams.** NintendoWare Vfx3's resource pool (`gsys_vfx_mgr_init`, 0x22, Upload) holds
 particle records (0x100 bytes each) that draws bind as storage the program writes, and that the CPU also rewrites every
 frame (the check finds about 0.4 pages a frame in Kokiri). Since the grains are the GPU's, those CPU writes do not
-reach the GPU. The writer (`vfx_particle_stream_write` or a neighbour) needs a report, or the program's real write range.
+reach the GPU. A page watch names the writer: an emitter plugin's callback (slot 0x380) called from `f_812618c0` at
+0x81261e08, at a particle's emission. It needs a report, or the program's real write range.
 
 ## Engine allocators
 
@@ -169,6 +170,32 @@ game. Game-specific makers stay per-game patches.
 | sead device and queue pools | events (0x12), command memory (0x12), shader scratch (0x21) | Host, Host, VRAM (each call) | `sead_device_queue_pools` 0x80f69040 | `gfx_system_init` 0x805e7a88 | to find |
 | the display's buffers | three 4K window textures (0x21, 95.6 MB) | Targets | `display_buffers_pool_init` 0x8114e4f0 | 0x80802d48 | at boot, to find |
 | descriptor pools | texture and sampler descriptors | Host | `desc_pools_create` 0x80966440 | 0x807a6234 | to find |
+
+**OoT's gsys object blocks.** `ubo_object_block_alloc` makes the heap's 0x24 and 0x12 pools (252 in Kokiri), and each
+maker claims its own (`games/oot/patches/pools.c`), from a Kokiri survey of each pool's binds, page changes and the
+CPU's invalidates (a CPU-cached pool the CPU invalidates is one whose GPU writes it reads):
+
+| Maker | Kind | Evidence |
+|---|---|---|
+| the exposure and light-visibility buffers, `exposure_result_block_create`, `gpu_result_block_b_create`, the depth grid's read block | Readback | the CPU invalidates and reads them every frame |
+| `agl_render_dl_buffer`, `agl_driver_mgr_dl`'s lists (0x12) | Host | display lists: never bound |
+
+Still on layer 0, each for a reason a run showed:
+
+- `cull_gpu_object_a_create`, `depth_grid_buffers_create` and job_list_build_b's block (GPU scratch, no CPU write in the
+  check) as VRAM pass the smoke test, but with the Upload makers below kept on layer 0 the profile's foliage pass
+  (rt46) takes 6.1 ms instead of 0.9 ms. Not explained yet; the culling lists' CPU resets are the first suspect.
+- `terrain_streams_create`, `storage_block_create` and `texdata_storage_block` as Upload keep `ounce profile` from ever
+  settling (resource messages stay pending). Not explained yet.
+- `cull_gpu_results_create`'s six result lists: the CPU reads them, but their programs bind the whole lists as written
+  storage, so a copy out moves about 5 MB a submission.
+- `cull_gpu_object_b_create`, `gpu_scratch_blocks_create` and `gpu_calc_block_create` (150 MB): the CPU writes parts the
+  GPU also writes or reaches only through stored addresses (about 26 pages a frame in the 150 MB block). They need
+  writer reports.
+- `depth_grid_slots_create` and `gpu_result_block_a_create`: the CPU reads them and also writes grains their GPU work
+  writes. With no report of that write, `gpu_result_block_a_create` as Readback leaves Kokiri's scene black (the check
+  stays clean: it does not see CPU reads). `texdata_serialize_jpg` (the picture) is left for a save test.
+- the makers no survey has reached, which the heap's rule leaves on layer 0.
 
 Per-game makers:
 
@@ -201,10 +228,21 @@ Each step is one commit. Each one passes `ounce test oot`, a 60-second DKB run, 
 | 6 | Upload as bound-range copies at the guest's submit, load-once copies at their claim's end, and writer patches for the exceptions the measurement names | 600 lines, plus the patches |
 | 7 | Remove layer 0: the imports, udmabuf and the host-pointer path, `os_guest`'s export, the import probe, their settings and docs | deletes about 800 lines |
 | 8 | The agl texture takeover, then MKW's pools on the same patches | 600 lines across the games |
+| 8a | Upload only what the CPU wrote (below) | the writer patches, then the bound-range copy narrowed |
 | 9 | Write-once uniform rings (below) | to be sized |
 
 Steps 3 to 6 keep the remaining pools on `Layer0` until their claims move, so each step lands with both games
 running. Expect a small regression on AMD, where layer 0 was zero-copy: Upload and Readback add copies.
+
+### Step 8a: upload only what the CPU wrote
+
+OoT's uniform data is persistent, double-buffered per-object blocks (bound at base + (frame & 1) * stride), written in
+place by a few writers. The bound-range copy moves about 0.55 to 0.97 MB a frame, of which only 40 to 60 KB was written
+(work/assets/native/uniform-buffers.md, section 1). The writers report their ranges with `nvn_claim_write`, and only
+reported or dirty ranges are copied: `ubo_param_dirty_write` (the calc jobs), `ubo_view_camera_write`,
+`ubo_view_pool_write`, `ubo_shape_block_write`, `ubo_env_block_write`, the Vfx3 emitter writers,
+`sky_inscatter_ubo_write` and `ubo_compute_dispatch_consts`. The bound-range copy stays only where no writer is
+patched; the check must show 0 mismatches, and the uploaded bytes and host draw time are measured before and after.
 
 ### Step 9: write-once uniform rings
 

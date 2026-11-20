@@ -1015,6 +1015,16 @@ struct Owned {
 };
 std::unordered_map<uint64_t, Owned> owned;   // (by page)
 std::atomic<int64_t> st_owned_writes{0};
+/// which of page p's grains the GPU owns, hashed (owned_hash's mask)
+uint64_t owned_mask(const Region* r, uint64_t p) {
+    if (r->claim == NVN_CLAIM_VRAM) return ~0ull;
+    const std::atomic<uint64_t>* g = r->gpu.load(std::memory_order_acquire);
+    uint64_t mask = 0x9e3779b97f4a7c15ull;
+    const uint64_t g0 = (p - r->lo) >> kGrainShift;
+    for (uint32_t k = 0; k < (kPage >> kGrainShift) / 64; k++)
+        mask = (mask ^ (g ? g[(g0 >> 6) + k].load(std::memory_order_relaxed) : 0)) * 0xff51afd7ed558ccdull;
+    return mask;
+}
 /// page p's bytes the GPU owns, hashed: a VRAM claim's whole page, else the grains GPU work writes
 Owned owned_hash(uint64_t p) {
     const Region* r = region_at(p);
@@ -1038,7 +1048,7 @@ void own_pages(uint64_t lo, uint64_t hi) {
         if (const Region* r = region_at(p); r && local_copied(r)) {
             auto it = owned.find(p);
             if (it == owned.end()) owned.emplace(p, owned_hash(p));
-            else if (const Owned now = owned_hash(p); now.mask != it->second.mask) it->second = now;   // (more grains the GPU's)
+            else if (owned_mask(r, p) != it->second.mask) it->second = owned_hash(p);   // (more grains the GPU's)
         }
 }
 void owned_rehash(uint64_t lo, uint64_t hi) {   // (owned_mu held)
@@ -1186,6 +1196,30 @@ void claims_cpu_write(uint64_t lo, uint64_t size) {
     if (track_check) {
         std::lock_guard lk(owned_mu);
         owned_rehash(lo, lo + size);
+    }
+}
+
+void claims_cpu_reads(uint64_t lo, uint64_t size) {
+    if (!track_check || !size || state.load(std::memory_order_acquire) != 1) return;
+    Region* r = region_at(lo);
+    if (!r || r->claim == NVN_CLAIM_READBACK || r->claim == NVN_CLAIM_LAYER0 || r->claim == NVN_CLAIM_VRAM) {
+        if (!r || r->claim != NVN_CLAIM_VRAM) return;
+    } else if (!any_gpu_written(r, lo, std::min(lo + size, r->hi))) {
+        return;
+    }
+    static std::atomic<int64_t> told{0};
+    st_mismatches.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard mk(miss_mu);
+        char key[160];
+        std::snprintf(key, sizeof key, "%s flags %#x (the CPU reads GPU writes outside a Readback claim)", r->by ? r->by : "?", r->flags);
+        misses[key]++;
+    }
+    if (told.fetch_add(1, std::memory_order_relaxed) < 8) {
+        logf("direct: claims: ERROR: check: the CPU invalidates %#llx+%#llx to read what the GPU wrote, outside a Readback claim: %s",
+             (unsigned long long)lo, (unsigned long long)size, pool_name(lo).c_str());
+        strict_event("a CPU read of GPU writes outside a Readback claim", "%#llx+%#llx: %s", (unsigned long long)lo, (unsigned long long)size,
+                     pool_name(lo).c_str());
     }
 }
 

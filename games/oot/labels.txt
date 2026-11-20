@@ -1184,3 +1184,17 @@
 80f6a7e0 memory_pool_allocator_heap_init  # games/oot/patches/pools.c survey: "MemoryPoolAllocatorMgrHeap": a gfx_memory_pool_init pool (0xa2, 8 MB) under a NumberLineAllocator
 81277330 vfx3_pools_create                # games/oot/patches/pools.c survey: NintendoWare Vfx3's pools through f_812bb860 (0x22 88 MB, 0xa4, 0xa)
 8087b9b0 gsys_vfx_mgr_init                # games/oot/patches/pools.c: "gsysVfxMgr": makes an "EffectModel" heap and NintendoWare vfx3's system (f_81236160), whose pools (vfx3_pools_create) hold six dynamic 2 MB buffers (0x24) and an 88 MB pool (0x22)
+80deeb90 cull_gpu_objects_create          # games/oot/patches/pools.c: makes the two GPU culling objects (f_80c58a80 at +0xa78, f_80c594e0 at +0xa48)
+80c58a80 cull_gpu_object_a_create         # games/oot/patches/pools.c: a GPU culling object's pools by ubo_object_pool_alloc: lists, instance buffers, indirect arguments (30 MB, 8.6 MB x2, ...), its result lists by f_80c612a0
+80c594e0 cull_gpu_object_b_create         # games/oot/patches/pools.c: the second culling object's pools (task records, indirect arguments, 0x5000 and 0xb000 blocks); the CPU writes some of them # ?
+80c612a0 cull_gpu_results_create          # games/oot/patches/pools.c: one of six result lists (1 to 8.6 MB) the CPU invalidates and reads every frame (report_reader_b, cull_gpu_lists_reset)
+832f3820 gpu_scratch_blocks_create        # games/oot/patches/pools.c: GPU scratch blocks (20 MB, 2.4 MB, 0x233000 x3) reached through stored addresses; the CPU writes parts # ? what system
+80c5c5a0 gpu_calc_block_create            # games/oot/patches/pools.c: one 150 MB block (from the calc job f_806acbd0) that shaders reach through stored addresses and the CPU writes # ? what system
+80c54a20 exposure_result_block_create     # games/oot/patches/pools.c: a 0x4000 block the GPU writes and the CPU invalidates twice a frame (texdata_model_procedural) # ? exposure
+80c5a600 depth_grid_slots_create          # games/oot/patches/pools.c: agl::utl::DepthBufferEx's grid slot blocks (report_reader_a reads them), from scene_stages_init
+80ecdc20 gpu_result_block_a_create        # games/oot/patches/pools.c: a small block the GPU writes and the CPU invalidates (job_list_build_b) # ?
+80ece560 gpu_result_block_b_create        # games/oot/patches/pools.c: small blocks the GPU writes and the CPU invalidates # ?
+80366600 depth_grid_buffers_create        # games/oot/patches/pools.c: the depth grid's GPU buffers (0xb0000, 0x14000) and a 0x37000 block the CPU reads (bl at 0x80366788)
+80902560 terrain_streams_create           # games/oot/patches/pools.c: the terrain's vertex and index stream pools (f_809e38d0), written by the CPU
+80c4e250 storage_block_create             # games/oot/patches/pools.c: a 0x581000 block the CPU writes and shaders read as storage (f_80b16530) # ?
+80dd8180 texdata_storage_block            # games/oot/patches/pools.c: a 0x30e000 storage block by f_80dd8280 the CPU writes # ?

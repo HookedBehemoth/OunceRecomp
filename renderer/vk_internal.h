@@ -226,6 +226,9 @@ void claims_sub_sent(ClaimSub* s, uint64_t value);
 /// copied into its region by the next submission's first copy, and dropped from the copies out of submissions whose first
 /// copy came before (nvn_claim_write)
 void claims_cpu_write(uint64_t lo, uint64_t size);
+/// (debug.claimcheck) the game invalidates guest [lo, lo + size) to read it: an error where the GPU writes it outside a
+/// Readback claim. Never a signal for a copy
+void claims_cpu_reads(uint64_t lo, uint64_t size);
 /// A copy out into guest memory (the reports' and the Readback ranges'), which the check's view of guest memory follows
 void claims_guest_write(uint64_t guest, const void* src, uint64_t n);
 /// (claimuse) a shader reaches guest addr through an address stored in a buffer (how: where the address was)

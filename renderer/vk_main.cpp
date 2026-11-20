@@ -329,7 +329,7 @@ void write_texels(const nvn_tex* t, unsigned level, unsigned layer0, const NVNco
     count(R_WRITE_TEXELS);
     image_write_texels(t, level, layer0, r, src, row, img);
 }
-void invalidate(uint64_t, uint64_t) {}
+void invalidate(uint64_t lo, uint64_t size) { claims_cpu_reads(lo, size); }
 void wait_writebacks_reading(const void*, uint64_t) {}
 void pool_created(uint64_t, uint64_t) { count(R_POOL); }
 void pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, const char* by, int on) {

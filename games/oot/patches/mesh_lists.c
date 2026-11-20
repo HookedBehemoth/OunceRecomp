@@ -23,12 +23,14 @@
    Check that it applies: the 600-present line "direct patch mesh lists". */
 #include "patches.h"
 #include "os.h"
+#include "nvn_claims.h"
 
 static struct { volatile int64_t resets, outside, records, set, set_logged; } n;
 
 static void put(uint64_t rec) {
     if (!hos_guest_range(rec, 16)) { os_atomic_inc(&n.outside); return; }
     G32(rec + 4) = 1, G32(rec + 8) = 1;
+    nvn_claim_write(rec, 16);   /* (its record's first words: the CPU's reset and the w1 = w2 = 1, which the GPU's copy needs) */
 }
 
 /* (At rows, a PATCH_AT declaration, runtime/patch.h) f_80361c80: after each `str xzr, [x19, x8]`; f_80361a00: after its
