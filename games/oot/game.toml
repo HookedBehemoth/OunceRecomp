@@ -17,7 +17,7 @@ icon = "icon.bmp"
 # the game's patch files (C, beside this file): built with the runtime's (runtime/sources.txt) and read by the patch scan.
 # Rows at one instruction run in this order (list_kinds.c's before eng_jobs.c's)
 patches = [
-    "patches/list_kinds.c", "patches/assets.c", "patches/depth_copy.c", "patches/diag_env.c",
+    "patches/list_kinds.c", "patches/assets.c", "patches/depth_copy.c", "patches/diag_env.c", "patches/gpu_readers.c",
     "patches/diag_nodata.c", "patches/job_sync.c", "patches/layer_ahead.c",
     "patches/cull_lists.c", "patches/mesh_binds.c",
     "patches/mesh_system.c", "patches/movie.c", "patches/ndsr.c", "patches/passes.c", "patches/patch_log.c",

@@ -79,14 +79,17 @@ through a writer's report (`nvn_claim_write`), and the CPU reads the GPU's only 
 
 **Reported writes.** A writer patch reports a CPU write after it. The next submission's first copy copies the range in
 before its work, whatever the GPU owns, and the copies out of submissions whose first copy came before the report drop
-that range: an older GPU value never lands over the CPU's write. OoT's light-visibility reader zeroes the sums it reads
-this way.
+that range: an older GPU value never lands over the CPU's write. A report is for CPU data in such a range, never for a
+reset of what the GPU computes.
 
-**Resets the GPU makes in list order.** Where a reader zeroes a sum the GPU adds to once a frame, a report puts the zero
-after any work still in flight, which then adds onto the old sum or loses its result. OoT's exposure sums are reset
-instead by a patch at the pass that adds to them: it records a buffer clear of the words the reader zeroes into the
-game's own command buffer, before the pass's work. Each frame's sum is then complete on its own, every copy out lands,
-and the reader's zero stays in guest memory.
+**Resets the GPU makes in list order.** Where the game zeroes a sum the GPU adds to, the CPU never writes it: a
+report would put the zero after any work still in flight, which then adds onto the old sum or loses its result. A
+patch at the pass that adds to the sum records a buffer clear of those words into the game's own command buffer, before
+the pass's work, and the game's reader is replaced by host code that reads the copy out and writes nothing back. Each
+frame's sum is complete on its own and every copy out lands. Where the game's logic reads its own zero as "no result
+since the last read", the host code keeps that state itself: it counts the passes recorded since the last read, and
+reads 0 when there are none. OoT's exposure sums, its exposure record and its lights' visibility counters work this
+way (`gpu_readers.c`).
 
 Where the writer flushes what it wrote, the patch marks the flush call instead (`nvn_claim_flush_written`), and that
 flush's range is the report. A mark needs a census of that call: every write of its class lies inside the flush that
@@ -187,8 +190,8 @@ Measured in OoT's Kokiri test (`debug.replog`, `nvn.log_pools`):
   them.
 - **GPU results through storage buffers** (the exposure light sums, the light visibility counters) are allocations
   inside the same heap. Their makers (`exposure_light_buffers_create`, `render_light_visibility_buffer`) claim them as
-  Readback (each allocation is a pool of its own). Their readers zero the sums each frame: the light-visibility zero
-  is reported, the exposure sums are cleared on the GPU before the passes that add to them.
+  Readback (each allocation is a pool of its own). The sums are cleared on the GPU before the passes that add to them,
+  and host code replaces both readers (see Resets the GPU makes in list order).
 - **Which pools the CPU reads.** A pool the game allocates CPU-cached (0x24) and invalidates before it reads is one whose
   GPU writes the CPU reads. The invalidate is never a signal, but a survey of the invalidates per pool (a 600-present
   run) names the Readback candidates; the claim then goes on their maker.
@@ -225,7 +228,7 @@ invalidates is one whose GPU writes it reads):
 | `agl_render_dl_buffer`, `agl_driver_mgr_dl`'s lists (0x12) | Host | display lists: never bound |
 | the GPU culling object a (`cull_gpu_object_a_create`) | VRAM | the CPU's resets made on the GPU, the counts it reads copied out of their records |
 | object b's task records (`f_80c5f870`), gather lists (`f_80c576b0`) and result blocks | Upload, Readback, Readback | the gather lists' zeroing made on the GPU |
-| GeometryCullingMgr: the views' arrays, the block | Readback, VRAM | each address store reported; the exposure record in the views' pool reported |
+| GeometryCullingMgr: the views' arrays, the block | Readback, VRAM | each address store reported; the exposure record in the views' pool: its GPU words cleared before its first pass, its tint reported |
 | the vegetation task blocks (`cull_task_block_create`, object b's and `cull_task_block_fill`'s) | VRAM | the CPU's writes reported, among them a GPU address stored later into the shared pool ([pool users](pool-users.md)) |
 | the depth grid: constants, slots, the 0x5b40 block | Upload, Readback, VRAM | the per-frame camera copy into the slots reported |
 | the occlusion query's records and per-id state (`depth_grid_buffers_create`) | VRAM | filled once after their allocations, inside a scope over the maker that names no kind |

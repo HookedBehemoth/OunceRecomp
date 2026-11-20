@@ -125,9 +125,10 @@ not a general mapped-pool programme.
 
 - **Exposure light buffers** (`exposure_light_buffers_create`, read by `exposure_light_readback`) and **light
   visibility** (`render_light_visibility_buffer`, `render_light_visibility_readback`): game-side classes in OoT only.
-  Each reader invalidates, reads one value, zeroes it, and flushes. The flushes cover grains the GPU writes, so the
-  light-visibility zeroing report and the exposure record's report stay, as do the maker claims; the exposure sums
-  are cleared on the GPU before their passes ([pool claims](pool-claims.md), "Resets the GPU makes in list order").
+  Both readers are host code that reads the copied-out sums and writes, invalidates and flushes nothing; the sums and
+  the exposure record's GPU words are cleared on the GPU before their passes ([pool claims](pool-claims.md), "Resets
+  the GPU makes in list order"). The exposure record's tint, CPU data in grains the record's binding marks written,
+  stays reported, as do the maker claims.
 - **agl::utl::DepthBufferEx** (`depth_grid_slots_create`, `report_reader_a`, `depth_grid_camera_write`): in all three
   games. DKB's voxel culling also reads a coarse depth grid on the CPU. The camera copy lies in grains the GPU writes, so its
   report stays; its four allocations are rows of the allocation table. The TOTK export does not describe the class.

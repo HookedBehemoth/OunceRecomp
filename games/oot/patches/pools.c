@@ -109,37 +109,16 @@ PATCH_FUNC(0x8114e4f0, word(0xd503237f), body(0xb3560c600e03da68), aapcs, x0, po
 
 /* ---- Readback claims: GPU results the CPU reads (docs/direct/pool-claims.md, "What the GPU writes and the CPU reads") ----
    exposure_light_buffers_create: the three light-sum buffers (0x1010 bytes each, a pool each; GPU atomic adds) that
-   exposure_light_readback reads a float of every frame and zeroes, and the exposure and light blocks the CPU fills every
-   frame. Its readback invalidates them (nvn.log_pools survey: 0.4 a frame each) */
+   exposure_light_readback reads a float of every frame, and the light block the CPU fills every frame. The sums' resets
+   and their reader are gpu_readers.c's */
 PATCH_FUNC(0x80c54290, word(0xd503237f), body(0x0513d52b2b7b7e43), aapcs, x0, pools_exposure, orig) {
     CLAIM("exposure_light_buffers_create", NVN_CLAIM_READBACK);
 }
-/* render_light_visibility_buffer: an object's 0x40 counter buffer (a pool of 0x2000 each, 29 in Kokiri) that a program's
-   atomic adds write and render_light_visibility_readback reads and zeroes every frame */
+/* render_light_visibility_buffer: a light's 0x40 counter buffer (a pool of 0x2000 each, 29 in Kokiri) that
+   light_visibility_pass's atomic adds write and render_light_visibility_readback reads every frame (gpu_readers.c) */
 PATCH_FUNC(0x831e5dd0, word(0xd503237f), body(0xf29cda637aa262e9), aapcs, x0, pools_light_visibility, orig) {
     CLAIM("render_light_visibility_buffer", NVN_CLAIM_READBACK);
 }
-/* exposure_light_readback's three sums, reset on the GPU: pass_scene_pipeline's three exposure passes (exposure_pass_sum_a the
-   +0x30 buffer's sum, exposure_pass_sum_b the +0x1d8 buffer's 16 bytes, exposure_pass_sum_c the +0x268 buffer's sum) each bind their buffer
-   (ubo_object_bind, x0 the buffer object, x1 the pass context, its command buffer at +0xd8) and then make one 1x1x1
-   dispatch whose atomic adds make the frame's sum. Before each bind the words the reader zeroes are cleared with
-   nvnCommandBufferClearBuffer on that command buffer, so the dispatch adds onto zero in GPU order and each frame's result
-   is complete on its own; every copy out lands, the reader's own zero stays in guest memory (no report: a zero copied in
-   at the next submission came after the work in flight, which lost or doubled frames when the CPU ran ahead). The sum's
-   address is the reader's: [buffer + 0x18] + [[[buffer + 0x10]] + 4] */
-uint64_t nvn_native_proc(const char *name);   /* nvn_native.c */
-static uint64_t p_clear_buffer;
-PATCH_AT(0x8029410c, word(0x94000ac9), before, none, exposure_sum_reset, guest(computed), sp, as(x0, buf), as(x1, ctx), as(k(4), size)) {
-    uint64_t clear = __atomic_load_n(&p_clear_buffer, __ATOMIC_RELAXED);
-    if (!clear) __atomic_store_n(&p_clear_buffer, clear = nvn_native_proc("nvnCommandBufferClearBuffer"), __ATOMIC_RELAXED);
-    guest_call(g, sp, clear, G64(ctx + 0xd8), G64(buf + 0x18) + G32(G64(G64(buf + 0x10)) + 4), size, 0, 0);
-}
-PATCH_AT_SITE(0x80294978, word(0x940008ae), before, none, exposure_sum_reset, guest(computed), sp, x0, x1, k(16));
-PATCH_AT_SITE(0x802b6b38, word(0x97ff803e), before, none, exposure_sum_reset, guest(computed), sp, x0, x1, k(4));
-/* render_light_visibility_readback's zero of its float +0, reported: the next submission's GPU work adds to zero, and no
-   copy out of an older sum lands over it */
-PATCH_AT(0x803541e4, word(0xb8286abf), after, none, pools_light_visibility_zeroed, as(x21, base), as(x8, off)) { nvn_claim_write(base + off, 4); }
-
 /* ---- the gsys heap's object blocks (ubo_object_block_alloc, flags 0x24 and 0x12), claimed by their makers. Evidence: a
    Kokiri survey (nvn.log_pools, debug.claimuse) of each pool's binds, its page changes, and the CPU's invalidates of it
    (a CPU-cached pool the CPU invalidates is one whose GPU writes it reads). The makers still on layer 0 and why are in
@@ -212,14 +191,8 @@ PATCH_FUNC(0x80c576b0, word(0xd503237f), body(0x006c33e34ee6fc7f), aapcs, x0, po
    GPU addresses that the calc jobs write each frame (cull_geometry_store_address, the only CPU write) and a draw binds as
    storage (its program declares the binding written, so the grains are the GPU's): Readback, each store reported; the block
    the GPU writes through those addresses (ubo_object_block_alloc_b at 0x80ecdd24): VRAM. The first view's allocation makes
-   the small pool other ubo objects share: exposure_light_readback's 0x90 exposure record lives there, its CPU writes
-   reported below */
+   the small pool other ubo objects share: exposure_light_readback's 0x90 exposure record lives there (gpu_readers.c) */
 PATCH_AT(0x834bfb24, word(0xf9000008), after, none, pools_geocull_address, as(x0, at)) { nvn_claim_write(at, 8); }
-/* exposure_light_readback's exposure record: 0x30 bytes of stores (0x80357608..0x80357618) then a 0x60-byte memset, at
-   [x19 + 0xd8] + layout[+4] ([[x19 + 0xd0]] + 4): reported after the memset */
-PATCH_AT(0x8035761c, word(0x94e42b51), after, none, pools_exposure_record, as(x19, obj), as(x22, base)) {
-    nvn_claim_write(base + G32(G64(G64(obj + 0xd0)) + 4), 0x90);
-}
 
 /* ---- NintendoWare Vfx3's resource pool (gsys_vfx_mgr_init, Upload): particle attribute buffers the draws bind as storage
    their programs write (the grains are the GPU's), which the CPU also writes (debug.poolcensus, Kokiri): reported.
