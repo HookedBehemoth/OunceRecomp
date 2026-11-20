@@ -12,7 +12,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const HELP: &str = "profile <game> [--scene NAME]... [--size WxH] [--frames N] [--shaders] [--census <stages.jsonl>] [--set KEY=VALUE]...";
+const HELP: &str = "profile <game> [--scene NAME]... [--size WxH] [--frames N] [--shaders] [--census <stages.jsonl>] [--set KEY=VALUE]... [--superluminal <capture>]";
 
 struct Opts {
     scenes: Vec<String>,
@@ -21,6 +21,7 @@ struct Opts {
     shaders: bool,
     census: Option<PathBuf>,
     set: Vec<(String, String)>,   // (--set: settings every run of the profile gets)
+    superluminal: Option<PathBuf>,   // (--superluminal: a CPU capture of the measured run, one scene only)
 }
 
 /// One pass's line of passtime.csv
@@ -372,7 +373,7 @@ fn table(name: &str, s: &Scene, r: &SceneResult, top: usize) -> String {
 
 /// Runs one headless benchmark of the scene; with `shaders`, the per-draw run (debug.pstats=bench) instead
 fn run_scene(layout: &Layout, game: &Game, name: &str, s: &Scene, dir: &Path, size: &str, frames: u32, shaders: bool,
-             extra: &[(String, String)]) -> PathBuf {
+             extra: &[(String, String)], superluminal: Option<&Path>) -> PathBuf {
     let config = config();
     let mut set: Vec<(String, String)> = vec![("window_size".into(), size.into())];
     set.extend(extra.iter().cloned());
@@ -391,7 +392,8 @@ fn run_scene(layout: &Layout, game: &Game, name: &str, s: &Scene, dir: &Path, si
     // presents puts one shot in any `frames` presents in a row, at least 8 before the run's end, past the shot's
     // three-present write; the newest is the measured one)
     let shot_every = if shaders { None } else { Some(frames.saturating_sub(8).max(1)) };
-    let o = ounce_core::run::Options { headless: true, seconds: Some(s.seconds), name: Some(run_name), set, shot_every, ..Default::default() };
+    let o = ounce_core::run::Options { headless: true, seconds: Some(s.seconds), name: Some(run_name), set, shot_every,
+                                       superluminal: superluminal.filter(|_| !shaders).map(Path::to_path_buf), ..Default::default() };
     let r = ounce_core::run::run(layout, &config, game, &o).unwrap_or_else(|e| fail(e));
     if !shaders {
         let mut shots: Vec<PathBuf> = std::fs::read_dir(r.dir.join("shots")).into_iter().flatten().flatten().map(|e| e.path()).collect();
@@ -425,7 +427,7 @@ pub fn command(args: &[String]) {
     let Some(gname) = args.first().filter(|a| !a.starts_with('-')) else { fail(HELP) };
     let game = Game::load(&root, gname).unwrap_or_else(|e| fail(e));
     let layout = Layout::new(root, gname);
-    let mut o = Opts { scenes: Vec::new(), size: None, frames: 600, shaders: false, census: None, set: Vec::new() };
+    let mut o = Opts { scenes: Vec::new(), size: None, frames: 600, shaders: false, census: None, set: Vec::new(), superluminal: None };
     let mut it = args[1..].iter();
     while let Some(a) = it.next() {
         let mut val = || it.next().cloned().unwrap_or_else(|| fail(format!("{a} wants a value")));
@@ -435,6 +437,7 @@ pub fn command(args: &[String]) {
             "--frames" => o.frames = val().parse().unwrap_or_else(|_| fail("--frames N")),
             "--shaders" => o.shaders = true,
             "--census" => o.census = Some(val().into()),
+            "--superluminal" => o.superluminal = Some(val().into()),
             "--set" => {
                 let v = val();
                 let (k, x) = v.split_once('=').unwrap_or_else(|| fail(format!("profile: --set {v}: KEY=VALUE")));
@@ -451,6 +454,9 @@ pub fn command(args: &[String]) {
             fail(format!("profile: no scene {s} (games/{}/profile.toml has {})", game.name, game.scenes.iter().map(|x| x.0.as_str()).collect::<Vec<_>>().join(", ")));
         }
     }
+    if o.superluminal.is_some() && o.scenes.len() != 1 {
+        fail("profile: --superluminal takes one --scene");
+    }
     let size = o.size.clone().unwrap_or_else(|| play_size(&layout, &game.exe));
     let census = o.census.clone().or_else(|| find_census(&layout, &game.name));
     let data = config().data_dir().join(&game.name).join("profile");
@@ -461,11 +467,11 @@ pub fn command(args: &[String]) {
         println!("profile: {name}");
         let dir = data.join(name);
         std::fs::create_dir_all(&dir).unwrap_or_else(|e| fail(format!("{}: {e}", dir.display())));
-        let run = run_scene(&layout, &game, name, s, &dir, &size, o.frames, false, &o.set);
+        let run = run_scene(&layout, &game, name, s, &dir, &size, o.frames, false, &o.set, o.superluminal.as_deref());
         let mut r = SceneResult::default();
         read_log(&run, &mut r);
         if o.shaders && r.frame.is_some() {
-            let cap = run_scene(&layout, &game, name, s, &dir, &size, o.frames, true, &o.set);
+            let cap = run_scene(&layout, &game, name, s, &dir, &size, o.frames, true, &o.set, None);
             r.shaders = shaders_of(&cap, &r, census.as_deref());
         }
         let t = table(name, s, &r, 12);

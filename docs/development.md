@@ -120,6 +120,10 @@ For each scene the report gives:
 the costliest passes, with ACO's register counts, waves and instruction counts from the newest
 [shader census](direct/shader-costs.md) (`--census <file>` picks another one).
 
+`--superluminal <capture>` (one scene) records the measured run with the Superluminal CPU profiler into that file; set
+`paths.superluminal` in the config to its `SuperluminalCmd` first. `ounce run` takes the same option. The capture runs
+through `sudo -n`, so it needs a passwordless sudo rule for `SuperluminalCmd run`; the game itself runs as you.
+
 The report is printed and written to `work/<game>/profile.txt`. Beside each scene's overlay, `<scene>.png` shows a
 frame from the measured stretch, so you can check that the scene measured what you meant. To compare a change, run
 the command again on the new build.

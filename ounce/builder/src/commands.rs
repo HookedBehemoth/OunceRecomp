@@ -185,6 +185,7 @@ pub fn run(args: &[String]) {
             "--name" => o.name = Some(val()),
             "--set" => o.set.push(switch(&val())),
             "--build" => o.build = Some(PathBuf::from(val())),
+            "--superluminal" => o.superluminal = Some(PathBuf::from(val())),
             _ => fail(format!("run: what is {a}? (ounce help)")),
         }
     }

@@ -32,6 +32,9 @@ pub struct Options {
     /// another game folder than the checkout's build (a player's folder from `ounce build --out`): its own romfs/
     /// when it has one
     pub build: Option<PathBuf>,
+    /// a Superluminal CPU capture of the whole run into this file (`paths.superluminal`, run through its passwordless
+    /// `sudo -n` rule; the game itself runs as the user)
+    pub superluminal: Option<PathBuf>,
 }
 
 pub struct Outcome {
@@ -171,7 +174,19 @@ pub fn run(layout: &Layout, config: &Config, game: &Game, o: &Options) -> Result
     }
 
     let file = |n: &str| std::fs::File::create(dir.join(n)).map_err(|e| format!("{}: {e}", dir.join(n).display()));
-    let mut cmd = Command::new(&exe);
+    let mut cmd = match &o.superluminal {
+        None => Command::new(&exe),
+        Some(cap) => {
+            let tool = config.superluminal().ok_or("--superluminal: set paths.superluminal (ounce config set paths.superluminal <SuperluminalCmd>)")?;
+            let mut c = Command::new("sudo");
+            c.arg("-n").arg(tool).args(["run", "linux", "--json", "--capture-path"]).arg(cap);
+            if let Some(n) = o.seconds {
+                c.arg("--max-duration").arg(n.to_string());
+            }
+            c.arg(&exe);
+            c
+        }
+    };
     cmd.arg(folder.join("image.bin"))
         .arg("--romfs")
         .arg(&romfs)

@@ -59,14 +59,15 @@ const HELP: &str = "ounce <command> ...
   build <game> --out <dir> --dump <file.nup|folder> [--quality fast|high]
                                          a portable player's game folder made from a dump
   run <game> [--headless] [--seconds N] [--record R | --replay R] [--bench N] [--shots N] [--name N]
-            [--build <game folder>] [--set key=value]...
+            [--build <game folder>] [--set key=value]... [--superluminal <capture>]
                                          the game from its build (or a player's game folder, with its romfs/); runs
                                          write work/<game>/runs/<name>/; --set gives a setting for this run
-                                         (e.g. fs.overlay=<folder>; the game's --list-settings lists them)
+                                         (e.g. fs.overlay=<folder>; the game's --list-settings lists them);
+                                         --superluminal: a Superluminal CPU capture of the run (paths.superluminal)
   test <game> [--name T] [--golden | --golden-reset] [--keep-shots] [--set key=value]...
                                          a smoke test of games/<game>/tests.toml: a short headless run against the
                                          golden runs, then a verdict
-  profile <game> [--scene S]... [--size WxH] [--frames N] [--shaders] [--census <stages.jsonl>]
+  profile <game> [--scene S]... [--size WxH] [--frames N] [--shaders] [--census <stages.jsonl>] [--superluminal <capture>]
                                          the scenes of games/<game>/profile.toml, a headless benchmark each: frame
                                          time, CPU a frame by part, GPU a frame by pass; --shaders adds a per-draw run
                                          naming the costliest programs; the report goes to work/<game>/profile.txt
@@ -74,7 +75,7 @@ const HELP: &str = "ounce <command> ...
   dump <file.nup|folder> [--extract <dir>] [--set] [--verify] [--title <t>] [--only exefs|romfs]
                                          a dump: its titles and which game it is; --set records it in the config
   config [path | get <key> | set <key> <value>]
-                                         the config file (keys: <game>.dump, paths.cache, paths.data, limits.jobs,
+                                         the config file (keys: <game>.dump, paths.cache, paths.data, paths.superluminal, limits.jobs,
                                          limits.cache_days, limits.run_free_mem_gb,
                                          limits.build_mem)
   tool ...                               the low-level commands (ounce tool help)

@@ -171,6 +171,11 @@ impl Config {
         }
     }
 
+    /// Superluminal's command-line tool (`paths.superluminal`), for `--superluminal` runs.
+    pub fn superluminal(&self) -> Option<PathBuf> {
+        self.get_str("paths.superluminal").map(expand)
+    }
+
     /// The free memory a game run waits for (`limits.run_free_mem_gb`, default 14; 0: no wait).
     pub fn run_free_mem_gb(&self) -> u64 {
         self.get_int("limits.run_free_mem_gb").map_or(14, |n| n.max(0) as u64)
