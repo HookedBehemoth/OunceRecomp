@@ -38,7 +38,7 @@ static volatile int64_t n_loads, n_load_skipped, n_load_bytes, n_rebind, n_compa
 
 static int on_ = -1;
 int assets_on(void) {
-    if (on_ < 0) on_ = rx_direct() && !setting_bool(SET_DBG_NOASSETS);
+    if (on_ < 0) on_ = !setting_bool(SET_DBG_NOASSETS);
     return on_;
 }
 

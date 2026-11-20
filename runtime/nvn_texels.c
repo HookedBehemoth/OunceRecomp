@@ -57,8 +57,7 @@ void nvn_texels_cpu_made(const void *tex, uint64_t src) {
     snprintf(line, sizeof line, "texture %ux%u format %#x at %#llx: %s", t->d.width, t->d.height, t->d.format,
              (unsigned long long)t->gpu, why);
     hos_log("texels: ERROR: a texture the game's code made, not handed over: %s", line);
-    const gpu_fns *d = rx_direct();
-    if (d && d->host_event) d->host_event("a texture the game's code made, not handed over", line);
+    rx_direct()->host_event("a texture the game's code made, not handed over", line);
 }
 
 int nvn_tex_live_at(uint64_t gpu, nvn_tex *out);
@@ -70,13 +69,12 @@ void nvn_texels_not_handed(const char *site, uint64_t dst, uint64_t n, const voi
              (unsigned long long)dst, (unsigned long long)n, t ? "the texture there has" : "no texture there",
              (unsigned long long)(t ? t->L.size : 0));
     if (os_atomic_inc(&told) <= 16) hos_log("texels: ERROR: a CPU texel write not handed over: %s", line);
-    const gpu_fns *d = rx_direct();
-    if (d && d->host_event) d->host_event("a CPU texel write not handed over", line);
+    rx_direct()->host_event("a CPU texel write not handed over", line);
 }
 void nvn_texels_fill(const char *site, uint64_t dst, int c, uint64_t n) {
     static bl_stats st;
     nvn_tex t;
-    const int live = rx_direct() && nvn_tex_live_at(dst, &t);
+    const int live = nvn_tex_live_at(dst, &t);
     uint8_t *b = live && n == t.L.size ? (uint8_t *)malloc(n) : NULL;
     if (b) memset(b, c, n);
     if (!b || !nvn_texels_storage(GPU_TEXELS_CPU, &t, b, n, &st)) {

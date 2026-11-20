@@ -24,7 +24,7 @@ PATCH_AT(0x8093ea3c, word(0x94cc8e49), instead, none, tex_cpu_clear_tera, x0, x1
    texture's own storage (copy_out then only flushes), its bytes are uploaded; another buffer is copied by WriteTexels */
 PATCH_AT(0x809e6abc, word(0x94000179), before, none, tex_cpu_lut, as(x1, src)) {
     nvn_tex t;
-    if (!rx_direct() || !src || !nvn_tex_live_at(src, &t)) return;
+    if (!src || !nvn_tex_live_at(src, &t)) return;
     if (!hos_guest_range(src, t.L.size) || !nvn_texels_storage(GPU_TEXELS_CPU, &t, (const uint8_t *)GP(src), t.L.size, &st))
         nvn_texels_not_handed("texdata_cpu_lut", src, t.L.size, &t);
 }

@@ -44,14 +44,14 @@ int texwatch_on(void) {
     if (on_ < 0) {
         char v[512];
         snprintf(v, sizeof v, "%s", setting_str(SET_DBG_MEMWATCH));
-        if (rx_direct() && *v) parse_list(v, mw_addr, &n_mw);
+        if (*v) parse_list(v, mw_addr, &n_mw);
         snprintf(v, sizeof v, "%s", setting_str(SET_DBG_MEMFIND));
-        if (rx_direct() && *v) {
+        if (*v) {
             parse_list(v, mf_val, &n_mf);
             const char *at = strchr(v, '@');
             mf_present = at ? atoll(at + 1) : 1200;
         }
-        on_ = rx_direct() && (setting_bool(SET_DBG_TEXWATCH) || n_mw || n_mf);
+        on_ = setting_bool(SET_DBG_TEXWATCH) || n_mw || n_mf;
     }
     return on_;
 }

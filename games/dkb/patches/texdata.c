@@ -82,7 +82,7 @@ PATCH_AT(0x806b7774, word(0x943ce470), before, none, texdata_evictable, as(x22, 
     }
     os_atomic_inc(to_cache ? &n_to_cache : &n_from_cache);
     const nvn_tex *t = tex_of(td);
-    if (changed && t && rx_direct()->texture_cached) rx_direct()->texture_cached(t, to_cache);
+    if (changed && t) rx_direct()->texture_cached(t, to_cache);
 }
 PATCH_AT_SITE(0x815ec24c, word(0x940011ba), before, none, texdata_evictable, x22, k(0), w2);
 PATCH_AT_SITE(0x815ecd28, word(0x94000f03), before, none, texdata_evictable, x19, k(0), w2);
@@ -102,7 +102,7 @@ PATCH_AT(0x806b73ac, word(0xd503237f), before, none, texdata_destroyed, as(x1, t
     os_mutex_unlock(&lock);
     os_atomic_inc(&n_destroyed);
     const nvn_tex *t = tex_of(td);
-    if (was_cached && t && rx_direct()->texture_cached) rx_direct()->texture_cached(t, 0);
+    if (was_cached && t) rx_direct()->texture_cached(t, 0);
 }
 
 /* f_815ec5e8(td, base, res, ctx): a move. Its body runs from here, with the td's NVN object noted for this thread:
@@ -137,7 +137,7 @@ void texdata_line(char *out, size_t cap) {
 #define kVramMargin (1536ll << 20)
 static volatile int64_t n_vram_evicted, n_vram_frames;
 PATCH_FUNC(0x8033e9e4, word(0xd503237f), body(0x0b7e88588f9ed8de), aapcs, x0, texdata_update, orig, as(x0, mgr)) {
-    if (!assets_on() || !rx_direct()->vram_free) return guest_orig(orig);
+    if (!assets_on()) return guest_orig(orig);
     if (!hos_guest_range(mgr + 0x340, 8) || !hos_guest_range(G64(mgr + 0x40) + 0x1bd8, 8)) return guest_orig(orig);
     const int64_t vf = rx_direct()->vram_free();
     const uint64_t game_thr = G64(mgr + 0x340), heap_free = G64(G64(mgr + 0x40) + 0x1bd8);

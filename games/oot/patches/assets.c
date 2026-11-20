@@ -56,7 +56,7 @@ static bl_stats tiles_bl;
 
 static int on_ = -1;
 int assets_on(void) {
-    if (on_ < 0) on_ = rx_direct() && !setting_bool(SET_DBG_NOASSETS);
+    if (on_ < 0) on_ = !setting_bool(SET_DBG_NOASSETS);
     return on_;
 }
 

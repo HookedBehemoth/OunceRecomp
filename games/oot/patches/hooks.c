@@ -10,7 +10,7 @@ extern volatile int64_t nvn_texture_inits_dta;   /* (rt_slots.c) */
 
 void game_frame(void) {
     rt_slots_frame();
-    if (rx_direct()) patches_frame();   /* (the patches' lines) */
+    patches_frame();   /* (the patches' lines) */
 }
 
 /* (agl's DynamicTextureAllocator::alloc, f_8005ed00 .. its end: the transient render targets' textures) */

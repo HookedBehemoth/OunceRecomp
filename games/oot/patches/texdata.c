@@ -86,7 +86,7 @@ PATCH_AT(0x8079aa20, word(0xd503237f), before, none, texdata_evictable, as(x0, s
     }
     os_atomic_inc(to_cache ? &n_to_cache : &n_from_cache);
     const nvn_tex *t = tex_of(td);
-    if (changed && t && rx_direct()->texture_cached) rx_direct()->texture_cached(t, to_cache);
+    if (changed && t) rx_direct()->texture_cached(t, to_cache);
 }
 
 /* f_8079bbe0(mgr, td): destroyed (its NVN texture is finalized inside, and released as any finalize) */
@@ -103,7 +103,7 @@ PATCH_AT(0x8079bbe0, word(0xd503237f), before, none, texdata_destroyed, as(x1, t
     os_mutex_unlock(&lock);
     os_atomic_inc(&n_destroyed);
     const nvn_tex *t = tex_of(td);
-    if (was_cached && t && rx_direct()->texture_cached) rx_direct()->texture_cached(t, 0);
+    if (was_cached && t) rx_direct()->texture_cached(t, 0);
 }
 
 /* f_807981f0(td, ctx): a move (compaction apply, each alias after its head). Its body runs from here, with the td's NVN
@@ -145,7 +145,7 @@ void texdata_line(char *out, size_t cap) {
 #define kVramMargin (1536ll << 20)
 static volatile int64_t n_vram_evicted, n_vram_frames, last_free_vram = -1, last_line;
 PATCH_FUNC(0x80797240, word(0xd503237f), body(0x99d8ac1665d1c349), aapcs, x0, texdata_update, orig, as(x0, mgr)) {
-    if (!assets_on() || !rx_direct()->vram_free) return guest_orig(orig);
+    if (!assets_on()) return guest_orig(orig);
     if (!hos_guest_range(mgr + 0x340, 8) || !hos_guest_range(G64(mgr + 0x40) + 0x1ee8, 8)) return guest_orig(orig);
     const int64_t vf = rx_direct()->vram_free();
     last_free_vram = vf;

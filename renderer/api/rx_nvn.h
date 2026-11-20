@@ -231,10 +231,6 @@ int nvn_tex_live_at(uint64_t gpu, nvn_tex *out);
 int nvn_depth_minus_w(void);
 
 /* ---- the back end (runtime/rx_backend.c forwards these) ---- */
-/* the recordings of a submit, in order (handles: host pointers of NOP_BEGIN records), replayed now */
-void rx_nvn_submit(const uint64_t *handles, int n);
-/* (the same with the queue it came from: the game's queues have their own state and order each other with events) */
-void rx_nvn_submit_q(const uint64_t *handles, int n, uint64_t queue);
 /* fence value of everything submitted so far; waits until the GPU reached a fence (1: reached, 0: timed out) */
 uint64_t rx_nvn_fence(void);
 uint64_t rx_nvn_fence_q(uint64_t queue);   /* (renderer) a fence of one queue */

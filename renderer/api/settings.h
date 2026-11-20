@@ -89,7 +89,6 @@ extern "C" {
     S(PIN, "threads.pin", DEV, "", "<thread name>=<cpu>,...: threads pinned")                                                 \
     S(PRIO, "threads.prio", DEV, "", "<thread name>=<-2..2>,...: thread priorities")                                          \
     I(SPIN_US, "threads.spin_us", DEV, 5, 0, 100000, "microseconds a contended mutex spins before it sleeps") \
-    I(NVN_REC_SHIFT, "nvn.rec_shift", DEV, 16, 12, 24, "the recorded copies' bucket size, as a power of two")                  \
     S(FS_DELAY, "fs.delay_ms", DEV, "", "<ms>[,<after s>]: every file read takes that much longer")                           \
     I(STATS_AFTER, "stats_after", DEV, 0, 0, 100000, "seconds: the threads, host calls and back end's memory logged then")      \
     /* ---- logs and traces (a line each when on) */                                                                          \

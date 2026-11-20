@@ -9,18 +9,15 @@
 #include "os.h"
 #define list_yield() os_yield()
 
-static int check_on;
 static void (*say)(const char *fmt, ...);
 static void (*fatal)(const char *fmt, ...);
 static void say_none(const char *fmt, ...) { (void)fmt; }
 static void fatal_abort(const char *fmt, ...) { (void)fmt; abort(); }
 
-void nvn_list_init(int check, void (*log)(const char *fmt, ...), void (*die)(const char *fmt, ...)) {
-    check_on = check;
+void nvn_list_init(void (*log)(const char *fmt, ...), void (*die)(const char *fmt, ...)) {
     say = log ? log : say_none;
     fatal = die ? die : fatal_abort;
 }
-int nvn_list_check_on(void) { return check_on; }
 static void (*user_released)(nvn_lrec *r), (*user_freed)(nvn_lrec *r);
 void nvn_list_set_user_hooks(void (*released)(nvn_lrec *r), void (*freed)(nvn_lrec *r)) {
     user_released = released, user_freed = freed;
@@ -42,18 +39,14 @@ static void spin_lock(volatile int32_t *l) {
 }
 static void spin_unlock(volatile int32_t *l) { __atomic_store_n(l, 0, __ATOMIC_RELEASE); }
 
-static volatile uint64_t st_made, st_live, st_live_bytes, st_calls, st_calls_expanded, st_released, st_freed, st_clones,
-    st_conflicts, st_in_place, st_grown, st_shrunk, st_swept, st_check_handles, st_check_bytes, st_check_mismatch,
-    st_check_early, st_check_changed, st_copied;
+static volatile uint64_t st_made, st_live, st_live_bytes, st_calls, st_released, st_freed, st_grown, st_shrunk, st_swept,
+    st_copied;
 #define COUNT(v, n) __atomic_add_fetch(&(v), (uint64_t)(n), __ATOMIC_RELAXED)
 void nvn_list_get_stats(nvn_list_stats *s) {
 #define G(v) __atomic_load_n(&(v), __ATOMIC_RELAXED)
     s->made = G(st_made), s->live = G(st_live), s->live_bytes = G(st_live_bytes), s->calls = G(st_calls);
-    s->calls_expanded = G(st_calls_expanded), s->released = G(st_released), s->freed = G(st_freed);
-    s->clones = G(st_clones), s->conflicts = G(st_conflicts), s->resolved_in_place = G(st_in_place);
+    s->released = G(st_released), s->freed = G(st_freed);
     s->grown = G(st_grown), s->shrunk = G(st_shrunk), s->swept = G(st_swept), s->copied = G(st_copied);
-    s->check_handles = G(st_check_handles), s->check_bytes = G(st_check_bytes), s->check_mismatch = G(st_check_mismatch);
-    s->check_early_free = G(st_check_early), s->check_changed = G(st_check_changed);
 #undef G
 }
 
@@ -253,122 +246,19 @@ static void dead_push(nvn_lrec **rs, size_t n, uint64_t after) {
     spin_unlock(&dead_lock);
 }
 
-/* ---- records ---- */
-static nvn_op_hdr op_at(const uint8_t *p) {
-    nvn_op_hdr h;
-    memcpy(&h, p, sizeof h);
-    return h;
-}
-static int is_deferred(const uint8_t *op) {
-    const nvn_op_hdr h = op_at(op);
-    if (h.op == NOP_BIND_TEX || h.op == NOP_BIND_IMG || h.op == NOP_BIND_SAMP) {
-        nvn_p_bind_handles b;
-        memcpy(&b, op + 8, offsetof(nvn_p_bind_handles, h));
-        return b.src != 0;
-    }
-    if (h.op == NOP_BIND_BUFS) {
-        nvn_p_bind_bufs b;
-        memcpy(&b, op + 8, offsetof(nvn_p_bind_bufs, r));
-        return b.src != 0;
-    }
-    return 0;
-}
 static nvn_p_call *call_at(const nvn_lrec *r, uint32_t off) { return (nvn_p_call *)(void *)((uint8_t *)(uintptr_t)nvn_lrec_begin(r) + off + 8); }
 static nvn_lrec *hdr_of(const uint8_t *begin) { return (nvn_lrec *)(uintptr_t)begin - 1; }
 
-/* (check) a hash of the bytes, the deferred arrays left out (each submit writes them) */
-static uint64_t rec_hash(const nvn_lrec *r) {
-    uint64_t h = 0xcbf29ce484222325ull;
-    const uint8_t *p = nvn_lrec_begin(r), *end = p + r->bytes;
-    while (p < end) {
-        const nvn_op_hdr o = op_at(p);
-        size_t n = o.size;
-        if (is_deferred(p)) n = 8 + (o.op == NOP_BIND_BUFS ? offsetof(nvn_p_bind_bufs, r) : offsetof(nvn_p_bind_handles, h));
-        for (size_t i = 0; i < n; i++) h = (h ^ p[i]) * 0x100000001b3ull;
-        if (!o.size) break;
-        p += o.size;
-    }
-    return h;
-}
 
-/* the records from begin to its END with every callee's records copied in (their BEGIN and END left out); top: this
-   one's BEGIN and END too. Returns the bytes written */
-static size_t expand_into(const uint8_t *p, uint8_t *out, int top) {
-    uint8_t *o = out;
-    for (;;) {
-        const nvn_op_hdr h = op_at(p);
-        if (h.op == NOP_CALL) {
-            nvn_p_call c;
-            memcpy(&c, p + 8, sizeof c);
-            if (c.target) o += expand_into(c.target, o, 0);
-        } else if ((h.op != NOP_BEGIN && h.op != NOP_END) || top) {
-            memcpy(o, p, h.size);
-            o += h.size;
-        }
-        if (h.op == NOP_END || !h.size) return (size_t)(o - out);
-        p += h.size;
-    }
-}
-void nvn_list_expand(const nvn_lrec *r, uint8_t *out) { expand_into(nvn_lrec_begin(r), out, 1); }
 
-/* the deferred binds' arrays from the game: compare (write 0) or write (1). Returns 1 when they were all equal */
-static int def_rw(nvn_lrec *r, int write, void *(*guest)(uint64_t a, uint64_t n)) {
-    if (!r->first_def) return 1;
-    uint8_t *p = (uint8_t *)(uintptr_t)nvn_lrec_begin(r) + r->first_def, *last = (uint8_t *)(uintptr_t)nvn_lrec_begin(r) + r->last_def;
-    int same = 1;
-    for (;;) {
-        const nvn_op_hdr h = op_at(p);
-        if (h.op == NOP_BIND_TEX || h.op == NOP_BIND_IMG || h.op == NOP_BIND_SAMP) {   /* (as resolve_deferred) */
-            nvn_p_bind_handles *b = (nvn_p_bind_handles *)(void *)(p + 8);
-            if (b->src && b->n > 0 && b->n <= 32) {
-                const void *g = guest(b->src, 8 * (size_t)b->n);
-                if (memcmp(b->h, g, 8 * (size_t)b->n)) {
-                    same = 0;
-                    if (write) memcpy(b->h, g, 8 * (size_t)b->n);
-                }
-            }
-        }
-        if (h.op == NOP_BIND_BUFS) {
-            nvn_p_bind_bufs *b = (nvn_p_bind_bufs *)(void *)(p + 8);
-            if (b->src && b->n > 0 && b->n <= 16) {
-                const void *g = guest(b->src, sizeof(NVNbufferRange) * (size_t)b->n);
-                if (memcmp(b->r, g, sizeof(NVNbufferRange) * (size_t)b->n)) {
-                    same = 0;
-                    if (write) memcpy(b->r, g, sizeof(NVNbufferRange) * (size_t)b->n);
-                }
-            }
-        }
-        if (p >= last || h.op == NOP_END || !h.size) return same;
-        p += h.size;
-    }
-}
-/* (check) the default path's resolve_deferred, on a copy */
-static void resolve_flat(uint8_t *p, void *(*guest)(uint64_t a, uint64_t n)) {
-    for (;;) {
-        const nvn_op_hdr h = op_at(p);
-        if (h.size < 8 || (h.size & 7)) fatal("nvn: list check: a corrupt copy (op %u size %u)", h.op, h.size);
-        if (h.op == NOP_END) return;
-        if (h.op == NOP_BIND_TEX || h.op == NOP_BIND_IMG || h.op == NOP_BIND_SAMP) {
-            nvn_p_bind_handles *b = (nvn_p_bind_handles *)(void *)(p + 8);
-            if (b->src && b->n > 0 && b->n <= 32) memcpy(b->h, guest(b->src, 8 * (size_t)b->n), 8 * (size_t)b->n);
-        }
-        if (h.op == NOP_BIND_BUFS) {
-            nvn_p_bind_bufs *b = (nvn_p_bind_bufs *)(void *)(p + 8);
-            if (b->src && b->n > 0 && b->n <= 16) memcpy(b->r, guest(b->src, sizeof(NVNbufferRange) * (size_t)b->n), sizeof(NVNbufferRange) * (size_t)b->n);
-        }
-        p += h.size;
-    }
-}
 
 static void rec_free_storage(nvn_lrec *r) {
     COUNT(st_freed, 1);
     if (!(r->flags & NVN_LREC_PRIVATE)) __atomic_sub_fetch(&st_live, 1, __ATOMIC_RELAXED);
     __atomic_sub_fetch(&st_live_bytes, r->cap, __ATOMIC_RELAXED);
-    free(r->shadow);
     if (r->user && user_freed) user_freed(r);
     const uint32_t cls = r->cls;
-    if (check_on) memset(r, 0, sizeof *r + (size_t)(r->bytes ? r->bytes : 8));   /* (a walk into freed bytes meets END: op 0) */
-    else r->magic = 0;
+    r->magic = 0;
     blk_put(r, cls);
 }
 /* one reference let go; at 0 its bytes go, and its references on its callees (done: the replay's progress, for the check) */
@@ -380,18 +270,6 @@ static void rec_unref(nvn_lrec *r, uint64_t done) {
         nvn_lrec *x = work;
         work = x->next;
         if (x->magic != NVN_LREC_MAGIC) fatal("nvn: list: a recording freed twice (%p)", (void *)x);
-        if (check_on) {
-            if (x->reached > done && done != UINT64_MAX) {   /* (a submit not replayed yet walks it: kept, never freed) */
-                const uint64_t k = COUNT(st_check_early, 1);
-                if (k <= 20) say("nvn: list check: recording %p freed while submit %llu walks it (replayed: %llu): kept",
-                                 (void *)x, (unsigned long long)x->reached, (unsigned long long)done);
-                continue;
-            }
-            if (x->hash && rec_hash(x) != x->hash) {
-                const uint64_t k = COUNT(st_check_changed, 1);
-                if (k <= 20) say("nvn: list check: recording %p (%llu bytes) changed after EndRecording", (void *)x, (unsigned long long)x->bytes);
-            }
-        }
         for (uint32_t off = x->first_call; off;) {
             const nvn_p_call *c = call_at(x, off);
             nvn_lrec *t = hdr_of(c->target);
@@ -467,7 +345,8 @@ void nvn_list_open(nvn_lw *w, uint64_t key) {
     w->key = key;
     w_reset(w);
 }
-void nvn_list_reserve(nvn_lw *w, size_t need) {
+/* room for need bytes at cur (and NVN_LIST_SLACK): grows the open recording, opening one when none is */
+static void nvn_list_reserve(nvn_lw *w, size_t need) {
     if (!w->rec) nvn_list_open(w, w->key);
     if (need + NVN_LIST_SLACK <= (size_t)(w->end - w->cur)) return;
     const size_t used = (size_t)(w->cur - w->seg);
@@ -484,53 +363,6 @@ void nvn_list_reserve(nvn_lw *w, size_t need) {
     w->cur = w->seg + used;
     w->end = w->seg + n->cap;
     COUNT(st_grown, 1);
-}
-void nvn_list_note_deferred(nvn_lw *w, const uint8_t *op) {
-    if (!w->rec || op < w->seg || op >= w->cur) return;
-    const uint32_t off = (uint32_t)(op - w->seg);
-    if (!w->first_def) w->first_def = off;
-    w->last_def = off;
-    w->flags |= NVN_LREC_OWN_DEF;
-}
-int nvn_list_call(nvn_lw *w, uint64_t handle, uint64_t *flat) {
-    nvn_lrec *r = nvn_list_lookup(handle);
-    if (!r) return 0;
-    *flat = r->flat;
-    if (r->flat <= 16) return 1;   /* (BEGIN and END only: nothing, as the default path copies nothing) */
-    if (!w->rec) nvn_list_open(w, w->key);
-    if (r->depth + 1 > NVN_LIST_MAX_DEPTH) {   /* (deeper than the replay's stack: its records copied in, as by default) */
-        const size_t n = (size_t)r->flat - 16;
-        nvn_list_reserve(w, n);
-        const uint32_t at = (uint32_t)(w->cur - w->seg);
-        expand_into(nvn_lrec_begin(r), w->cur, 0);
-        w->cur += n;
-        if (r->flags & (NVN_LREC_OWN_DEF | NVN_LREC_SUB_DEF)) {   /* (its deferred binds are this one's own now) */
-            for (const uint8_t *p = w->seg + at; p < w->cur; p += op_at(p).size) {
-                if (!is_deferred(p)) continue;
-                if (!w->first_def) w->first_def = (uint32_t)(p - w->seg);
-                w->last_def = (uint32_t)(p - w->seg);
-                w->flags |= NVN_LREC_OWN_DEF;
-            }
-        }
-        COUNT(st_calls_expanded, 1);
-        return 1;
-    }
-    nvn_list_reserve(w, 8 + sizeof(nvn_p_call));
-    const uint32_t off = (uint32_t)(w->cur - w->seg);
-    const nvn_op_hdr h = {NOP_CALL, 8 + sizeof(nvn_p_call)};
-    const nvn_p_call c = {nvn_lrec_begin(r), 0, (uint32_t)r->bytes};
-    memcpy(w->cur, &h, 8);
-    memcpy(w->cur + 8, &c, sizeof c);
-    w->cur += h.size;
-    if (w->last_call) ((nvn_p_call *)(void *)(w->seg + w->last_call + 8))->next = off;
-    else w->first_call = off;
-    w->last_call = off;
-    __atomic_add_fetch(&r->refs, 1, __ATOMIC_ACQ_REL);
-    if (r->depth + 1 > w->depth) w->depth = r->depth + 1;
-    if (r->flags & (NVN_LREC_OWN_DEF | NVN_LREC_SUB_DEF)) w->flags |= NVN_LREC_SUB_DEF;
-    w->flat_extra += r->flat - 16 - h.size;
-    COUNT(st_calls, 1);
-    return 1;
 }
 nvn_lrec *nvn_list_end(nvn_lw *w, uint64_t ctl, int marked, uint64_t *handle) {
     if (!w->rec) nvn_list_reserve(w, 0);
@@ -558,12 +390,6 @@ nvn_lrec *nvn_list_end(nvn_lw *w, uint64_t ctl, int marked, uint64_t *handle) {
            records lists of every size at one address; the last size alone left a third of them growing) */
         const uint64_t was = h->key == w->key ? h->bytes - h->bytes / 8 : 0;
         h->key = w->key, h->bytes = bytes > was ? bytes : was;
-    }
-    if (check_on) {
-        r->hash = rec_hash(r);
-        r->shadow = (uint8_t *)malloc((size_t)r->flat);
-        if (!r->shadow) fatal("nvn: list check: a copy of %llu bytes", (unsigned long long)r->flat);
-        nvn_list_expand(r, r->shadow);
     }
     w->rec = NULL;
     w->seg = w->cur = w->end = NULL;
@@ -661,146 +487,3 @@ size_t nvn_list_sweep(uint64_t mark, uint64_t after, void *(*guest)(uint64_t a, 
     return swept;
 }
 
-/* ---- submits ---- */
-typedef struct { nvn_lrec **v; size_t n, cap; } lvec;
-static void lvec_push(lvec *v, nvn_lrec *r) {
-    if (v->n == v->cap) {
-        v->cap = v->cap ? v->cap * 2 : 256;
-        v->v = (nvn_lrec **)realloc(v->v, v->cap * sizeof *v->v);
-        if (!v->v) fatal("nvn: list submit");
-    }
-    v->v[v->n++] = r;
-}
-static _Thread_local lvec tl_touched, tl_clones, tl_reached;
-
-/* a private copy of r for this submit: its callees referenced again, not filed, no handle */
-static nvn_lrec *rec_clone(const nvn_lrec *r) {
-    nvn_lrec *c = rec_alloc((size_t)r->bytes);
-    const uint64_t cap = c->cap;
-    const uint32_t cls = c->cls;
-    memcpy(c, r, sizeof *c);
-    memcpy(c + 1, r + 1, (size_t)r->bytes);
-    c->cap = cap, c->cls = cls;
-    c->refs = 1;   /* (this submit's: let go after it, through the dead list) */
-    c->id = 0;
-    c->ctl = ~0ull;
-    c->next = NULL;
-    c->flags = (r->flags & ~NVN_LREC_RELEASED) | NVN_LREC_PRIVATE;
-    c->def_busy = 0, c->def_after = 0, c->reached = 0, c->visit = 0;
-    c->shadow = NULL;
-    c->user = NULL;
-    c->hash = 0;   /* (its call targets change: no check of its bytes) */
-    for (uint32_t off = c->first_call; off; off = call_at(c, off)->next)
-        __atomic_add_fetch(&hdr_of(call_at(c, off)->target)->refs, 1, __ATOMIC_ACQ_REL);
-    lvec_push(&tl_clones, c);
-    COUNT(st_clones, 1);
-    return c;
-}
-/* the recording this submit walks for r: r itself, its deferred binds read in place, or (r or one of its callees read
-   by a submit the replay is not past, with other values now) a private copy */
-static nvn_lrec *resolve(nvn_lrec *r, uint64_t serial, uint64_t done, void *(*guest)(uint64_t a, uint64_t n)) {
-    if (!(r->flags & (NVN_LREC_OWN_DEF | NVN_LREC_SUB_DEF))) return r;
-    /* (a callee many lists call: once a submit. Only "r itself" is kept, so another thread's submit overwriting the
-       stamp makes this one only do it again) */
-    if (__atomic_load_n(&r->visit, __ATOMIC_ACQUIRE) == serial) return r;
-    nvn_lrec *u = r;
-    if (r->flags & NVN_LREC_OWN_DEF) {
-        const int busy = __atomic_add_fetch(&r->def_busy, 1, __ATOMIC_ACQ_REL) > 1;
-        lvec_push(&tl_touched, r);
-        const int pending = busy || __atomic_load_n(&r->def_after, __ATOMIC_ACQUIRE) > done;
-        if (!pending) {
-            def_rw(r, 1, guest);
-            COUNT(st_in_place, 1);
-        } else if (!def_rw(r, 0, guest)) {
-            u = rec_clone(r);
-            def_rw(u, 1, guest);
-            COUNT(st_conflicts, 1);
-        }
-    }
-    if (r->flags & NVN_LREC_SUB_DEF) {
-        for (uint32_t off = r->first_call; off; off = call_at(r, off)->next) {
-            nvn_lrec *t = hdr_of(call_at(r, off)->target);
-            nvn_lrec *v = resolve(t, serial, done, guest);
-            if (v == t) continue;
-            if (u == r) u = rec_clone(r);
-            nvn_p_call *c = call_at(u, off);   /* (the same place in the copy) */
-            __atomic_add_fetch(&v->refs, 1, __ATOMIC_ACQ_REL);
-            c->target = nvn_lrec_begin(v);
-            rec_unref(t, UINT64_MAX);   /* (the copy's reference on t: r holds one too, so t stays) */
-        }
-    }
-    if (u == r) __atomic_store_n(&r->visit, serial, __ATOMIC_RELEASE);
-    return u;
-}
-/* (check) every recording this submit walks, for the free's check */
-static void note_reached(nvn_lrec *r) {
-    lvec_push(&tl_reached, r);
-    for (uint32_t off = r->first_call; off; off = call_at(r, off)->next) note_reached(hdr_of(call_at(r, off)->target));
-}
-/* (check) the walk the replay makes from u against the default path's copy, op by op. Returns 0 on a mismatch */
-static int cmp_walk(const uint8_t *p, int top, const uint8_t **s, const uint8_t *s_end, uint64_t *ops) {
-    for (;;) {
-        const nvn_op_hdr h = op_at(p);
-        if (h.op == NOP_CALL) {
-            nvn_p_call c;
-            memcpy(&c, p + 8, sizeof c);
-            if (c.target && !cmp_walk(c.target, 0, s, s_end, ops)) return 0;
-        } else if ((h.op != NOP_BEGIN && h.op != NOP_END) || top) {
-            if (*s + h.size > s_end || memcmp(p, *s, h.size)) {
-                const uint64_t k = COUNT(st_check_mismatch, 1);
-                if (k <= 20) {
-                    const nvn_op_hdr sh = *s + 8 <= s_end ? op_at(*s) : (nvn_op_hdr){~0u, 0};
-                    say("nvn: list check: op %llu differs: the reference walk has op %u (%u bytes), the copy op %u (%u bytes)",
-                        (unsigned long long)*ops, h.op, h.size, sh.op, sh.size);
-                }
-                return 0;
-            }
-            *s += h.size;
-            (*ops)++;
-        }
-        if (h.op == NOP_END) return 1;
-        if (!h.size) return 0;
-        p += h.size;
-    }
-}
-static uint64_t submit_serial;
-int nvn_list_submit(const uint64_t *in, uint64_t *out, int n, uint64_t done, void *(*guest)(uint64_t a, uint64_t n)) {
-    tl_touched.n = tl_clones.n = tl_reached.n = 0;
-    const uint64_t serial = __atomic_add_fetch(&submit_serial, 1, __ATOMIC_RELAXED);
-    for (int i = 0; i < n; i++) {
-        nvn_lrec *r = nvn_list_lookup(in[i]);
-        if (!r) {
-            nvn_list_submitted(0);   /* (what was touched let go: the caller dies) */
-            return i + 1;
-        }
-        nvn_lrec *u = resolve(r, serial, done, guest);
-        out[i] = (uint64_t)(uintptr_t)nvn_lrec_begin(u);
-        if (check_on && r->shadow) {
-            resolve_flat(r->shadow, guest);
-            const uint8_t *s = r->shadow;
-            uint64_t ops = 0;
-            if (cmp_walk(nvn_lrec_begin(u), 1, &s, r->shadow + r->flat, &ops) && s != r->shadow + r->flat) {
-                const uint64_t k = COUNT(st_check_mismatch, 1);
-                if (k <= 20) say("nvn: list check: the copy has %lld bytes more than the reference walk", (long long)(r->shadow + r->flat - s));
-            }
-            COUNT(st_check_handles, 1);
-            COUNT(st_check_bytes, r->flat);
-            note_reached(u);
-        }
-    }
-    return 0;
-}
-void nvn_list_submitted(uint64_t after) {
-    for (size_t i = 0; i < tl_touched.n; i++) {
-        nvn_lrec *r = tl_touched.v[i];
-        uint64_t was = __atomic_load_n(&r->def_after, __ATOMIC_RELAXED);
-        while (was < after && !__atomic_compare_exchange_n(&r->def_after, &was, after, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {}
-        __atomic_sub_fetch(&r->def_busy, 1, __ATOMIC_ACQ_REL);
-    }
-    for (size_t i = 0; i < tl_reached.n; i++) {
-        nvn_lrec *r = tl_reached.v[i];
-        if (r->reached < after) r->reached = after;
-    }
-    dead_push(tl_clones.v, tl_clones.n, after);
-    tl_touched.n = tl_clones.n = tl_reached.n = 0;
-}

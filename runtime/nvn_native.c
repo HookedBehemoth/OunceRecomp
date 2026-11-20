@@ -5,7 +5,7 @@
    - Objects with semantics (device, memory pools, buffers, textures, samplers, descriptor pools, queue, window, sync,
      events, command buffer memory) are implemented as NVN defines them, in place in the game's object memory.
    - Calls that only change GPU state or do GPU work (state objects bound, draws, clears, copies...) are recorded as
-     commands in host memory; a submit replays them (rx_nvn_submit) at the submit call, which is when the console reads
+     commands in host memory; a submit hands their lists to the back end (gpu_fns submit) at the submit call, which is when the console reads
      what they point at: TOTK fills deferred texture tables and constant pools for a frame just before its submit and
      rewrites them just after.
    - A function TOTK has not been seen calling stops the game with its name when called (no silent wrong result).
@@ -116,7 +116,7 @@ void nvn_claim_end(void) {
     if (tl_claim.depth || !tl_claim.made_n) return;
     const gpu_fns *d = rx_direct();
     for (int i = 0; i < tl_claim.made_n; i++)
-        if (d) d->claim_made(tl_claim.made[i].gpu, tl_claim.made[i].size);
+        d->claim_made(tl_claim.made[i].gpu, tl_claim.made[i].size);
     tl_claim.made_n = 0;
 }
 static void claim_made_now(uint64_t gpu, uint64_t size) {   /* (a pool made inside the current scope) */
@@ -142,7 +142,7 @@ void poolcensus_reported(uint64_t addr, uint64_t size);   /* poolcensus.c */
 void nvn_claim_write(uint64_t addr, uint64_t size) {
     poolcensus_reported(addr, size);
     const gpu_fns *d = rx_direct();
-    if (d) d->claim_write(addr, size);
+    d->claim_write(addr, size);
 }
 static _Thread_local int tl_flush_written;   /* (nvn_claim_flush_written: for the next flush on this thread) */
 void nvn_claim_flush_written(void) { tl_flush_written = 1; }
@@ -155,11 +155,11 @@ static void flushed(uint64_t addr, uint64_t size) {
 void nvn_claim_fill(uint64_t addr, uint64_t size, uint32_t value) {
     poolcensus_reported(addr, size);
     const gpu_fns *d = rx_direct();
-    if (d) d->claim_fill(addr, size, value);
+    d->claim_fill(addr, size, value);
 }
 void nvn_claim_read(uint64_t addr, uint64_t size) {
     const gpu_fns *d = rx_direct();
-    if (d) d->claim_read(addr, size);
+    d->claim_read(addr, size);
 }
 static const char *const kClaimNames[NVN_CLAIM_KINDS] = {"none", "textures", "targets", "host", "vram", "upload", "readback", "load once"};
 /* An NVN memory call the back end does not serve: one loud error with the guest's call chain, and a strict event */
@@ -174,7 +174,7 @@ static void pool_error(Ctx *c, const char *reason, const char *fmt, ...) {
     snprintf(line, sizeof line, "%s, called from %s", what, chain);
     hos_log("nvn: ERROR: %s: %s", reason, line);
     const gpu_fns *d = rx_direct();
-    if (d && d->host_event) d->host_event(reason, line);
+    d->host_event(reason, line);
 }
 
 uint64_t nvn_gpu_guest(uint64_t gpu) {
@@ -223,12 +223,15 @@ uint64_t nvn_native_proc(const char *name);
 
 NV(nvnDeviceBuilderSetDefaults) { memset(P(0), 0, sizeof(nvn_dev_builder)); }
 NV(nvnDeviceBuilderSetFlags) { ((nvn_dev_builder *)P(0))->flags = U32(1); }
+static void released_hook(nvn_lrec *r);
 NV(nvnDeviceInitialize) {
     nvn_dev *o = (nvn_dev *)P(0);
     memset(o, 0, sizeof *o);
     o->magic = NVN_MAGIC('D', 'E', 'V', 0);
     o->flags = ((const nvn_dev_builder *)P(1))->flags;
     hos_log("nvn: native NVN device (flags %#x): no Switch GPU emulation", o->flags);
+    nvn_list_init(hos_log, die);   /* (command lists by reference, their records handed to the back end as they are made) */
+    nvn_list_set_user_hooks(released_hook, NULL);
     RET(1);
 }
 NV(nvnDeviceFinalize) { ((nvn_dev *)P(0))->magic = 0; }
@@ -735,7 +738,7 @@ NV(nvnTextureInitialize, reads(x29, "the caller's frame: its return address name
     game_texture_initializing(c->x[0], b->pool ? POOL(b->pool)->gpu + (uint64_t)b->off : 0, &b->d, c->x[30]);
     nvn_tex *o = TX(P(0));
     if (o->magic == NVN_MAGIC('T', 'E', 'X', 0) && o->serial) {   /* initialised again without Finalize */
-        if (rx_direct()) texwatch_released(o);
+        texwatch_released(o);
         live_del(o);
         rx_nvn_texture_released(o);
     }
@@ -757,7 +760,7 @@ NV(nvnTextureInitialize, reads(x29, "the caller's frame: its return address name
     live_put(o);
     if (!moved) rx_nvn_texture_created(o);
     game_texture_initialized(o);
-    if (rx_direct()) texwatch_created(o, c->x[30]);   /* (M4d: debug.texwatch, diagnosis) */
+    texwatch_created(o, c->x[30]);   /* (M4d: debug.texwatch, diagnosis) */
     {   /* nvn.watch_tex_size=<w>x<h> (debugging): who writes the storage of textures that size (a page watch, with call
            stacks: hos_watch_guest_writes), for writes the dirty tracking misses */
         static int on = -1;
@@ -781,7 +784,7 @@ NV(nvnTextureInitialize, reads(x29, "the caller's frame: its return address name
 }
 NV(nvnTextureFinalize) {
     nvn_tex *o = TX(P(0));
-    if (rx_direct() && o == game_texture_moving() && o->magic == NVN_MAGIC('T', 'E', 'X', 0)) {
+    if (o == game_texture_moving() && o->magic == NVN_MAGIC('T', 'E', 'X', 0)) {
         /* a compaction move (texdata.c): the back end keeps the texture's image and registration; the
            initialization that follows over the new storage keeps its serial */
         tl_moved_serial = o->serial;
@@ -793,7 +796,7 @@ NV(nvnTextureFinalize) {
         hos_log("nvn: texture %#llx finalized: %ux%u at %#llx, serial %llu, lr %#llx, present %lld", (unsigned long long)c->x[0],
                 o->d.width, o->d.height, (unsigned long long)o->gpu, (unsigned long long)o->serial, (unsigned long long)c->x[30],
                 (long long)hos_present_count);
-    if (rx_direct()) texwatch_released(o);
+    texwatch_released(o);
     live_del(o);
     rx_nvn_texture_released(o);
     o->magic = 0;
@@ -1221,23 +1224,10 @@ NV(nvnQueueSetDebugLabel) {}
 static void *rec(nvn_cmd *o, uint32_t op, size_t payload);
 #define OP_RESERVE 24
 
-/* Direct mode keeps each recording as a list by reference (runtime/nvn_list.h has the design and the lifetime rules): a
-   recording is written once into an allocation of its own and its handle names it; CallCommands and CopyCommands hand the
-   callee's list to the back end instead of copying records; no copy_lock, no rec_node, no copy at EndRecording. The back
-   end's list of each one is in its user. The renderers that replay records take the copies below. */
+/* Each recording is a list by reference (runtime/nvn_list.h has the design and the lifetime rules): a recording is
+   written once into an allocation of its own and its handle names it; CallCommands and CopyCommands hand the callee's
+   list to the back end instead of copying records. The back end's list of each one is in its user. */
 static void released_hook(nvn_lrec *r) { rx_direct()->list_released(r->user); r->user = NULL; }
-static int list_ref(void) {
-    static int on = -1;
-    if (on < 0) {
-        on = rx_direct() != NULL;
-        if (on) {
-            nvn_list_init(0, hos_log, die);
-            nvn_list_set_user_hooks(released_hook, NULL);
-            hos_log("nvn: direct mode: command lists by reference, their records handed to the back end as they are made");
-        }
-    }
-    return on;
-}
 static void *guest_or_null(uint64_t a, uint64_t n) { return hos_guest_range(a, n); }
 /* (the replay's progress as the last submit read it: AddControlMemory frees by it. rx_nvn_replayed polls the batched queue
    under the present lock, which the replay holds while it submits: the workers' AddControlMemory waited there, up to
@@ -1246,69 +1236,19 @@ static volatile uint64_t list_done;
 static void list_log(const char *why) {
     nvn_list_stats t;
     nvn_list_get_stats(&t);
-    hos_log("nvn: lists (%s): %llu recordings made, %llu live (%.1f MB), %llu released, %llu freed; %llu calls by reference, "
-            "%llu copied in (too deep); deferred binds: %llu read in place, %llu private copies for %llu conflicts; %llu grown, "
-            "%llu shrunk (%.1f MB moved), %llu swept", why, (unsigned long long)t.made, (unsigned long long)t.live, t.live_bytes / 1048576.0,
-            (unsigned long long)t.released, (unsigned long long)t.freed, (unsigned long long)t.calls,
-            (unsigned long long)t.calls_expanded, (unsigned long long)t.resolved_in_place, (unsigned long long)t.clones,
-            (unsigned long long)t.conflicts, (unsigned long long)t.grown, (unsigned long long)t.shrunk, t.copied / 1048576.0, (unsigned long long)t.swept);
-}
-
-/* Recording copies and command buffer segments come from power-of-two free lists and go back to them. Through the
-   process heap (~13k copies a frame, segments freed at Finalize and made again), the frees decommitted pages that the
-   next allocations faulted in again: NtFreeVirtualMemory ~0.6% of the recording thread (ModuleSystemWorker1), more in
-   page faults. A class keeps at most POOL_KEEP bytes; the rest goes back to the heap. */
-#define POOL_MIN 6       /* 64 bytes */
-#define POOL_MAX 26      /* 64 MiB: bigger blocks use the heap */
-#define POOL_KEEP (64ull << 20)
-static os_mutex pool_lock = OS_MUTEX_INIT;
-static void *pool_head[POOL_MAX + 1];
-static uint64_t pool_bytes[POOL_MAX + 1];
-static unsigned pool_class(size_t n) {
-    unsigned c = POOL_MIN;
-    while (c <= POOL_MAX && ((size_t)1 << c) < n) c++;
-    return c;
-}
-/* a block of at least n bytes; *cls its class (POOL_MAX + 1: from the heap, n bytes) */
-static void *pool_get(size_t n, unsigned *cls) {
-    const unsigned c = pool_class(n);
-    *cls = c;
-    if (c > POOL_MAX) return hos_ledger_took(HL_NVN_CMD, malloc(n));
-    os_mutex_lock(&pool_lock);
-    void *b = pool_head[c];
-    if (b) {
-        pool_head[c] = *(void **)b;
-        pool_bytes[c] -= (uint64_t)1 << c;
-    }
-    os_mutex_unlock(&pool_lock);
-    return b ? b : hos_ledger_took(HL_NVN_CMD, malloc((size_t)1 << c));
-}
-static void pool_put(void *b, unsigned cls) {
-    if (!b) return;
-    if (cls > POOL_MAX) {
-        hos_ledger_frees(HL_NVN_CMD, b);
-        free(b);
-        return;
-    }
-    os_mutex_lock(&pool_lock);
-    const int keep = pool_bytes[cls] + ((uint64_t)1 << cls) <= POOL_KEEP;
-    if (keep) {
-        *(void **)b = pool_head[cls];
-        pool_head[cls] = b;
-        pool_bytes[cls] += (uint64_t)1 << cls;
-    }
-    os_mutex_unlock(&pool_lock);
-    if (!keep) hos_ledger_frees(HL_NVN_CMD, b), free(b);
+    hos_log("nvn: lists (%s): %llu recordings made, %llu live (%.1f MB), %llu released, %llu freed; %llu grown, %llu shrunk "
+            "(%.1f MB moved), %llu swept", why, (unsigned long long)t.made, (unsigned long long)t.live, t.live_bytes / 1048576.0,
+            (unsigned long long)t.released, (unsigned long long)t.freed, (unsigned long long)t.grown, (unsigned long long)t.shrunk,
+            t.copied / 1048576.0, (unsigned long long)t.swept);
 }
 
 /* (runtime) A command buffer's recording buffer lives in host memory, and its pointers in this table, not in the
    object (guest memory). The object holds its slot's number; a slot names the object it belongs to, so a slot number
    that is not the object's own is not used: the object gets a new slot, as an object never initialized does. Slots are
    in chunks that are never freed, so a lookup needs no lock (a command buffer records on one thread at a time). */
-/* (HOS_NVN_LIST_REF=1, runtime/nvn_list.h) seg, cur and end are the open recording's place in its own allocation (lw) */
 typedef struct {
     uint64_t owner;
-    union { struct { uint8_t *seg, *cur, *end; }; nvn_lw lw; };
+    nvn_lw lw;                     /* the open recording, in its own allocation (runtime/nvn_list.h) */
     void *volatile dl;             /* (direct mode) the open recording's list in the back end (NULL: none open) */
     volatile int32_t dl_pending;   /* (direct mode) its last record waits on a thread for its flush (runtime/render_lists.c) */
 } cmd_rec;
@@ -1323,7 +1263,6 @@ static cmd_rec *cmd_slot(uint32_t s) {
     cmd_rec *k = cmd_chunks[s >> CMD_CHUNK_BITS];
     return k ? &k[s & ((1u << CMD_CHUNK_BITS) - 1)] : NULL;
 }
-static int list_ref(void);
 /* a free slot, its chunk made (cmd_lock held) */
 static uint32_t cmd_slot_new_locked(void) {
     const uint32_t s = ncmd_free ? cmd_free[--ncmd_free] : cmd_next++;
@@ -1364,20 +1303,10 @@ static void cmd_slot_give(uint32_t s) {
 }
 static cmd_rec *cmd_adopt(nvn_cmd *o) {
     const uint64_t me = h2g(o);
-    if (list_ref()) {   /* (the slot is this object's alone from here: no lock for the rest) */
-        const uint32_t s = cmd_slot_take();
-        cmd_rec *r = cmd_slot(s);
-        memset(r, 0, sizeof *r);
-        __atomic_store_n(&r->owner, me, __ATOMIC_RELEASE);
-        o->slot = s;
-        return r;
-    }
-    os_mutex_lock(&cmd_lock);
-    const uint32_t s = cmd_slot_new_locked();
+    const uint32_t s = cmd_slot_take();   /* (the slot is this object's alone from here: no lock for the rest) */
     cmd_rec *r = cmd_slot(s);
     memset(r, 0, sizeof *r);
-    r->owner = me;
-    os_mutex_unlock(&cmd_lock);
+    __atomic_store_n(&r->owner, me, __ATOMIC_RELEASE);
     o->slot = s;
     return r;
 }
@@ -1389,34 +1318,15 @@ static cmd_rec *cmd_host(nvn_cmd *o) {
         hos_log("nvn: command buffer %#llx names slot %u, which is not its own: a new one", (unsigned long long)h2g(o), o->slot);
     return cmd_adopt(o);
 }
-static volatile int64_t seg_bytes, seg_count;   /* (the command buffers' segments, for the recordings' log line) */
 static void cmd_release(nvn_cmd *o) {   /* the object's slot and recording buffer back */
     cmd_rec *r = cmd_slot(o->slot);
     if (!r || r->owner != h2g(o)) {
         o->slot = 0;
         return;
     }
-    if (list_ref()) {   /* (a recording never ended dropped; the ended ones live on by their handles) */
-        nvn_list_drop(&r->lw);
-        memset(r, 0, sizeof *r);
-        cmd_slot_give(o->slot);
-        o->slot = 0;
-        return;
-    }
-    if (r->seg) {
-        os_atomic_add(&seg_bytes, -(int64_t)(r->end - r->seg));
-        os_atomic_dec(&seg_count);
-        pool_put(r->seg, pool_class((size_t)(r->end - r->seg)));
-    }
-    os_mutex_lock(&cmd_lock);
+    nvn_list_drop(&r->lw);   /* (a recording never ended dropped; the ended ones live on by their handles) */
     memset(r, 0, sizeof *r);
-    if (ncmd_free == cap_cmd_free) {
-        cap_cmd_free = cap_cmd_free ? cap_cmd_free * 2 : 256;
-        cmd_free = (uint32_t *)realloc(cmd_free, cap_cmd_free * sizeof *cmd_free);
-        if (!cmd_free) die("command buffer table");
-    }
-    cmd_free[ncmd_free++] = o->slot;
-    os_mutex_unlock(&cmd_lock);
+    cmd_slot_give(o->slot);
     o->slot = 0;
 }
 static uint8_t *cmd_alloc(nvn_cmd *o, uint32_t size);
@@ -1425,7 +1335,7 @@ static void put_hdr(uint8_t *p, uint32_t op, uint32_t size);
    buffer at cmd (this thread's waiting record handed over first, so the list has every record before this point); NULL:
    none, or not direct mode */
 void *cmd_list(uint64_t cmd) {
-    if (!rx_direct() || !cmd) return NULL;
+    if (!cmd) return NULL;
     nvn_cmd *o = (nvn_cmd *)g2h(cmd);
     if (!o || o->magic != NVN_MAGIC('C', 'M', 'D', 'B')) return NULL;
     gpu_flush();
@@ -1435,7 +1345,7 @@ void *cmd_list(uint64_t cmd) {
 /* (direct mode) a command buffer finalized or initialized again: its list begun and not ended dropped (before cmd_release) */
 static void list_drop(nvn_cmd *o) {
     cmd_rec *r = cmd_slot(o->slot);
-    if (!rx_direct() || !r || r->owner != h2g(o) || !r->dl) return;
+    if (!r || r->owner != h2g(o) || !r->dl) return;
     gpu_flush();
     void *dl = r->dl;
     r->dl = NULL;
@@ -1467,40 +1377,10 @@ NV(nvnCommandBufferSetControlMemoryCallbackEnabled) {}
 NV(nvnCommandBufferSetDebugLabel) {}
 
 static void put_hdr(uint8_t *p, uint32_t op, uint32_t size) { nvn_op_hdr h = {op, size}; memcpy(p, &h, sizeof h); }
-static void cmd_reserve_rec(cmd_rec *o, size_t need) {
-    if (rx_direct()) return;   /* (no bytes: the records go to the back end, runtime/render_lists.c) */
-    if (o->seg && need + OP_RESERVE <= (size_t)(o->end - o->cur)) return;
-    const size_t used = o->seg ? (size_t)(o->cur - o->seg) : 0;
-    size_t cap = o->seg ? (size_t)(o->end - o->seg) : 0;
-    if (!cap) cap = 64 << 10;
-    while (used + need + OP_RESERVE > cap) cap *= 2;
-    unsigned cls;
-    uint8_t *b = (uint8_t *)pool_get(cap, &cls);
-    if (!b) die("recording buffer (%zu bytes)", cap);
-    if (o->seg) {
-        memcpy(b, o->seg, used);
-        os_atomic_add(&seg_bytes, -(int64_t)(o->end - o->seg));
-        pool_put(o->seg, pool_class((size_t)(o->end - o->seg)));
-    } else {
-        os_atomic_inc(&seg_count);
-    }
-    os_atomic_add(&seg_bytes, (int64_t)cap);
-    o->seg = b, o->cur = b + used, o->end = b + cap;
-}
 static uint8_t *cmd_alloc(nvn_cmd *o, uint32_t size) {
     size = (size + 7) & ~7u;
     cmd_rec *r = cmd_host(o);
-    if (rx_direct()) {   /* (the accounting as below; the record in this thread's scratch, to the back end at the next one) */
-        uint8_t *p = gpu_scratch(&r->dl, &r->dl_pending, size);
-        o->cmd_used += size;
-        o->hw_used += size;
-        o->last_rec = size;
-        put_hdr(p, 0, size);
-        return p;
-    }
-    cmd_reserve_rec(r, size);
-    uint8_t *p = r->cur;
-    r->cur += size;
+    uint8_t *p = gpu_scratch(&r->dl, &r->dl_pending, size);   /* (the record in this thread's scratch, to the back end at the next one) */
     o->cmd_used += size;
     o->hw_used += size;
     o->last_rec = size;
@@ -1517,174 +1397,15 @@ NV(nvnCommandBufferAddCommandMemory) {
     o->cmd_used = o->hw_used = 0;
 }
 
-/* Recordings: a handle is a host copy of the finished recording. Games reuse command memory for later recordings while
-   still calling earlier handles, so the copy lives until the control memory it was made in is added again (the console
-   driver's handle is a descriptor in that control memory). (The reference also drops copies whose control memory was
-   reused for other data or unmapped, by a mark written there; not done here yet: long sessions can keep more copies.) */
-/* live copies by the 64 KiB block of their control memory position: AddControlMemory releases a range's copies without
-   looking at the others (a scan of every copy at each call was ~4% of TOTK's frame threads: ~22000 live copies). By
-   4 KiB page a 2 MiB range walked ~500 buckets under the exclusive lock the recording threads also take
-   (totk-pc-recomp dc69797: 1.4.3 field walk 72-77 -> 78-80 fps with 64 KiB blocks). nvn.rec_shift=12: by page. */
-typedef struct rec_node { uint64_t ctl; uint8_t *copy; struct rec_node *next; int marked; } rec_node;
-#define REC_BUCKETS 65536u
-static rec_node **rec_buckets;
-static size_t ncopies;
-static size_t npins;   /* (tex_copy: the texture copies, logged with the recordings) */
-static unsigned rec_shift = 16;   /* (set when the buckets are made) */
-static unsigned rec_bucket(uint64_t ctl) { return (unsigned)(((ctl >> rec_shift) * 0x9E3779B97F4A7C15ull) >> 48) & (REC_BUCKETS - 1); }
-static os_rwlock copy_lock = OS_RWLOCK_INIT;
-static volatile int64_t copy_bytes;
-#define COPY_MAGIC 0x59504f43444d43ull   /* "CMDCOPY" */
-typedef struct { uint64_t magic, bytes, cls; } copy_prefix;   /* (cls: its pool class) */
-/* released copies wait until the replay passed every submit made before their release (the replay runs behind) */
-typedef struct { copy_prefix *p; uint64_t after; } dead_copy;
-static dead_copy *dead;
-static size_t ndead, cap_dead;
-/* (runtime) The live handles, a host set (open addressing, copy_lock held): a handle the game passes back is a host
-   address, so it is used only when it is in the set, never on what the memory at that address holds. */
-static uint64_t *live_handles;
-static size_t live_cap, nlive;
-static size_t live_at(uint64_t h, size_t cap) { return (size_t)((h * 0x9E3779B97F4A7C15ull) >> 24) & (cap - 1); }
-static void live_handle_add(uint64_t h) {   /* (copy_lock held exclusively) */
-    if ((nlive + 1) * 2 > live_cap) {
-        const size_t cap = live_cap ? live_cap * 2 : 65536;
-        uint64_t *t = (uint64_t *)calloc(cap, sizeof *t);
-        if (!t) die("recording handle set");
-        for (size_t i = 0; i < live_cap; i++) {
-            if (!live_handles[i]) continue;
-            size_t k = live_at(live_handles[i], cap);
-            while (t[k]) k = (k + 1) & (cap - 1);
-            t[k] = live_handles[i];
-        }
-        free(live_handles);
-        live_handles = t, live_cap = cap;
-    }
-    size_t k = live_at(h, live_cap);
-    while (live_handles[k] && live_handles[k] != h) k = (k + 1) & (live_cap - 1);
-    if (!live_handles[k]) live_handles[k] = h, nlive++;
-}
-static int live_handle_has(uint64_t h) {   /* (copy_lock held) */
-    if (!h || !live_cap) return 0;
-    for (size_t k = live_at(h, live_cap); live_handles[k]; k = (k + 1) & (live_cap - 1))
-        if (live_handles[k] == h) return 1;
-    return 0;
-}
-static void live_handle_remove(uint64_t h) {   /* (copy_lock held exclusively; backward shift, no tombstones) */
-    if (!h || !live_cap) return;
-    size_t k = live_at(h, live_cap);
-    while (live_handles[k] && live_handles[k] != h) k = (k + 1) & (live_cap - 1);
-    if (!live_handles[k]) return;
-    live_handles[k] = 0, nlive--;
-    for (size_t j = (k + 1) & (live_cap - 1); live_handles[j]; j = (j + 1) & (live_cap - 1)) {
-        const size_t want = live_at(live_handles[j], live_cap);
-        /* (move it into the hole when its probe run starts at or before the hole) */
-        if (((j - want) & (live_cap - 1)) >= ((j - k) & (live_cap - 1))) {
-            live_handles[k] = live_handles[j], live_handles[j] = 0;
-            k = j;
-        }
-    }
-}
-static void free_dead_copies(void) {   /* (copy_lock held) */
-    const uint64_t done = rx_nvn_replayed();
-    for (size_t i = 0; i < ndead;) {
-        if (dead[i].after <= done) {
-            os_atomic_add(&copy_bytes, -(int64_t)dead[i].p->bytes);
-            pool_put(dead[i].p, (unsigned)dead[i].p->cls);
-            dead[i] = dead[--ndead];
-        } else {
-            i++;
-        }
-    }
-}
-static void release_copies(uint64_t lo, uint64_t hi) {
-    if (hi <= lo || !rec_buckets) return;
-    const uint64_t after = rx_nvn_pushed();
-    os_rwlock_lock(&copy_lock);
-    free_dead_copies();
-    /* (a range over 4 GiB: every bucket once instead of every block) */
-    const uint64_t pages = ((hi - 1) >> rec_shift) - (lo >> rec_shift) + 1;
-    const uint64_t steps = pages > REC_BUCKETS ? REC_BUCKETS : pages;
-    for (uint64_t k = 0; k < steps; k++) {
-        const unsigned b = pages > REC_BUCKETS ? (unsigned)k : rec_bucket(((lo >> rec_shift) + k) << rec_shift);
-        for (rec_node **pn = &rec_buckets[b]; *pn;) {
-            rec_node *n = *pn;
-            if (n->ctl < lo || n->ctl >= hi) {
-                pn = &n->next;
-                continue;
-            }
-            copy_prefix *p = (copy_prefix *)n->copy - 1;
-            p->magic = 0;   /* (no submit names it any more) */
-            live_handle_remove((uint64_t)(uintptr_t)n->copy);
-            if (ndead == cap_dead) {
-                cap_dead = cap_dead ? cap_dead * 2 : 1024;
-                dead = (dead_copy *)realloc(dead, cap_dead * sizeof *dead);
-            }
-            dead[ndead].p = p;
-            dead[ndead].after = after;
-            ndead++;
-            *pn = n->next;
-            free(n);
-            ncopies--;
-        }
-    }
-    os_rwlock_unlock(&copy_lock);
-}
-/* Copies whose control memory the game reused for other data: the console driver's handle is a descriptor written in
-   the 64 bytes of control memory a recording takes; a mark written there in its place (the copy's address, and a magic)
-   that the game has overwritten means it reused that memory, and the handle is dead on the console too. Copies whose
-   control memory was never added again (MKW frees and reallocates its control memory) were kept for good otherwise:
-   ~40 per 1000 recordings, ~100,000 after 20 minutes. Swept every 25,000 recordings. */
+/* A recording's handle is tied to the control memory position the console driver's descriptor would take: a mark
+   written there in its place ({COPY_MARK, handle}) that the game has overwritten means it reused that memory, and the
+   handle is dead on the console too (end_recording_ref: nvn_list_sweep every 25,000 recordings) */
 #define COPY_MARK 0x4b52414d59504f43ull   /* "COPYMARK" */
-static void sweep_overwritten_copies(void) {   /* (copy_lock held) */
-    if (!rec_buckets) return;
-    free_dead_copies();
-    const uint64_t after = rx_nvn_pushed();
-    size_t swept = 0;
-    for (unsigned b = 0; b < REC_BUCKETS; b++) {
-        for (rec_node **pn = &rec_buckets[b]; *pn;) {
-            rec_node *n = *pn;
-            uint64_t mark[2];
-            if (!n->marked) {
-                pn = &n->next;
-                continue;
-            }
-            void *at = hos_guest_range(n->ctl, sizeof mark);
-            if (!at) {
-                pn = &n->next;
-                continue;
-            }
-            memcpy(mark, at, sizeof mark);
-            if (mark[0] == COPY_MARK && mark[1] == (uint64_t)(uintptr_t)n->copy) {
-                pn = &n->next;
-                continue;
-            }
-            copy_prefix *pre = (copy_prefix *)n->copy - 1;
-            pre->magic = 0;
-            live_handle_remove((uint64_t)(uintptr_t)n->copy);
-            if (ndead == cap_dead) {
-                cap_dead = cap_dead ? cap_dead * 2 : 1024;
-                dead = (dead_copy *)realloc(dead, cap_dead * sizeof *dead);
-            }
-            dead[ndead].p = pre;
-            dead[ndead].after = after;
-            ndead++;
-            *pn = n->next;
-            free(n);
-            ncopies--;
-            swept++;
-        }
-    }
-    static int logged;
-    if (swept && logged++ < 12) hos_log("nvn: %zu copies of recordings whose control memory was reused let go (%zu live)", swept, ncopies);
-}
 NV(nvnCommandBufferAddControlMemory) {
     nvn_cmd *o = CB(P(0));
-    if (list_ref()) {   /* (the range's recordings released: their bytes go once the replay is past what was handed in) */
-        nvn_list_release(U64(1), U64(1) + U64(2), rx_nvn_pushed());
-        nvn_list_drain(__atomic_load_n(&list_done, __ATOMIC_ACQUIRE));
-    } else {
-        release_copies(U64(1), U64(1) + U64(2));
-    }
+    /* (the range's recordings released: their bytes go once the back end is past what was handed in) */
+    nvn_list_release(U64(1), U64(1) + U64(2), rx_nvn_pushed());
+    nvn_list_drain(__atomic_load_n(&list_done, __ATOMIC_ACQUIRE));
     o->ctl = U64(1);
     o->ctl_size = U64(2);
     o->ctl_used = 0;
@@ -1703,45 +1424,23 @@ NV(nvnCommandBufferBeginRecording,
     o->recording = 1;
     if (hos_bench_on()) hos_bench_recording(1);
     cmd_rec *r = cmd_host(o);
-    if (list_ref()) nvn_list_open(&r->lw, h2g(o));   /* (its own allocation: no copy at its end) */
-    else r->cur = r->seg;
-    if (rx_direct()) {   /* (direct mode: the back end's list, its kind from the caller; then BEGIN as below) */
-        gpu_flush();
-        if (r->dl) {   /* (begun again unended: dropped, as the records) */
-            void *dl = r->dl;
-            r->dl = NULL;
-            rx_direct()->list_released(dl);
-        }
-        gpu_list_info info = {0};
-        gpu_classify(c, &info);
-        info.cmd = h2g(o);
-        if (info.kind == GPU_LIST_JOB && !game_job_list(c->x[0], &info.pass_key, &info.view)) info.pass_key = info.view = 0;
-        r->dl = rx_direct()->list_begin(&info);
-        o->rec_start = o->cmd_used;
-        uint8_t *p = cmd_alloc(o, 8);
-        put_hdr(p, NOP_BEGIN, 8);
-        o->hw_used -= 8;   /* BEGIN / END have no hardware equivalent */
-        o->hw_start = o->hw_used;
-        return;
+    nvn_list_open(&r->lw, h2g(o));   /* (its own allocation: no copy at its end) */
+    gpu_flush();   /* (the back end's list, its kind from the caller; then BEGIN) */
+    if (r->dl) {   /* (begun again unended: dropped, as the records) */
+        void *dl = r->dl;
+        r->dl = NULL;
+        rx_direct()->list_released(dl);
     }
+    gpu_list_info info = {0};
+    gpu_classify(c, &info);
+    info.cmd = h2g(o);
+    if (info.kind == GPU_LIST_JOB && !game_job_list(c->x[0], &info.pass_key, &info.view)) info.pass_key = info.view = 0;
+    r->dl = rx_direct()->list_begin(&info);
     o->rec_start = o->cmd_used;
     uint8_t *p = cmd_alloc(o, 8);
     put_hdr(p, NOP_BEGIN, 8);
     o->hw_used -= 8;   /* BEGIN / END have no hardware equivalent */
     o->hw_start = o->hw_used;
-}
-/* the recording, BEGIN to END, is contiguous in the command buffer's segment: one copy of it */
-static uint8_t *flatten(const uint8_t *p, size_t n) {
-    unsigned cls;
-    uint8_t *out = (uint8_t *)pool_get(sizeof(copy_prefix) + n, &cls);
-    if (!out) die("recording copy (%zu bytes)", n);
-    memcpy(out + sizeof(copy_prefix), p, n);
-    copy_prefix *pre = (copy_prefix *)out;
-    pre->cls = cls;
-    pre->magic = COPY_MAGIC;
-    pre->bytes = sizeof(copy_prefix) + n;
-    os_atomic_add(&copy_bytes, (int64_t)pre->bytes);
-    return out + sizeof(copy_prefix);
 }
 /* (the watches below) the guest's call chain, by frame pointers: "lr < caller < ..." */
 static void guest_chain(Ctx *c, char *b, size_t cap) {
@@ -1749,19 +1448,6 @@ static void guest_chain(Ctx *c, char *b, size_t cap) {
     int n = snprintf(b, cap, "%llx", (unsigned long long)lr);
     for (int k = 1; k < 12 && fp && fp < 0x8000000000ull && !(fp & 7) && n < (int)cap; k++)
         n += snprintf(b + n, cap - n, " < %llx", (unsigned long long)G64(fp + 8)), fp = G64(fp);
-}
-/* (nvn.watch_draw: watch_draw below) */
-static void *watch_draw_cmd;
-static uint64_t watch_handles[16];
-static int nwatch_handles;
-static void watch_handle_called(Ctx *c, uint64_t h, const char *how) {
-    static volatile int32_t logged;
-    for (int i = 0; i < nwatch_handles; i++) {
-        if (watch_handles[i] != h || os_atomic_inc(&logged) > 60) continue;
-        char b[400];
-        guest_chain(c, b, sizeof b);
-        hos_log("nvn: watched recording %llx %s at %.3f s from %s", (unsigned long long)h, how, hos_now_ns() * 1e-9, b);
-    }
 }
 /* (direct mode) the recording as it is is the handle's: filed by its control memory position, no copy, no lock but
    its bucket run's */
@@ -1808,76 +1494,9 @@ static uint64_t end_recording_direct(nvn_cmd *o) {
 }
 NV(nvnCommandBufferEndRecording) {
     nvn_cmd *o = CB(P(0));
-    if (rx_direct()) {
-        RET(end_recording_direct(o));
-        return;
-    }
-    uint8_t *p = cmd_alloc(o, 8);
-    put_hdr(p, NOP_END, 8);
-    o->hw_used -= 8;
-    o->recording = 0;
-    cmd_rec *r = cmd_host(o);
-    uint8_t *copy = flatten(r->seg, (size_t)(r->cur - r->seg));
-    /* the copy is tied to the control memory position the console driver's descriptor would take */
-    const uint64_t at = o->ctl + (o->ctl_used < o->ctl_size ? o->ctl_used : 0);
-    o->ctl_used += 64;
-    rec_node *n = (rec_node *)malloc(sizeof *n);
-    n->ctl = o->ctl ? at : ~0ull;
-    n->copy = copy;
-    n->marked = 0;
-    if (o->ctl && o->ctl_used <= o->ctl_size) {   /* (the mark in the descriptor's place: see sweep_overwritten_copies) */
-        const uint64_t mark[2] = {COPY_MARK, (uint64_t)(uintptr_t)copy};
-        memcpy(gw(at, sizeof mark), mark, sizeof mark);
-        n->marked = 1;
-    }
-    os_rwlock_lock(&copy_lock);
-    if (!rec_buckets) {
-        rec_shift = (unsigned)setting_int(SET_NVN_REC_SHIFT);
-        rec_buckets = (rec_node **)calloc(REC_BUCKETS, sizeof *rec_buckets);
-    }
-    const unsigned b = rec_bucket(n->ctl);
-    n->next = rec_buckets[b];
-    rec_buckets[b] = n;
-    ncopies++;
-    live_handle_add((uint64_t)(uintptr_t)copy);
-    static uint64_t made;
-    if (++made % 25000 == 0) sweep_overwritten_copies();
-    if (made % 50000 == 0)
-        hos_log("nvn: %llu recordings made, %zu live copies (%.1f MB), %zu texture copies; %lld command buffers' segments "
-                "(%.1f MB)", (unsigned long long)made, ncopies, copy_bytes / 1048576.0, npins, (long long)seg_count,
-                seg_bytes / 1048576.0);
-    os_rwlock_unlock(&copy_lock);
-    if (watch_draw_cmd && watch_draw_cmd == (void *)o && nwatch_handles < 16) {
-        watch_handles[nwatch_handles++] = (uint64_t)(uintptr_t)copy;
-        watch_draw_cmd = NULL;
-        hos_log("nvn: watched draw's recording is %llx", (unsigned long long)(uintptr_t)copy);
-    }
-    RET((uint64_t)(uintptr_t)copy);
+    RET(end_recording_direct(o));
 }
 NV(nvnCommandBufferIsRecording) { RET(CB(P(0))->recording != 0); }
-static void check_handle(uint64_t h) {
-    os_rwlock_lock_shared(&copy_lock);
-    const int live = live_handle_has(h);
-    os_rwlock_unlock_shared(&copy_lock);
-    if (!live || ((const copy_prefix *)(uintptr_t)h - 1)->magic != COPY_MAGIC)
-        die("command handle %#llx is not a live recording", (unsigned long long)h);
-}
-/* a called recording is copied into the caller at the call (it is complete now; the game may retire it before the
-   caller is submitted) */
-static void inline_recording(nvn_cmd *o, uint64_t h) {
-    check_handle(h);
-    const copy_prefix *pre = (const copy_prefix *)(uintptr_t)h - 1;
-    const size_t total = (size_t)pre->bytes - sizeof *pre;   /* BEGIN, the records, END: the records in one copy */
-    if (total <= 16) return;
-    const size_t n = total - 16;
-    cmd_rec *r = cmd_host(o);
-    cmd_reserve_rec(r, n);
-    memcpy(r->cur, (const uint8_t *)(uintptr_t)h + 8, n);
-    r->cur += n;
-    o->cmd_used += n;
-    o->hw_used += n;
-    o->last_rec = 0;
-}
 /* (direct mode) CallCommands / CopyCommands: the callees' lists to the back end, in order; the accounting as with lists by
    reference (the callee's flat size, what the game sizes its heaps from) */
 static void call_direct(nvn_cmd *o, const uint64_t *h, int n) {
@@ -1902,26 +1521,12 @@ static void call_direct(nvn_cmd *o, const uint64_t *h, int n) {
 NV(nvnCommandBufferCallCommands,
    reads(x29, "the caller's frame-pointer chain, walked for a log line (guest_chain, watch_*)")) {
     const uint64_t *h = (const uint64_t *)PN(2, 8ull * (uint32_t)I(1));
-    if (rx_direct()) {
-        call_direct(CB(P(0)), h, I(1));
-        return;
-    }
-    for (int i = 0; i < I(1); i++) {
-        if (nwatch_handles) watch_handle_called(c, h[i], "called");
-        inline_recording(CB(P(0)), h[i]);
-    }
+    call_direct(CB(P(0)), h, I(1));
 }
 NV(nvnCommandBufferCopyCommands,
    reads(x29, "the caller's frame-pointer chain, walked for a log line (guest_chain, watch_*)")) {
     const uint64_t *h = (const uint64_t *)PN(2, 8ull * (uint32_t)I(1));
-    if (rx_direct()) {
-        call_direct(CB(P(0)), h, I(1));
-        return;
-    }
-    for (int i = 0; i < I(1); i++) {
-        if (nwatch_handles) watch_handle_called(c, h[i], "copied");
-        inline_recording(CB(P(0)), h[i]);
-    }
+    call_direct(CB(P(0)), h, I(1));
 }
 
 /* records: payload after the header, zeroed */
@@ -2010,7 +1615,7 @@ NV(nvnQueueWaitSync) {
         hos_log("nvn: QueueWaitSync on a sync not fenced yet (%p, lr %#llx): not waited for", (void *)s,
                 (unsigned long long)c->x[30]);
     /* (direct mode) the queue's next submission waits for the fence's (renderer/vk_sync.cpp) */
-    if (rx_direct() && s && s->fenced == 1 && s->fence) rx_direct()->queue_wait_fence((uint64_t)(uintptr_t)P(0), s->fence);
+    if (s && s->fenced == 1 && s->fence) rx_direct()->queue_wait_fence((uint64_t)(uintptr_t)P(0), s->fence);
 }
 NV(nvnCommandBufferResetCounter) { REC(CB(P(0)), NOP_RESET_COUNTER, nvn_p_counter)->type = U32(1); }
 /* (conditions are read by the back end, in the stream's order: read at record, most of them read reports earlier in the same
@@ -2227,7 +1832,6 @@ static void bind_bufs_deferred(Ctx *c, int ssbo) {
     nvn_p_bind_bufs *r = RECN(CB(P(0)), NOP_BIND_BUFS, nvn_p_bind_bufs, r, n);
     r->ssbo = ssbo, r->stage = I(1), r->first = I(2), r->n = n, r->src = U64(4);
     memcpy(r->r, PN(4, sizeof(NVNbufferRange) * (size_t)n), sizeof(NVNbufferRange) * (size_t)n);
-    if (r->src && list_ref() && !rx_direct()) nvn_list_note_deferred(&cmd_host(CB(P(0)))->lw, (const uint8_t *)r - 8);
     hw_fix(CB(P(0)), 16 + 16 * (uint64_t)n);
 }
 NV(nvnCommandBufferBindUniformBuffersDeferred) { bind_bufs_deferred(c, 0); }
@@ -2238,7 +1842,6 @@ static void bind_handles(nvn_cmd *o, uint32_t op, int stage, int first, int n, c
     nvn_p_bind_handles *r = RECN(o, op, nvn_p_bind_handles, h, n);
     r->stage = stage, r->first = first, r->n = n, r->src = src;
     memcpy(r->h, h, 8 * (size_t)n);
-    if (src && list_ref() && !rx_direct()) nvn_list_note_deferred(&cmd_host(o)->lw, (const uint8_t *)r - 8);
     hw_fix(o, hw ? hw : 16 + 4 * (uint64_t)n);
 }
 /* nvn.watch_tex=<handle hex> (debugging): who binds that texture handle, as guest call chains (frame pointers),
@@ -2316,8 +1919,7 @@ NV(nvnCommandBufferDrawArraysInstanced) {
     nvn_p_draw *r = REC(CB(P(0)), NOP_DRAW, nvn_p_draw);
     r->prim = I(1), r->first = I(2), r->count = I(3), r->base_instance = I(4), r->instances = I(5);
 }
-/* nvn.watch_draw=<index count> (debugging): who records indexed draws of that size (the first 60, call chains);
-   the recording that holds one is followed: each call of it is logged (the first 60) */
+/* nvn.watch_draw=<index count> (debugging): who records indexed draws of that size (the first 60, call chains) */
 static void watch_draw(Ctx *c, int count) {
     static int want = -1;
     static int64_t after;
@@ -2331,7 +1933,6 @@ static void watch_draw(Ctx *c, int count) {
     const char *only = *setting_str(SET_NVN_WATCH_DRAW_THREAD) ? setting_str(SET_NVN_WATCH_DRAW_THREAD) : NULL;   /* (only draws recorded on threads of that name) */
     if (only && (!hos_self() || !strstr(hos_thread_name(hos_self()), only))) return;
     if (os_atomic_inc(&logged) > 60) return;
-    watch_draw_cmd = P(0);
     char b[400];
     guest_chain(c, b, sizeof b);
     hos_log("nvn: draw of %d indices recorded from %s", count, b);
@@ -2372,6 +1973,7 @@ NV(nvnCommandBufferSetShaderScratchMemory) {}
    Copies live for the session (~100 bytes each); the table doubles when half full. */
 static nvn_tex **pins;
 static size_t pin_slots;
+static size_t npins;   /* (the texture copies made) */
 static os_mutex pin_lock = OS_MUTEX_INIT;
 static uint64_t pin_hash(const nvn_tex *o) {   /* (FNV-1a over the object, its serial as 0) */
     nvn_tex k = *o;
@@ -2603,26 +2205,6 @@ NV(nvnVertexStreamStateSetStride) { ST(nvn_vs_st, P(0))->stride = (uint32_t)U64(
 NV(nvnVertexStreamStateSetDivisor) { ST(nvn_vs_st, P(0))->divisor = U32(1); }
 
 /* ---- submit ---- */
-/* deferred binds read the game's handle arrays now (it fills them for the next frame as soon as the submit returns) */
-static void resolve_deferred(uint8_t *p) {
-    for (;;) {
-        nvn_op_hdr h;
-        memcpy(&h, p, sizeof h);
-        if (h.size < 8 || (h.size & 7) || h.op >= NOP_COUNT_) die("corrupt recording at submit (op %u size %u)", h.op, h.size);
-        if (h.op == NOP_END) return;
-        if (h.op == NOP_BIND_TEX || h.op == NOP_BIND_IMG || h.op == NOP_BIND_SAMP) {
-            nvn_p_bind_handles *b = (nvn_p_bind_handles *)(p + 8);
-            if (b->src && b->n > 0 && b->n <= 32) {
-                memcpy(b->h, gw(b->src, 8 * (size_t)b->n), 8 * (size_t)b->n);
-            }
-        }
-        if (h.op == NOP_BIND_BUFS) {
-            nvn_p_bind_bufs *b = (nvn_p_bind_bufs *)(p + 8);
-            if (b->src && b->n > 0 && b->n <= 16) memcpy(b->r, gw(b->src, sizeof(NVNbufferRange) * (size_t)b->n), sizeof(NVNbufferRange) * (size_t)b->n);
-        }
-        p += h.size;
-    }
-}
 NV(nvnQueueSubmitCommands) {
     nvn_queue *q = (nvn_queue *)P(0);
     int n = I(1);
@@ -2637,40 +2219,15 @@ NV(nvnQueueSubmitCommands) {
             hos_log("nvn: QueueSubmitCommands #%ld: queue %p (its #%llu), %d handles (lr %#llx)", (long)i, (void *)q,
                     (unsigned long long)q->submits, n, (unsigned long long)c->x[30]);
     }
-    if (rx_direct()) {   /* (direct mode: the handles' lists to the back end, which reads their deferred arrays itself) */
-        gpu_flush();
-        void *lists[64];
-        for (int i = 0; i < n; i++) {
-            const nvn_lrec *l = nvn_list_lookup(h[i]);
-            if (!l) die("command handle %#llx is not a live recording", (unsigned long long)h[i]);
-            lists[i] = l->user;
-        }
-        __atomic_store_n(&list_done, rx_nvn_replayed(), __ATOMIC_RELEASE);
-        rx_direct()->submit((uint64_t)(uintptr_t)q, lists, (uint32_t)n);
-        return;
+    gpu_flush();   /* (the handles' lists to the back end, which reads their deferred arrays itself) */
+    void *lists[64];
+    for (int i = 0; i < n; i++) {
+        const nvn_lrec *l = nvn_list_lookup(h[i]);
+        if (!l) die("command handle %#llx is not a live recording", (unsigned long long)h[i]);
+        lists[i] = l->user;
     }
-    if (list_ref()) {   /* (the handles' BEGIN records for the replay, their deferred binds read now: runtime/nvn_list.c) */
-        const uint64_t done = rx_nvn_replayed();
-        __atomic_store_n(&list_done, done, __ATOMIC_RELEASE);
-        const int bad = nvn_list_submit(h, h, n, done, gw);
-        if (bad) die("command handle %#llx is not a live recording", (unsigned long long)h[bad - 1]);
-        static volatile int32_t k;
-        if (nvn_list_check_on() && os_atomic_inc(&k) % 600 == 0) list_log("check, every 600 submits");
-    } else {
-        for (int i = 0; i < n; i++) {
-            check_handle(h[i]);
-            resolve_deferred((uint8_t *)(uintptr_t)h[i]);
-        }
-    }
-    {
-        /* (the replay runs here, on this thread, for ~9 ms a frame (vk_replay.cpp submit_q, RX_VK_ASYNC off): the virtual
-           core is given up for it, as Present and AcquireTexture do, so the game's other threads run on it meanwhile.
-           Nothing in the replay runs guest code or needs the core) */
-        const int away = hos_block_begin(CRIT_BLOCK_OTHER, (const void *)5);
-        rx_nvn_submit_q(h, n, (uint64_t)(uintptr_t)q);
-        if (away) hos_block_end();
-        if (list_ref()) nvn_list_submitted(rx_nvn_pushed());   /* (after the hand-over: what names it) */
-    }
+    __atomic_store_n(&list_done, rx_nvn_replayed(), __ATOMIC_RELEASE);
+    rx_direct()->submit((uint64_t)(uintptr_t)q, lists, (uint32_t)n);
 }
 
 /* ---- window ---- */
@@ -2769,13 +2326,13 @@ NV(nvnQueuePresentTexture) {
     if (i < 0 || i >= o->ntex) die("present of window texture %d", i);
     {
         const int away = hos_block_begin(CRIT_BLOCK_OTHER, (const void *)4);
-        if (rx_direct()) rx_direct()->present_queue((uint64_t)(uintptr_t)P(0));   /* (direct mode: the present runs in its queue's order) */
+        rx_direct()->present_queue((uint64_t)(uintptr_t)P(0));   /* (direct mode: the present runs in its queue's order) */
         rx_nvn_present(win_tex(o, i), o->crop);
         if (away) hos_block_end();
     }
     o->presents++;
     game_frame();
-    if (rx_direct()) texwatch_frame();   /* (debug.texwatch= its line) */
+    texwatch_frame();   /* (debug.texwatch= its line) */
     void poolcensus_frame(void);   /* poolcensus.c */
     poolcensus_frame();
     extern volatile int64_t hos_present_count;   /* display.c */
@@ -2966,7 +2523,7 @@ static void draw_mesh(Ctx *c, int kind) {
     if (kind == 0) r->x = I(1), r->y = I(2), r->z = I(3);
     else if (kind == 1) r->indirect = U64(1), r->max = 1;
     else r->indirect = U64(1), r->count_addr = U64(2), r->max = I(3), r->stride = I(4);
-    if (kind && rx_direct()) game_indirect_mesh_draw(r->indirect, r->max, r->stride);
+    if (kind) game_indirect_mesh_draw(r->indirect, r->max, r->stride);
     static volatile int64_t n;
     const int64_t k = os_atomic_inc(&n);
     if (lognvn() && (k <= 3 || k % 20000 == 0))

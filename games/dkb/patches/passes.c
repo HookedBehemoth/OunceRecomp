@@ -65,7 +65,6 @@ static int keys_by_bytes(uint64_t a, uint64_t *out, int cap) {
 
 int passes_recorder(uint64_t key) {
     const gpu_fns *d = rx_direct();
-    if (!d) return 0;
     key_note(key);
     os_atomic_inc(&n.asked);
     if (d->pass_known(key)) return 0;
@@ -76,7 +75,6 @@ int passes_recorder(uint64_t key) {
 /* pass_job_caller before its tail call of pass_draw_inline (ctx, drawctx x1, key x2, job, 0) */
 PATCH_AT(0x8034cd88, word(0x2a1f03e4), before, none, passes_inline, as(x1, drawctx), as(x2, key)) {   /* mov w4, wzr */
     const gpu_fns *d = rx_direct();
-    if (!d) return;
     uint64_t ks[8];
     const int nk = keys_by_bytes(key, ks, 8);
     if (!nk) {

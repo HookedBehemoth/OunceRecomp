@@ -21,9 +21,9 @@
 #include "hos_keys.h"
 #include "vk_api.h"
 
+void rx_load(void);
 int rx_start(void *hwnd);
 void rx_resize(int width, int height);
-void rx_close_asked(void);
 void hos_sdl_pads_pump(void);   /* runtime/media/pad_sdl.c: controllers, on this thread, as SDL's queue wants */
 
 volatile int64_t hos_present_count;   /* (nvn_native.c: the game's presents) */
@@ -212,6 +212,7 @@ int hos_display_init(void) {
 /* the game's thread, before any guest code (hos_main.c): the back end started, with a window or without one, so every
    call the game makes reaches it (rx_backend.c). The window is made on the main thread, which waits for this */
 void hos_display_start(void) {
+    rx_load();
     if (setting_bool(SET_HEADLESS) || !sdl_ready) {   /* no window: the renderer still draws, offscreen (screenshots) */
         rx_start(NULL);
         return;
@@ -266,7 +267,6 @@ void hos_display_loop(void) {
     os_event_set(&window_made);
     while (os_event_wait(&renderer_up, 0)) {   /* (the back end starting on the game's thread: only a close is answered) */
         if (hos_sdl_wait_event(&e, 4) && (e.type == HOS_SDL_EV_QUIT || e.type == HOS_SDL_EV_CLOSE)) {
-            rx_close_asked();   /* (a start still preparing the shaders keeps what it made) */
             hos_log("display: window closed while the back end started, exiting");
             hos_log_flush();
             os_exit(0);
@@ -284,7 +284,6 @@ void hos_display_loop(void) {
                 switch (e.type) {
                 case HOS_SDL_EV_QUIT:
                 case HOS_SDL_EV_CLOSE:
-                    rx_close_asked();   /* (a start still preparing the shaders keeps what it made) */
                     hos_log("display: window closed, exiting");
                     hos_log_flush();
                     os_exit(0);

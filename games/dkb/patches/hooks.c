@@ -18,5 +18,5 @@ static void patches_frame(void) {
 }
 
 void game_frame(void) {
-    if (rx_direct()) patches_frame();
+    patches_frame();
 }

@@ -65,16 +65,14 @@ fn buffer_map() {
 /// The native NVN layer keeps its host pointers in host tables and checks guest ranges against the guest window
 /// (nvn_native.c and hos.h's real functions, rx_nvn.h's layouts, a small window of test memory): a guest range is
 /// accepted only inside the window, wrapping ranges too; a command buffer's recording buffer is found through its own
-/// slot only (another object's or an out-of-range slot number gets a new slot), Finalize gives the slot back, and the
-/// same through each thread's free slots (HOS_NVN_LIST_REF); a recording handle is live only while in the set;
-/// ReadTexels / WriteTexels' extent covers every row and image, and strides that wrap give 0.
+/// slot only (another object's slot number gets a new slot), through each thread's free slots, and Finalize gives the
+/// slot back; ReadTexels / WriteTexels' extent covers every row and image, and strides that wrap give 0.
 #[test]
 fn host_tables() {
     let nvn = read("runtime/nvn_native.c");
     let hos = read("runtime/hos.h");
     let start = nvn[..find(&nvn, "} cmd_rec;")].rfind("typedef struct {").expect("cmd_rec's typedef");
     let table_decls = &nvn[start..start + find(&nvn[start..], "static cmd_rec *cmd_slot(")];
-    let live_decls = between(&nvn, "static uint64_t *live_handles;", "static void live_handle_add(");
     let pieces = [
         block(&hos, "static inline void *hos_guest_range("),
         block(&nvn, "static void *gw("),
@@ -87,12 +85,7 @@ fn host_tables() {
         block(&nvn, "static void cmd_slot_give("),
         block(&nvn, "static cmd_rec *cmd_adopt("),
         block(&nvn, "static cmd_rec *cmd_host("),
-        "static volatile int64_t seg_bytes, seg_count;",
         block(&nvn, "static void cmd_release("),
-        live_decls,
-        block(&nvn, "static void live_handle_add("),
-        block(&nvn, "static int live_handle_has("),
-        block(&nvn, "static void live_handle_remove("),
         block(&nvn, "static uint64_t texels_extent("),
     ]
     .join("\n");

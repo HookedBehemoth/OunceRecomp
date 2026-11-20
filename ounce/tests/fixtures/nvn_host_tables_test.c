@@ -6,9 +6,7 @@
 #include <setjmp.h>
 #include "rx_nvn.h"
 #include "nvn_list.h"
-static int list_ref_mode;   /* (HOS_NVN_LIST_REF: the slots from each thread's own list; nvn_list_drop at Finalize) */
-static int list_ref(void) { return list_ref_mode; }
-static int drops;
+static int drops;   /* (nvn_list_drop at Finalize) */
 void nvn_list_drop(nvn_lw *w) { (void)w; drops++; }
 
 #define WINDOW (1u << 20)
@@ -28,11 +26,6 @@ static jmp_buf died;
 static int dying;
 static void die(const char *fmt, ...) { (void)fmt; if (dying) longjmp(died, 1); fprintf(stderr, "unexpected die\n"); exit(3); }
 static uint64_t h2g(const void *p) { return p ? (uint64_t)((const uint8_t *)p - A64_MEM) : 0; }
-#define POOL_MAX 26
-static int pool_off(void) { return 0; }
-static unsigned pool_class(size_t n) { (void)n; return 0; }
-static int puts_count;
-static void pool_put(void *b, unsigned c) { (void)c; free(b); puts_count++; }
 @PIECES@
 static void require(int ok, const char *m) { if (!ok) { fprintf(stderr, "FAIL: %s\n", m); exit(1); } }
 static int dies(void *(*f)(uint64_t, uint64_t), uint64_t a, uint64_t n) {
@@ -60,41 +53,19 @@ int main(void) {
     if (!setjmp(died)) { in_window(A64_MEM - 64, 8); require(0, "in_window accepted a pointer below the window"); }
     dying = 0;
 
-    /* command buffers: a slot names its object */
-    nvn_cmd *a = (nvn_cmd *)GP(0x4000), *b = (nvn_cmd *)GP(0x5000);
-    cmd_rec *ra = cmd_adopt(a), *rb = cmd_adopt(b);
-    require(ra != rb && a->slot && b->slot && a->slot != b->slot, "two command buffers share a slot");
-    ra->seg = ra->cur = malloc(64), ra->end = ra->seg + 64;
-    require(cmd_host(a) == ra, "a command buffer lost its own slot");
-    const uint32_t a_slot = a->slot;
-    b->slot = a_slot;   /* b's memory names a's slot */
-    cmd_rec *forged = cmd_host(b);
-    require(forged != ra && b->slot != a_slot && forged->seg == NULL, "a command buffer got another one's recording buffer");
-    a->slot = 0x7fffffffu;   /* out of range */
-    cmd_rec *fresh = cmd_host(a);
-    require(fresh != ra && fresh->seg == NULL, "an out-of-range slot was used");
-    a->slot = a_slot;
-    require(cmd_host(a) == ra, "the object's own slot was not found again");
-    puts_count = 0;
-    cmd_release(a);
-    require(puts_count == 1 && a->slot == 0 && ra->owner == 0, "Finalize did not give the slot and buffer back");
-    b->slot = a_slot;   /* a freed slot is no one's */
-    require(cmd_host(b) != NULL && cmd_host(b)->seg == NULL, "a freed slot's buffer was used");
-
-    /* (HOS_NVN_LIST_REF) the same through each thread's free slots: a slot names its object, Finalize gives it back and
-       drops the open recording, and a slot given back is no one's */
-    list_ref_mode = 1;
+    /* command buffers through each thread's free slots: a slot names its object, Finalize gives it back and drops the
+       open recording, and a slot given back is no one's */
     {
         nvn_cmd *c1 = (nvn_cmd *)GP(0x6000), *c2 = (nvn_cmd *)GP(0x7000);
         cmd_rec *r1 = cmd_adopt(c1), *r2 = cmd_adopt(c2);
-        require(r1 != r2 && c1->slot && c2->slot && c1->slot != c2->slot, "list mode: two command buffers share a slot");
-        require(cmd_host(c1) == r1 && r1->owner == h2g(c1), "list mode: a command buffer lost its own slot");
+        require(r1 != r2 && c1->slot && c2->slot && c1->slot != c2->slot, "two command buffers share a slot");
+        require(cmd_host(c1) == r1 && r1->owner == h2g(c1), "a command buffer lost its own slot");
         const uint32_t s1 = c1->slot;
         c2->slot = s1;
-        require(cmd_host(c2) != r1 && c2->slot != s1, "list mode: a command buffer got another one's slot");
+        require(cmd_host(c2) != r1 && c2->slot != s1, "a command buffer got another one's slot");
         drops = 0;
         cmd_release(c1);
-        require(drops == 1 && c1->slot == 0 && r1->owner == 0, "list mode: Finalize did not drop the recording and give the slot back");
+        require(drops == 1 && c1->slot == 0 && r1->owner == 0, "Finalize did not drop the recording and give the slot back");
         for (int i = 0; i < 200; i++) {   /* (past the thread's list: some go back to the shared one) */
             nvn_cmd *t = (nvn_cmd *)GP(0x8000 + 0x100 * (uint64_t)i);
             cmd_adopt(t);
@@ -102,19 +73,8 @@ int main(void) {
         for (int i = 0; i < 200; i++) cmd_release((nvn_cmd *)GP(0x8000 + 0x100 * (uint64_t)i));
         nvn_cmd *t = (nvn_cmd *)GP(0x8000);
         t->slot = s1;
-        require(cmd_host(t) != NULL && t->slot != 0, "list mode: a freed slot was used by another object");
+        require(cmd_host(t) != NULL && t->slot != 0, "a freed slot was used by another object");
     }
-    list_ref_mode = 0;
-
-    /* recording handles */
-    uint64_t h[5000];
-    for (int i = 0; i < 5000; i++) { h[i] = 0x7f0000000000ull + (uint64_t)i * 0x40; live_handle_add(h[i]); }
-    for (int i = 0; i < 5000; i++) require(live_handle_has(h[i]), "a live handle was not found");
-    require(!live_handle_has(0x7f0000000008ull) && !live_handle_has(0) && !live_handle_has(0x1234),
-            "a handle that was never made counts as live");
-    for (int i = 0; i < 5000; i += 3) live_handle_remove(h[i]);
-    for (int i = 0; i < 5000; i++) require(live_handle_has(h[i]) == (i % 3 != 0), "removing handles lost others");
-    require(nlive == 5000 - 1667, "the live count");
     /* ReadTexels / WriteTexels: the buffer span the strides reach */
     require(texels_extent(64, 4, 1, 64, 256) == 256, "a packed 64x4 region");
     require(texels_extent(64, 4, 2, 128, 1024) == 1024 + 3 * 128 + 64, "strided rows and images");
@@ -122,6 +82,6 @@ int main(void) {
     require(texels_extent(64, 4, 1, 1ull << 63, 0) == 0, "a row stride that wraps around");
     require(texels_extent(64, 1, 3, 64, 1ull << 63) == 0, "an image stride that wraps around");
     require(!hos_guest_range(0x1000, texels_extent(64, 2, 1, WINDOW, 0)), "a row stride past the window was accepted");
-    puts("PASS: guest window ranges, command buffer slots by owner, live recording handles, texel buffer extents");
+    puts("PASS: guest window ranges, command buffer slots by owner, texel buffer extents");
     return 0;
 }

@@ -539,14 +539,6 @@ void progress() {
 }
 
 // ---- the table's sync entries ----
-void nvn_submit(const uint64_t*, int) {   // (the host's held submits: never in direct mode)
-    static int told;
-    if (!told++) logf("direct: nvn_submit called, which direct mode does not use");
-}
-void nvn_submit_q(const uint64_t*, int, uint64_t) {
-    static int told;
-    if (!told++) logf("direct: nvn_submit_q called: the host should call gpu_submit in direct mode");
-}
 uint64_t nvn_fence() { return sent.load(std::memory_order_acquire); }
 uint64_t nvn_fence_q(uint64_t queue) {
     std::lock_guard lk(mu);
@@ -709,8 +701,6 @@ void sync_stats(char* out, size_t cap, double frames) {
 }
 
 void sync_fill_table(MkwVkRenderer& t) {
-    t.nvn_submit = nvn_submit;
-    t.nvn_submit_q = nvn_submit_q;
     t.nvn_fence = nvn_fence;
     t.nvn_fence_q = nvn_fence_q;
     t.nvn_pushed = nvn_pushed;

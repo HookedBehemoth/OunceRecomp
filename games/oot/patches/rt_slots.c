@@ -80,7 +80,7 @@ void f_802737a0(Ctx *), f_8005ed00(Ctx *);   /* (lifted functions the host calls
    target of a new size no gap, and it is placed outside the slots. Another back end: the top 320 MB of the pool */
 #define SLOTS_MB_DIRECT 512
 uint64_t nvn_virtual_pool_tail(void);   /* nvn_native.c */
-static int after_pool(void) { return rx_direct() && nvn_virtual_pool_tail() != 0; }
+static int after_pool(void) { return nvn_virtual_pool_tail() != 0; }
 static uint64_t game_pool_bytes;   /* (the arenas' size, set before the first slots_bytes call) */
 static uint64_t slots_bytes(void) {
     static uint64_t v;
@@ -535,7 +535,7 @@ static int agl_target[16] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, -1, -1, -1, -1, -1, -
 static uint64_t device_need(const Cur *k, uint64_t *align) {
     const gpu_fns *f = rx_direct();
     *align = 0;
-    if (!f || !f->image_need || k->fmt >= AGL_FORMATS || k->type >= 16 || agl_target[k->type] < 0 ||
+    if (k->fmt >= AGL_FORMATS || k->type >= 16 || agl_target[k->type] < 0 ||
         !hos_guest_range(AGL_FORMAT_TABLE, 4 * AGL_FORMATS))
         return 0;
     nvn_texdesc d = {0};
@@ -684,7 +684,7 @@ static int pool_ok(uint64_t pool) {   /* a virtual pool that holds the slot rang
     if (!dta_pool_gpu) {   /* the slot range's storage addresses: the back end's transient pool, allocated now */
         dta_pool_gpu = p->gpu;
         const gpu_fns *d = rx_direct();
-        if (d && d->transient_pool && !d->transient_pool(p->gpu + lo, p->gpu + hi))
+        if (!d->transient_pool(p->gpu + lo, p->gpu + hi))
             hos_log("rt slots: the back end made no transient pool for %#llx..%#llx", (unsigned long long)(p->gpu + lo),
                     (unsigned long long)(p->gpu + hi));
     } else if (npools > 1) {
@@ -753,7 +753,7 @@ PATCH_AT(0x8005fb74, word(0xf9001eea), after, x10, rt_slots_offset, as(x8, pool)
     os_rwlock_unlock(&mu);
     if (!s) {   /* (outside the slots: an image with memory of its own, which the transient pool was to end) */
         const gpu_fns *d = rx_direct();
-        if (d && d->host_event) {
+        {
             char w[160];
             snprintf(w, sizeof w, "%ux%ux%u agl format %u lr %#llx, %llu KB, at the game's offset %#llx", k.w, k.h, k.d, k.fmt,
                      (unsigned long long)k.lr, (unsigned long long)(G64(block + BLK_SIZE) >> 10), (unsigned long long)game);
@@ -776,7 +776,7 @@ PATCH_AT_SITE(0x80061814, word(0xf9001eea), after, x10, rt_slots_offset, x8, x10
    its caller, and that initialization claims. */
 static void alloc_gave(uint64_t entry) {
     const gpu_fns *d = rx_direct();
-    if (!entry || !d || !d->target_given || !hos_guest_range(entry, 0x180)) return;
+    if (!entry || !hos_guest_range(entry, 0x180)) return;
     const int32_t id = (int32_t)G32(entry + 0x68);
     const uint64_t mgr = hos_guest_range(0x84ca2d60ull, 8) && hos_guest_range(G64(0x84ca2d60ull), 8) ? G64(G64(0x84ca2d60ull)) : 0;
     const nvn_tex *t = NULL;
@@ -898,7 +898,7 @@ void rt_slots_texture_init(uint64_t obj, uint64_t gpu, const nvn_texdesc *td, in
     const uint32_t w = td->width, h = td->height, fmt = (uint32_t)td->format;
     const gpu_fns *d = rx_direct();
     const uint64_t base = dta_pool_gpu;
-    if (d && d->transient_slot && state == 1 && base && gpu >= base + lo && gpu < base + hi) {
+    if (state == 1 && base && gpu >= base + lo && gpu < base + hi) {
         /* a texture in the slot range: the bytes of the slot that starts there (0: none does), before its image is bound */
         uint64_t cap = 0;
         Cur k = {0};

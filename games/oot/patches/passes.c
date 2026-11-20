@@ -77,7 +77,6 @@ static int key_known(uint64_t key) {
 
 int passes_recorder(uint64_t key) {
     const gpu_fns *d = rx_direct();
-    if (!d) return 0;
     key_note(key);
     os_atomic_inc(&n.asked);
     if (d->pass_known(key)) return 0;
@@ -95,7 +94,6 @@ int passes_recorder(uint64_t key) {
    before each call (a PATCH_AT declaration, runtime/patch.h) hand over the key and the list's draw context */
 static void inline_pass(int site, int nk, const uint64_t *ks, uint64_t drawctx) {
     const gpu_fns *d = rx_direct();
-    if (!d) return;
     {
         static int on0 = -1;
         if (on0 < 0) on0 = setting_bool(SET_DBG_CAPTURE);

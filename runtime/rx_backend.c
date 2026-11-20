@@ -1,7 +1,7 @@
 /* The direct back end's loader and the rx_* calls the host makes (renderer/api/vk_api.h): ounce_renderer.so beside the
-   executable is loaded and its device made at rx_start, which the boot calls before any guest code runs
-   (runtime/media/display_sdl.c hos_display_start), so every call reaches a started back end. A library that does not load
-   or start ends the game. */
+   executable is loaded at rx_load and its device made at rx_start, which the boot calls before any guest code runs
+   (runtime/media/display_sdl.c hos_display_start), so every call reaches a started back end. A library that does not load,
+   lacks an entry or does not start ends the game. */
 #include "hos.h"
 #include "game_hooks.h"
 #include <stdio.h>
@@ -79,11 +79,12 @@ static const MkwVkHost vk_host = {
 static const MkwVkRenderer *vk;   /* the back end, once started */
 
 /* The direct back end, ounce_renderer.so: the version-14 table for the object layer, sync and present, and the list calls the
-   host finds by name (runtime/renderer.h). Loaded at rx_start, before any guest code runs. */
+   host finds by name (runtime/renderer.h). Loaded at rx_load, before any guest code runs; every entry is required. */
 static gpu_fns renderer_fns;
 static os_lib *renderer_module;
 static const char kDirectLib[] = OS_LIB("ounce_renderer.so", "ounce_renderer.dll");
-static void renderer_load(void) {
+static mkwvk_init_fn renderer_init;           /* (mkwvk_init: the back end's table, for the host's) */
+void rx_load(void) {
     char path[OS_PATH_MAX];
     const int n = os_exe_path(path, sizeof path);
     char *slash = n ? strrchr(path, '/') : NULL;
@@ -124,6 +125,7 @@ static void renderer_load(void) {
     DIRECT_FN(claim_read, "gpu_claim_read")
     DIRECT_FN(claim_made, "gpu_claim_made")
 #undef DIRECT_FN
+    if (!(renderer_init = (mkwvk_init_fn)os_lib_sym(renderer_module, "mkwvk_init"))) hos_fatal(NULL, "rx: %s has no mkwvk_init", kDirectLib);
     hos_log("rx: the direct back end: %s", path);
     {   /* (debug.crit= the calls timed, crit.c) */
         void crit_wrap(gpu_fns *f);
@@ -134,16 +136,25 @@ static void renderer_load(void) {
 }
 const gpu_fns *rx_direct(void) { return &renderer_fns; }
 
+/* (rx_load first) the back end's device made and its table checked whole: a library of another API version, or one
+   whose table lacks an entry, ends the game here */
 int rx_start(void *hwnd) {
-    renderer_load();
-    const gpu_fns *d = rx_direct();
-    if (*setting_str(SET_SHOTS)) d->shots(setting_str(SET_SHOTS), (int)setting_int(SET_SHOT_EVERY));   /* (the presented frames as PNGs) */
-    mkwvk_init_fn init = (mkwvk_init_fn)os_lib_sym(renderer_module, "mkwvk_init");
-    const MkwVkRenderer *r = init ? init(&vk_host) : NULL;
+    if (*setting_str(SET_SHOTS)) rx_direct()->shots(setting_str(SET_SHOTS), (int)setting_int(SET_SHOT_EVERY));   /* (the presented frames as PNGs) */
+    const MkwVkRenderer *r = renderer_init(&vk_host);
+    if (!r) hos_fatal(NULL, "rx: the direct back end (%s) made no device", kDirectLib);
+    if (r->version != MKWVK_API_VERSION)
+        hos_fatal(NULL, "rx: %s is of API version %u, not %u", kDirectLib, r->version, (unsigned)MKWVK_API_VERSION);
+#define NEED(f) \
+    if (!r->f) hos_fatal(NULL, "rx: %s's table has no %s", kDirectLib, #f);
+    NEED(start) NEED(resize) NEED(describe) NEED(stats) NEED(nvn_fence) NEED(nvn_pushed) NEED(nvn_replayed) NEED(nvn_wait)
+    NEED(wait_writebacks_reading) NEED(nvn_finish) NEED(nvn_present) NEED(nvn_register_texture) NEED(nvn_register_sampler)
+    NEED(nvn_set_texture_pool_size) NEED(nvn_texture_released) NEED(nvn_program_released) NEED(nvn_read_texels)
+    NEED(nvn_write_texels) NEED(nvn_invalidate) NEED(nvn_pool_created) NEED(nvn_texture_created) NEED(nvn_event_signal)
+    NEED(nvn_fence_q) NEED(nvn_program_set) NEED(nvn_pool_native)
+#undef NEED
     int w = 0, h = 0;   /* (no window: the offscreen image takes window_size, as the window would) */
-    if (r && !hwnd && sscanf(setting_str(SET_WINDOW_SIZE), "%dx%d", &w, &h) == 2 && w >= 64 && h >= 64)
-        r->resize(w, h);
-    if (!r || r->version != MKWVK_API_VERSION || !r->start(hwnd)) hos_fatal(NULL, "rx: the direct back end (%s) did not start", kDirectLib);
+    if (!hwnd && sscanf(setting_str(SET_WINDOW_SIZE), "%dx%d", &w, &h) == 2 && w >= 64 && h >= 64) r->resize(w, h);
+    if (!r->start(hwnd)) hos_fatal(NULL, "rx: the direct back end (%s) did not start", kDirectLib);
     vk = r;
     return 1;
 }
@@ -154,18 +165,11 @@ static void precompile_progress(int done, int of, int made, int kept, int failed
     fflush(stdout);
 }
 int rx_precompile(void) {
-    renderer_load();
+    rx_load();
     int (*pre)(const MkwVkHost *, void (*)(int, int, int, int, int)) =
         (int (*)(const MkwVkHost *, void (*)(int, int, int, int, int)))os_lib_sym(renderer_module, "mkwvk_precompile");
     if (!pre) hos_fatal(NULL, "rx: %s has no mkwvk_precompile", kDirectLib);
     return pre(&vk_host, precompile_progress);
-}
-/* (runtime) the window is being closed: a back end still preparing its shaders stops and keeps what it made first (a few
-   seconds at most). One without the export (an older one) has nothing to keep */
-void rx_close_asked(void) {
-    if (!renderer_module) return;
-    void (*close_asked)(void) = (void (*)(void))os_lib_sym(renderer_module, "mkwvk_close_asked");
-    if (close_asked) close_asked();
 }
 void rx_resize(int width, int height) { vk->resize(width, height); }
 const char *rx_describe(void) { return vk->describe(); }
@@ -173,13 +177,8 @@ void rx_stats(int64_t *draws, int64_t *skipped, int64_t *pipelines) {
     *draws = *skipped = *pipelines = 0;
     vk->stats(draws, skipped, pipelines);
 }
-void rx_nvn_submit(const uint64_t *handles, int n) { vk->nvn_submit(handles, n); }
-void rx_nvn_submit_q(const uint64_t *handles, int n, uint64_t queue) {
-    if (vk->nvn_submit_q) vk->nvn_submit_q(handles, n, queue);
-    else rx_nvn_submit(handles, n);
-}
 uint64_t rx_nvn_fence(void) { return vk->nvn_fence(); }
-uint64_t rx_nvn_fence_q(uint64_t queue) { return vk->nvn_fence_q ? vk->nvn_fence_q(queue) : rx_nvn_fence(); }
+uint64_t rx_nvn_fence_q(uint64_t queue) { return vk->nvn_fence_q(queue); }
 uint64_t rx_nvn_pushed(void) { return vk->nvn_pushed(); }
 uint64_t rx_nvn_replayed(void) { return vk->nvn_replayed(); }
 int rx_nvn_wait(uint64_t fence, uint64_t timeout_ns) {
@@ -221,13 +220,13 @@ void rx_nvn_texture_released(const nvn_tex *t) {
     vk->nvn_texture_released(t);
 }
 void rx_nvn_texture_created(const nvn_tex *t) {
-    if (vk->nvn_texture_created) vk->nvn_texture_created(t);
+    vk->nvn_texture_created(t);
 }
 void rx_nvn_program_released(const nvn_prog *p) { vk->nvn_program_released(p); }
-void rx_nvn_program_set(const nvn_prog *p) { if (vk->nvn_program_set) vk->nvn_program_set(p); }
+void rx_nvn_program_set(const nvn_prog *p) { vk->nvn_program_set(p); }
 /* a pool made or finalized, with its flags, its claim and the claiming patch (renderer/vk_claims.cpp) */
 void rx_nvn_pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, const char *by, int on) {
-    if (vk->nvn_pool_native) vk->nvn_pool_native(gpu, size, flags, claim, by, on);
+    vk->nvn_pool_native(gpu, size, flags, claim, by, on);
 }
 void rx_nvn_read_texels(const nvn_tex *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, uint8_t *dst,
                         size_t row, size_t img) {
@@ -242,15 +241,15 @@ void rx_nvn_invalidate(uint64_t gpu, uint64_t size) {
 }
 /* (nvn_native.c: the CPU set an event's value) in order with the submits, for the GPU's waits on it */
 void rx_nvn_event_signal(uint64_t gpu, uint32_t value) {
-    if (crit_rec && vk->nvn_event_signal) {   /* (debug.crit) */
+    if (crit_rec) {   /* (debug.crit) */
         crit_emit_flush();
         const uint64_t t0 = crit_tsc();
         vk->nvn_event_signal(gpu, value);
         crit_span(CRIT_BE_EVSIG, t0, crit_tsc(), gpu, value);
         return;
     }
-    if (vk->nvn_event_signal) vk->nvn_event_signal(gpu, value);
+    vk->nvn_event_signal(gpu, value);
 }
 void rx_nvn_pool_created(uint64_t gpu, uint64_t size) {
-    if (vk->nvn_pool_created) vk->nvn_pool_created(gpu, size);
+    vk->nvn_pool_created(gpu, size);
 }

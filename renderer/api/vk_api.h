@@ -13,7 +13,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 21
+#define MKWVK_API_VERSION 22
 /* (renderer) the controls' names (runtime/nn_hid.c, runtime/media/pad_sdl.c, the pad_ and key_ lines of ounce_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position, SDL's order (the bottom face
    button first: A on an Xbox pad, cross on a DualSense) */
@@ -132,7 +132,6 @@ typedef struct MkwVkRenderer {
     void (*resize)(int width, int height);
     const char *(*describe)(void);
     void (*stats)(int64_t *draws, int64_t *skipped, int64_t *pipelines);   /* draws recorded and draws skipped for a shader not ready, since the start; shader jobs queued or running now */
-    void (*nvn_submit)(const uint64_t *handles, int n);
     uint64_t (*nvn_fence)(void);
     uint64_t (*nvn_pushed)(void);
     uint64_t (*nvn_replayed)(void);
@@ -155,8 +154,6 @@ typedef struct MkwVkRenderer {
     void (*nvn_texture_created)(const nvn_tex *t);
     /* the CPU set an event's value: in order with the submits (the GPU's waits on it) */
     void (*nvn_event_signal)(uint64_t gpu, uint32_t value);
-    /* a submit with its queue */
-    void (*nvn_submit_q)(const uint64_t *handles, int n, uint64_t queue);
     /* (renderer) a fence of one queue: the value its own last submission signals (nvnQueueFenceSync) */
     uint64_t (*nvn_fence_q)(uint64_t queue);
     /* (native-vk, version 13) a program's stages set (nvnProgramSetShaders[Ext], InitializeFromBuilder), on the game's thread:

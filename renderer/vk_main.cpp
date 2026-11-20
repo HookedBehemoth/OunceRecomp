@@ -396,6 +396,6 @@ extern "C" MKWVK_EXPORT const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
     table.nvn_texture_created = texture_created;
     table.nvn_program_set = program_set;
     table.nvn_pool_native = pool_native;
-    sync_fill_table(table);   // (nvn_submit, _q, fence, fence_q, pushed, replayed, wait, finish, event_signal)
+    sync_fill_table(table);   // (fence, fence_q, pushed, replayed, wait, finish, event_signal)
     return &table;
 }
