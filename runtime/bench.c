@@ -41,7 +41,7 @@ int hos_bench_on(void) {
 /* ---- CPU time by part of the frame's work ----
    Each thread keeps, from its first recording or back-end call on: its CPU time inside the game's command-buffer
    recordings (BeginRecording to EndRecording, outermost; hos_bench_recording), and its time inside the back end's calls
-   (the record emits by the TSC, the other calls by its CPU time; bench_wrap), in and out of a recording. The measured
+   (by the TSC: a clock read by a system call around each call cost more than the calls; bench_wrap), in and out of a recording. The measured
    frames' change of these, with each thread's CPU time, gives four parts:
    - guest draw: recording time less the back end's part of it (the game building its NVN commands, the host's NVN layer
      included);
@@ -85,17 +85,13 @@ static void be_add(int64_t ns) {
     __atomic_store_n(&t->be_ns, t->be_ns + ns, __ATOMIC_RELAXED);
 }
 static gpu_fns bench_real;
-static void b_emit(void *list, uint32_t op, const void *payload, uint32_t size) {
-    const uint64_t t0 = __builtin_ia32_rdtsc();
-    bench_real.emit(list, op, payload, size);
-    be_add((int64_t)((double)(__builtin_ia32_rdtsc() - t0) * tsc_ns));
-}
-#define BENCH_TIMED(call)                       \
-    do {                                        \
-        const int64_t t0_ = os_self_cpu_ns();   \
-        call;                                   \
-        be_add(os_self_cpu_ns() - t0_);         \
+#define BENCH_TIMED(call)                                                      \
+    do {                                                                       \
+        const uint64_t t0_ = __builtin_ia32_rdtsc();                           \
+        call;                                                                  \
+        be_add((int64_t)((double)(__builtin_ia32_rdtsc() - t0_) * tsc_ns));    \
     } while (0)
+static void b_emit(void *list, uint32_t op, const void *payload, uint32_t size) { BENCH_TIMED(bench_real.emit(list, op, payload, size)); }
 static void *b_list_begin(const gpu_list_info *info) { void *r; BENCH_TIMED(r = bench_real.list_begin(info)); return r; }
 static void b_list_call(void *list, void *const *callees, uint32_t n) { BENCH_TIMED(bench_real.list_call(list, callees, n)); }
 static void b_list_end(void *list) { BENCH_TIMED(bench_real.list_end(list)); }
