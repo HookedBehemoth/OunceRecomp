@@ -56,6 +56,10 @@ The occlusion-grid dispatch must run before the job's draws. If it runs after th
 finished depth, every corner counts as unchanged, and the CPU culling that reads the grid one or two frames later culls
 wrongly.
 
+The kept work belongs to the job's view record until that view's next job call, however many presents lie between them:
+a game frame's recording can straddle a present. Kept work that is dropped instead lets the job's draws run before the
+culling they wait for, and the culled vegetation is drawn from the list copy the culling has not written yet.
+
 Log line: "direct patch job sync" (work kept and placed a frame, by kind).
 
 ## The long layer runs ahead

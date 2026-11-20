@@ -55,7 +55,7 @@ static void expect(uint64_t proc, uint64_t want, uint64_t site, const char *name
                   (unsigned long long)proc, name, (unsigned long long)want);
 }
 
-/* what a view record's jobs kept this frame */
+/* what a view record's jobs kept since its last job call (frame: the last present it was used in, for reusing the slot) */
 #define NV_ 128
 typedef struct {
     uint64_t view;
@@ -68,15 +68,12 @@ typedef struct {
 static Kept kept[NV_];
 static os_mutex kept_lock = OS_MUTEX_INIT;
 
-static Kept *kept_of(uint64_t view) {   /* (lock held) the view record's entry this frame, emptied when it is an older frame's */
+static Kept *kept_of(uint64_t view) {   /* (lock held) the view record's entry: its jobs' ops wait for the view's next job call, however many presents
+   that is (a game frame's recording can straddle a present) */
     Kept *free_one = NULL;
     for (int i = 0; i < NV_; i++) {
         if (kept[i].view == view) {
-            if (kept[i].frame != hos_present_count) {
-                if (kept[i].nw || kept[i].nd || kept[i].bits) os_atomic_inc(&n.dropped);
-                memset(&kept[i], 0, sizeof kept[i]);
-                kept[i].view = view, kept[i].frame = hos_present_count;
-            }
+            kept[i].frame = hos_present_count;
             return &kept[i];
         }
         if (!free_one && (!kept[i].view || kept[i].frame + 4 < hos_present_count)) free_one = &kept[i];
@@ -156,7 +153,7 @@ PATCH_AT(0x80668c80, word(0xd63f0100), instead, none, job_sync_call, guest(compu
     int have = 0;
     os_mutex_lock(&kept_lock);
     for (int i = 0; i < NV_; i++)
-        if (kept[i].view == view && kept[i].frame == hos_present_count) {
+        if (kept[i].view == view) {
             k = kept[i];
             kept[i].nw = kept[i].nd = 0, kept[i].bits = 0;
             have = k.nw || k.nd || k.bits;
