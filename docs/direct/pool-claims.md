@@ -250,6 +250,18 @@ through the mode select and the punching tutorial into the mining tunnel):
 
 The rules: the gsys heap's 0x22 and 0x24 pools Upload, nn::gfx 0x22 Upload and 0x24 load once, and the access rules.
 
+Open in DKB's tunnel test (parked; the claims above passed the title-and-tunnel runs, but these are not settled):
+
+- **A GPU hang in the punch tutorial.** A gfx ring timeout at about present 5500, once with a GPUVM fault at device
+  address 0x800393dab000 (client TCP, PERMISSION_FAULTS 3): 3 hangs in 7 runs with the claims, before `f_804ab060`'s
+  block moved from Host to Readback (GPU work writes it as storage), and none in the 2 runs since; none in 3 runs of the
+  same test on layer 0 (af634bf0). Likely a claim's, unproven; the faulting address is not yet mapped back to a pool.
+- **The voxel scene renders black** (the geometry stage is not translated): a renderer issue, not a claim's.
+- **A gsys 0x24 heap pool the CPU reads** after GPU work writes it (the check: "the CPU reads GPU writes outside a
+  Readback claim", pool `0x111105d000+0x4f000` in one run): its maker needs a Readback claim.
+- **CPU writes into GPU-owned pages** no report hands over, in another gsys 0x24 heap pool (`+0x40000`) and in
+  `f_808da640`'s Vfx2 pool (now Readback; not checked since).
+
 ## The agl texture takeover
 
 Every agl path that makes texture storage becomes the host's: the texture heap, `loadImage_` and its inlined forms,
