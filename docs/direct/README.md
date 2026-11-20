@@ -16,6 +16,7 @@ made from the game belongs in these pages or in the repository; it stays under `
 - [The register-pressure pass](spv-late.md): reordering translated mesh stages, and its gate.
 - [Render targets](render-targets.md): sizes, switches, the allocator hook, shadows and upscaling.
 - [The transient pool](transient-pool.md): one allocation for the transient render targets.
+- [Pool claims](pool-claims.md): what backs each memory pool on the GPU, and the plan that removes layer 0.
 
 ## Textures and assets
 
