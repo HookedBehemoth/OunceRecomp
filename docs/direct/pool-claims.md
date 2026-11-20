@@ -205,8 +205,10 @@ game. Game-specific makers stay per-game patches.
 | descriptor pools | texture and sampler descriptors | Host | `desc_pools_create` 0x80966440 | 0x807a6234 | to find |
 
 **OoT's gsys object blocks.** `ubo_object_block_alloc` makes the heap's 0x24 and 0x12 pools (252 in Kokiri), and each
-maker claims its own (`games/oot/patches/pools.c`), from a Kokiri survey of each pool's binds, page changes and the
-CPU's invalidates (a CPU-cached pool the CPU invalidates is one whose GPU writes it reads):
+maker claims its own (`games/oot/patches/pools.c`): a direct call of one of agl's block allocators by a row of the
+allocation table ([engine classes](engine-classes.md)), any other maker by a claim around its own call or body. The
+kinds come from a Kokiri survey of each pool's binds, page changes and the CPU's invalidates (a CPU-cached pool the CPU
+invalidates is one whose GPU writes it reads):
 
 | Maker | Kind | Evidence |
 |---|---|---|

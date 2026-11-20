@@ -16,13 +16,13 @@ Most of the patches are not about the classes' logic. They patch the two places 
 what the CPU did: `UniformBlock::flush`, which the game calls after it writes a block in a CPU-cached pool, and the
 allocation of a block. A flush is a reported write only at the flush calls a patch marks, because most of the game's
 flushes cover far more than the CPU wrote, or bytes the GPU writes. The second replacement claims a block where it is
-allocated, from a per-game table of call sites. The GPU culling lists are the one class that is worth replacing
+allocated, from a per-game table of call sites (done in OoT). The GPU culling lists are the one class that is worth replacing
 outright, and only OoT has them.
 
 | Class | Games | Methods: functions or inlined | Patches retired | Size | Recommendation |
 |---|---|---|---|---|---|
 | agl::UniformBlock and ShaderStorageBlock: flush | all three, and TOTK | flush is a function; writes, copy flips and address math are inlined in hundreds of functions | 8 write reports in OoT's `pools.c`, now marked flush calls | about 15 lines in `nvn_native.c` | done in OoT; DKB and MKW need their own census |
-| agl::UniformBlock and GPUMemBlockBase: allocation | all three | the allocators are functions (OoT 180, 34 and 110 calls) | 22 claim scopes (44 rows) | about 60 lines, plus a table of call sites per game | do it second |
+| agl::UniformBlock and GPUMemBlockBase: allocation | all three | the allocators are functions (OoT 180, 34 and 110 calls) | 22 claim scopes (44 rows) in OoT, now table rows | about 60 lines, plus a table of call sites per game | done in OoT; DKB and MKW next |
 | gsys GPU culling lists | OoT | the reset is inlined 12 times, plus 2 calls; the header read is a function | all of `mesh_lists.c` and `mesh_args.c`, and the 11 count fills of `actor_records_read_a` | about 150 lines, plus a table of list offsets | do it third; it also fixes the order of the resets |
 | agl::utl::DynamicUniformBlockAllocator | all three, and TOTK | init and alloc are functions | none | about 120 lines | only together with mapped pools (uniform rings, step 9) |
 | Readback objects: exposure lights, light visibility, DepthBufferEx, the query object | DepthBufferEx in all three; the rest OoT | makers and readers are functions | covered by the first two rows | none of its own | keep the maker claims |
@@ -71,12 +71,15 @@ The other flushes are not reports, for three reasons:
   flushes them. The claim could report such a pool as CPU-cached so that agl's writers flush what they wrote, but
   that changes what the game sees; it is a separate experiment.
 
-**The second replacement: claim a block at its allocator.** Patch `ubo_object_pool_alloc`, `ubo_object_block_alloc`
-and `ubo_object_block_alloc_b` once each. The patch looks up the return address in a per-game table of call sites and
-kinds, and runs the allocation inside that claim. The table replaces the claim scopes that sit around those calls
-today. Calls that are inside generic makers (`cull_task_block_create`, `gpu_calc_block_create`) stay claimed at the
-maker's calls. A block that shares a heap pool with another maker's block is still a risk; whether the heap's
-dedicated-pool path can be forced for claimed blocks is open.
+**A block is claimed at its allocator's call.** One patch on each of `ubo_object_pool_alloc`, `ubo_object_block_alloc`
+and `ubo_object_block_alloc_b` takes the return address at the function's entry and looks it up in the game's
+allocation table (OoT: `games/oot/patches/pools.c`). A row names a call site, its kind and its name, and the
+allocation runs inside that claim; a call no row names takes the claims around it, as any other allocation does. Each
+row holds the call's instruction word, and the first allocation of a run checks every row against the image: a row that
+is not a direct call of one of the allocators stops the game. Only direct calls can be rows: a tail call or an inlined
+allocator has no return address of its own. Calls inside generic makers (`cull_task_block_create`,
+`gpu_calc_block_create`, `gpu_mem_block_new`) stay claimed at the maker's calls. A block that shares a heap pool with
+another maker's block is still a risk; whether the heap's dedicated-pool path can be forced for claimed blocks is open.
 
 ## The gsys GPU culling lists
 
@@ -127,10 +130,10 @@ with step 9, not before.
   zeroing reports and the exposure record's report stay, as do the maker claims.
 - **agl::utl::DepthBufferEx** (`depth_grid_slots_create`, `report_reader_a`, `depth_grid_camera_write`): in all three
   games. DKB's voxel culling also reads a coarse depth grid on the CPU. The camera copy lies in grains the GPU writes, so its
-  report stays; the four claim scopes go into the allocation table. The TOTK export does not describe the class.
+  report stays; its four allocations are rows of the allocation table. The TOTK export does not describe the class.
 - **The query object** (`depth_grid_buffers_create`, read by `cull_gpu_dispatch`): OoT only. It is a compute-based
-  query, not agl::cull::OcclusionQuery, the NVN-report query that DKB and MKW name and TOTK describes. Its scopes go
-  into the allocation table; the scope over the whole maker stays.
+  query, not agl::cull::OcclusionQuery, the NVN-report query that DKB and MKW name and TOTK describes. Its allocations
+  are rows of the allocation table; the scope over the whole maker stays, because the maker fills them after.
 
 None of these needs a class replacement. A host readback ring for the light sums would only move the copy that the
 invalidates already make.
@@ -142,7 +145,7 @@ and a bump offset. OoT, DKB and MKW use the same offsets; TOTK is 8 bytes shorte
 UniformBlock section. `cull_geometry_slot_alloc` is a function in OoT and DKB; DKB inlines the address store into it
 as a loop.
 
-Its two scopes go into the allocation table. The address store's report stays: Kokiri never runs the store, so no
+Its two allocations are rows of OoT's allocation table. The address store's report stays: Kokiri never runs the store, so no
 census covers its flush.
 
 ## NintendoWare Vfx3 attribute buffers
@@ -154,7 +157,7 @@ the dirty-range copy are each a function with one report. That is already one pa
 ## Order of work
 
 1. **Marked flushes** (done in OoT). For DKB and MKW, a census of their flushes against their reports comes first.
-2. **The allocation table** on the three allocators: OoT first, then DKB's claims, then MKW's pools.
+2. **The allocation table** on the three allocators (done in OoT). Next DKB's claims, then MKW's pools.
 3. **The culling list wrapper** in OoT, which replaces `mesh_lists.c` and `mesh_args.c`.
 4. **The dynamic ring's host alloc,** together with mapped pools.
 
