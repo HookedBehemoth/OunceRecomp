@@ -220,17 +220,25 @@ CPU's invalidates (a CPU-cached pool the CPU invalidates is one whose GPU writes
 | `f_80c64650` | Upload | written later (`f_80c63e70`'s fill, reported) and bound as storage in Market |
 | `f_80cdf2f0`'s blocks, `f_80c5ea90`, the agl/gfx general pool (0x22) | Upload | CPU-written, binds read them |
 
-The census (`debug.poolcensus`) and `games/oot/patches/pools.c` give each maker's claim and its writer patches. Still on
-layer 0 in OoT, each for a reason a run showed:
+The census (`debug.poolcensus`) and `games/oot/patches/pools.c` give each maker's claim and its writer patches. The
+rules decide the pools no maker claims, by their flags, from the census of those pools in Kokiri and Market:
 
-- DKB (its headless run reaches only the title menus; `games/dkb/patches/pools.c`): `f_80743ba8`'s, `f_80732960`'s,
-  `f_804ab060`'s and `f_807935d8`'s blocks are Host and `f_805723e8`'s general pool Upload. GeometryCullingMgr
-  (`cull_geometry_mgr_memory`) stays on layer 0: its small pool is shared by other ubo objects (the census's reads and
-  writes in flight are those tenants', page by page, not the culling's), and the address store, inlined in DKB, has no
-  report yet. The pools of `f_808ec234` (0x22, 24 MB and 13 MB, never bound at the title) and the 144 MB `f_8074431c`
-  are not reached at the title.
-- NDSR's networks' pool, `f_807ac5e8`'s data pool in DKB, and the pools of rules that fall back to layer 0 (the agl
-  wrapper, nn::gfx pools other than 0x24, the gsys heap's 0x24 and 0x12 pools no maker claims).
+| Rule | Kind | Evidence |
+|---|---|---|
+| gsys heap 0x24 (object blocks no maker claims: agl's DTA objects, the texture-data makers, small per-system blocks) | Upload | each written at its making and read by binds, or never used; none read by the CPU |
+| nn::gfx 0xa2 (`f_80f6a898`'s 8 MB) | Upload | a few pages the CPU writes, bound |
+| Vfx3 0xa4 | Upload | unused in Kokiri and Market, flags as its 0x24 buffers |
+| a pool the GPU cannot access (GPU_NO_ACCESS) | Host | by its flags |
+| a pool the CPU cannot access (CPU_NO_ACCESS) | VRAM | by its flags |
+
+Any other flags are unclaimed: an error that names the call. OoT's other makers: NDSR's networks' pool (VRAM: the set-up
+writes and reads it inside its scope) and `job_list_build_b`'s 16.5 MB scratch (VRAM, the CPU's zeroing reported).
+
+DKB (its headless run reaches only the title menus; `games/dkb/patches/pools.c`): `f_80743ba8`'s, `f_80732960`'s,
+`f_804ab060`'s and `f_807935d8`'s blocks are Host and `f_805723e8`'s general pool Upload. GeometryCullingMgr
+(`cull_geometry_mgr_memory`) stays on layer 0: its small pool is shared by other ubo objects, and the address store,
+inlined in DKB, has no report yet. The pools of `f_808ec234` (0x22, 24 MB and 13 MB, never bound at the title) and the
+144 MB `f_8074431c` are not reached at the title, nor `f_807ac5e8`'s data pool.
 
 ## The agl texture takeover
 

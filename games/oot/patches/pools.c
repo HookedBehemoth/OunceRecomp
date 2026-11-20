@@ -1,7 +1,7 @@
 /* Pool claims (runtime/nvn_claims.h, docs/direct/pool-claims.md): what each memory pool the game makes holds, claimed
    at the engine function that makes it. A pool no claim covers is an error in the NVN layer. The texture heap's claim is
-   assets.c's (agl::TextureDataMgr::InitializeHeap). Pools still on NVN_CLAIM_LAYER0 move to their own kinds as the
-   back end's claim buffers come (the plan's steps 3 to 5). */
+   assets.c's (agl::TextureDataMgr::InitializeHeap). A rule names a kind only for the flags its evidence covers; any
+   other pool is unclaimed, an error. */
 #include "hos.h"
 #include "patches.h"
 #include "nvn_claims.h"
@@ -11,25 +11,29 @@
     const uint64_t r = guest_orig(orig);      \
     nvn_claim_end();                          \
     return r
-/* the pools the CPU cannot access (NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS without a CPU flag) are GPU-only: VRAM; the rest
-   stay layer 0's until their claims move */
-static int gpu_only_vram(uint32_t flags, uint64_t size) {
+/* by access alone: a pool the CPU cannot access (NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS without a CPU flag) is GPU-only,
+   VRAM; one the GPU cannot access (GPU_NO_ACCESS) is the host's; any other is unclaimed */
+static int by_access(uint32_t flags, uint64_t size) {
     (void)size;
-    return (flags & 0x7) == 0x1 && !(flags & 0x308) ? NVN_CLAIM_VRAM : NVN_CLAIM_LAYER0;
+    if ((flags & 0x7) == 0x1 && !(flags & 0x308)) return NVN_CLAIM_VRAM;
+    return (flags & 0x8) && !(flags & 0x30) ? NVN_CLAIM_HOST : NVN_CLAIM_NONE;
 }
-/* the gsys GPU heap's pools: its general pools (0x22: uniform blocks, reports, CPU-written texels) are Upload, the
-   CPU_NO_ACCESS ones VRAM; ubo_object_block_alloc's object blocks (0x24, 0x12) are claimed by their makers below, and
-   those no maker claims yet stay layer 0's */
+/* the gsys GPU heap's pools: its general pools (0x22: uniform blocks, reports, CPU-written texels) and the object blocks
+   (0x24) no maker below claims are Upload, the CPU_NO_ACCESS ones VRAM. The census of the object blocks no maker
+   claims (Kokiri and Market: agl's DTA objects in dta_create, the texture-data makers, small per-system blocks) finds
+   each written by the CPU at its making and read by binds, or never used: none read by the CPU, none written by GPU
+   work but its maker's (docs/direct/pool-claims.md, "OoT's gsys object blocks") */
 static int gsys_rule(uint32_t flags, uint64_t size) {
-    return (flags & 0xff) == 0x22 ? NVN_CLAIM_UPLOAD : gpu_only_vram(flags, size);
+    return (flags & 0xff) == 0x22 || (flags & 0xff) == 0x24 ? NVN_CLAIM_UPLOAD : by_access(flags, size);
 }
 /* nn::gfx in-place files' pools: their vertex and index data (0x24) is written before the GPU first uses it, then
-   never again: load once; the rest stay layer 0's until their claims move */
+   never again: load once. f_80f6a898's 8 MB pool (0xa2: agl's, through f_80f6a55c) is written by the CPU now and then,
+   a few pages bound: Upload */
 static int gfx_rule(uint32_t flags, uint64_t size) {
-    return (flags & 0xff) == 0x24 ? NVN_CLAIM_LOAD_ONCE : gpu_only_vram(flags, size);
+    return (flags & 0xff) == 0x24 ? NVN_CLAIM_LOAD_ONCE : (flags & 0xff) == 0xa2 ? NVN_CLAIM_UPLOAD : by_access(flags, size);
 }
 #define CLAIM_RULE(fn)                        \
-    nvn_claim_begin_rule(gpu_only_vram, fn);  \
+    nvn_claim_begin_rule(by_access, fn);  \
     const uint64_t r = guest_orig(orig);      \
     nvn_claim_end();                          \
     return r
@@ -44,9 +48,11 @@ PATCH_FUNC(0x80c49380, word(0xd503237f), body(0x3b0566baade1f62c), aapcs, x0, po
 PATCH_FUNC(0x80b65f00, word(0xd503237f), body(0x1688e4429b5f5bb0), aapcs, x0, pools_sharcb, orig) {
     CLAIM("shader_sharcb_load", NVN_CLAIM_HOST);
 }
-/* NDSR's networks' pool (0x64): its programs, and data the GPU reads (16-byte reads at +0x70a00 in Kokiri) */
+/* NDSR's networks' pool (0x64): its programs, and the weights the GPU reads (16-byte reads at +0x70a00 in Kokiri), written
+   and read by the CPU only inside ndsr_network_setup, before any use (debug.poolcensus): VRAM, the scope's end copying
+   what the set-up wrote */
 PATCH_FUNC(0x80f71a00, word(0xd503237f), body(0xe6b4bb892a0f8c6d), aapcs, x0, pools_ndsr, orig) {
-    CLAIM("ndsr_network_setup", NVN_CLAIM_LAYER0);
+    CLAIM("ndsr_network_setup", NVN_CLAIM_VRAM);
 }
 /* the in-place shader binaries (nn::gfx pools of flags 0x64) */
 PATCH_FUNC(0x812c3d60, word(0xd503237f), body(0x29df94e62f1665a4), aapcs, x0, pools_shader_binary, orig) {
@@ -63,10 +69,12 @@ PATCH_FUNC(0x809de920, word(0xd503237f), body(0x02d1932cc850ce16), aapcs, x0, po
 PATCH_FUNC(0x80f6c9d0, word(0xd503237f), body(0x698a26829c189947), aapcs, x0, pools_agl, orig) {
     CLAIM_RULE("agl_memory_pool_create");
 }
-/* gsys_vfx_mgr_init: NintendoWare vfx3's pools, through gfx_memory_pool_init: six dynamic buffers (0x24, 2 MB each) and
-   its resource pool (0x22, 88 MB) the CPU writes every frame: Upload; the GPU-only ones VRAM */
+/* gsys_vfx_mgr_init: NintendoWare vfx3's pools, through gfx_memory_pool_init: six dynamic buffers (0x24, 2 MB each), its
+   resource pool (0x22, 88 MB) the CPU writes every frame, and a 0.12 MB pool (0xa4, unused in Kokiri): Upload; the
+   GPU-only ones VRAM */
 static int vfx_rule(uint32_t flags, uint64_t size) {
-    return (flags & 0xff) == 0x24 || (flags & 0xff) == 0x22 ? NVN_CLAIM_UPLOAD : gpu_only_vram(flags, size);
+    const uint32_t f = flags & 0xff;
+    return f == 0x24 || f == 0x22 || f == 0xa4 ? NVN_CLAIM_UPLOAD : by_access(flags, size);
 }
 PATCH_FUNC(0x8087b9b0, word(0xd503237f), body(0xd9c91fdd5e60c7e2), aapcs, x0, pools_vfx, orig) {
     nvn_claim_begin_rule(vfx_rule, "gsys_vfx_mgr_init");
@@ -262,6 +270,21 @@ PATCH_AT(0x803666d4, word(0xb9400688), before, none, pools_query_records_end) { 
 PATCH_AT(0x803667c4, word(0x9406eb7b), before, none, pools_query_state) { nvn_claim_begin(NVN_CLAIM_VRAM, "depth_grid_buffers_create state"); }
 PATCH_AT(0x803667c8, word(0xb9400688), before, none, pools_query_state_end) { nvn_claim_end(); }
 PATCH_AT(0x80365c00, word(0x94e3f1dc), after, none, pools_grid_camera, as(x0, dst)) { nvn_claim_write(dst, 0x2420); }
+
+/* job_list_build_b's 16.5 MB scratch (two pools through ubo_object_pool_alloc at 0x80c7dee4): GPU work reads 1.3 GB and
+   writes 7.8 MB of it a present; the CPU only zeroes it once after making it (f_80c58d70's memset, reported): VRAM */
+PATCH_AT(0x80c7dee4, word(0x97e28db3), before, none, pools_job_scratch) { nvn_claim_begin(NVN_CLAIM_VRAM, "job_list_build_b scratch"); }
+PATCH_AT(0x80c7dee8, word(0xb9813269), before, none, pools_job_scratch_end) { nvn_claim_end(); }
+PATCH_FUNC(0x80c58d70, word(0xd503237f), body(0xec736dd16a039ab2), aapcs, x0, pools_job_scratch_zero, orig, as(x0, dims),
+           as(x1, obj)) {
+    /* (the memset's range as the function computes it: [obj + 0x18] + layout[+4], 8 x the product of the dims' four
+       sizes) */
+    const uint64_t dst = G64(obj + 0x18) + G32(G64(G64(obj + 0x10)) + 4);
+    const int32_t n = (int32_t)(G32(dims + 0x10) * G32(dims + 0x14) * G32(dims + 0x18) * (*(uint8_t *)GP(dims + 0x24)) * 2u);
+    const uint64_t r = guest_orig(orig);
+    if (n > 0) nvn_claim_write(dst, (uint64_t)n * 4);
+    return r;
+}
 
 /* ---- the probe module's calc blocks (gpu_calc_block_create, from probe_calc_block_init: 150 MB, and f_80c5c450 beside
    probe_bake_load: 0x2000; docs/direct/pool-users.md, "The probe module"). Never bound: shaders reach them through

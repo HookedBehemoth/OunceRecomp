@@ -274,7 +274,10 @@ void shot_write(Frame& f) {   // (its fence has passed)
     os_thread* t = os_thread_start([](void* arg) {
         const std::unique_ptr<Job> j((Job*)arg);
         for (size_t i = 3; i < j->px->size(); i += 4) (*j->px)[i] = 255;   // (opaque, as shown)
-        if (!dump_write_png(j->p.c_str(), j->px->data(), j->w, j->h)) logf("direct: shots: %s not written", j->p.c_str());
+        // (under another name, then renamed: a run stopped while it writes leaves no half-written shot)
+        const std::string tmp = j->p + ".part";
+        if (!dump_write_png(tmp.c_str(), j->px->data(), j->w, j->h) || std::rename(tmp.c_str(), j->p.c_str()))
+            logf("direct: shots: %s not written", j->p.c_str());
     }, job, 0, "direct shot");
     if (t) os_thread_release(t);
     else delete job;
