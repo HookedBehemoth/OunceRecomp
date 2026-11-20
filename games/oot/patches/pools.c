@@ -150,11 +150,15 @@ PATCH_AT(0x80c4d3a0, word(0x97e35380), before, none, pools_agl_driver_dl_b) { nv
 PATCH_AT(0x80c4d3a4, word(0x52802d00), before, none, pools_agl_driver_dl_b_end) { nvn_claim_end(); }
 
 /* ---- the GPU culling objects (docs/direct/pool-users.md, "The GPU culling lists"; debug.poolcensus in Kokiri and Market).
-   Object a's lists, instance buffers, indirect arguments and result lists are the GPU's: VRAM. The CPU's resets of their
-   first records are made on the GPU and the counts it reads are copied out of their records alone (mesh_lists.c,
-   mesh_args.c) */
-PATCH_FUNC(0x80c58a80, word(0xd503237f), body(0xd48e5979b49a3213), aapcs, x0, pools_cull_object_a, orig) {
-    CLAIM("cull_gpu_object_a_create", NVN_CLAIM_VRAM);
+   Object a's lists, instance buffers, indirect arguments and result lists are the GPU's: VRAM. Its lists' resets and the
+   counts the CPU reads are cull_lists.c's, which names the records it reads once the object is made */
+void cull_lists_made(uint64_t obj);
+PATCH_FUNC(0x80c58a80, word(0xd503237f), body(0xd48e5979b49a3213), aapcs, x0, pools_cull_object_a, orig, as(x0, obj)) {
+    nvn_claim_begin(NVN_CLAIM_VRAM, "cull_gpu_object_a_create");
+    const uint64_t r = guest_orig(orig);
+    nvn_claim_end();
+    cull_lists_made(obj);
+    return r;
 }
 /* object b (the vegetation culling) is claimed by its makers, not as a whole: its construction also allocates from a
    general heap (f_80c59c30), which may grow that heap by a pool other systems share (claimed VRAM with the object, the
@@ -185,22 +189,11 @@ PATCH_AT(0x80365b64, word(0x94e3f203), after, none, pools_veg_records, as(x20, b
     nvn_claim_write(dst, (uint64_t)(uint32_t)count << 6);
 }
 /* f_80c576b0's two lists (0x20000 each, made with cull_gpu_objects_create's object b): the GPU appends to them and
-   actor_records_read_a reads their counts once their submission completed, then zeroes them (`str wzr, [x21, x8]`, eleven
-   stores): Readback, the zeroing made on the GPU */
+   actor_records_read_a reads their counts once their submission completed, then zeroes them: Readback, the zeroing made
+   on the GPU (cull_lists.c) */
 PATCH_FUNC(0x80c576b0, word(0xd503237f), body(0x006c33e34ee6fc7f), aapcs, x0, pools_80c576b0, orig) {
     CLAIM("f_80c576b0", NVN_CLAIM_READBACK);
 }
-PATCH_AT(0x82c1dcc8, word(0xb8286abf), after, none, pools_actor_count_zeroed, as(x21, list), as(x8, off)) { nvn_claim_fill(list + off, 4, 0); }
-PATCH_AT_SITE(0x82c1dcfc, word(0xb8286abf), after, none, pools_actor_count_zeroed, x21, x8);
-PATCH_AT_SITE(0x82c1dd30, word(0xb8286abf), after, none, pools_actor_count_zeroed, x21, x8);
-PATCH_AT_SITE(0x82c1dd64, word(0xb8286abf), after, none, pools_actor_count_zeroed, x21, x8);
-PATCH_AT_SITE(0x82c1dd98, word(0xb8286abf), after, none, pools_actor_count_zeroed, x21, x8);
-PATCH_AT_SITE(0x82c1ddcc, word(0xb8286abf), after, none, pools_actor_count_zeroed, x21, x8);
-PATCH_AT_SITE(0x82c1de00, word(0xb8286abf), after, none, pools_actor_count_zeroed, x21, x8);
-PATCH_AT_SITE(0x82c1de34, word(0xb8286abf), after, none, pools_actor_count_zeroed, x21, x8);
-PATCH_AT_SITE(0x82c1de64, word(0xb8286abf), after, none, pools_actor_count_zeroed, x21, x8);
-PATCH_AT_SITE(0x82c1dea8, word(0xb8286abf), after, none, pools_actor_count_zeroed, x21, x8);
-PATCH_AT_SITE(0x82c1ded8, word(0xb8286abf), after, none, pools_actor_count_zeroed, x21, x8);
 
 /* ---- gsys::GeometryCullingMgr (gpu_result_block_a_create, docs/direct/pool-users.md): per view, an array of the units'
    GPU addresses that the calc jobs write each frame (cull_geometry_store_address, the only CPU write) and a draw binds as

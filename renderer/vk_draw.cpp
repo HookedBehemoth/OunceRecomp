@@ -1036,7 +1036,7 @@ int64_t meshlog_at() {
     return at;
 }
 bool meshlog_on() { return meshlog_at() >= 0 && (int64_t)present_count() == meshlog_at(); }
-// (the argument records of that frame's indirect mesh draws that the f_80362ff0 patch did not reach ({0, 0, ...}): a sentinel is
+// (the argument records of that frame's indirect mesh draws that the culling lists' resets (cull_lists.c) did not reach ({0, 0, ...}): a sentinel is
 // put in their w2 (nothing on the GPU or CPU reads it: Vulkan's z, so the draw stays empty) and they are read again 120
 // presents later: a word still there says no CPU code resets the record; and the next frame's dispatches have their uniform
 // buffers searched for a pointer into them)

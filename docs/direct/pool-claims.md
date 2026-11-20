@@ -94,11 +94,13 @@ submission's last work, and into guest memory when it completes, before any CPU 
 
 **Resets made on the GPU.** Where the CPU resets memory the GPU owns (a list's appended count, an indirect record), the
 writer patch keeps the game's store and adds `nvn_claim_fill`: the same words filled on the GPU before the next
-submission's work, with a report's protection against older copies out. OoT's culling lists reset this way.
+submission's work, with a report's protection against older copies out. OoT's culling lists reset this way, from
+host code that replaces the culling object's reset function (`cull_lists.c`).
 
 **Ranges the CPU reads of a VRAM pool.** `nvn_claim_read` names a range of a VRAM pool that the CPU reads, such as a
 list's header in a list of megabytes. After each submission whose work writes the pool, that range alone is copied out
-into guest memory, as a Readback claim's ranges are.
+into guest memory, as a Readback claim's ranges are. OoT names its culling lists' counts and headers once, when the
+culling object is made.
 
 **The maker's scope.** The pools a claim's scope makes are copied whole at the first submission after their making.
 When a submission's first copy came before the outermost scope ended, they are copied again then, so a maker that fills

@@ -17,13 +17,13 @@ what the CPU did: `UniformBlock::flush`, which the game calls after it writes a 
 allocation of a block. A flush is a reported write only at the flush calls a patch marks, because most of the game's
 flushes cover far more than the CPU wrote, or bytes the GPU writes. The second replacement claims a block where it is
 allocated, from a per-game table of call sites (done in OoT). The GPU culling lists are the one class that is worth replacing
-outright, and only OoT has them.
+outright, and only OoT has them; OoT's are replaced by host code.
 
 | Class | Games | Methods: functions or inlined | Patches retired | Size | Recommendation |
 |---|---|---|---|---|---|
 | agl::UniformBlock and ShaderStorageBlock: flush | all three, and TOTK | flush is a function; writes, copy flips and address math are inlined in hundreds of functions | 8 write reports in OoT's `pools.c`, now marked flush calls | about 15 lines in `nvn_native.c` | done in OoT; DKB and MKW need their own census |
 | agl::UniformBlock and GPUMemBlockBase: allocation | all three | the allocators are functions (OoT 180, 34 and 110 calls) | 22 claim scopes (44 rows) in OoT, now table rows | about 60 lines, plus a table of call sites per game | done in OoT; DKB and MKW next |
-| gsys GPU culling lists | OoT | the reset is inlined 12 times, plus 2 calls; the header read is a function | all of `mesh_lists.c` and `mesh_args.c`, and the 11 count fills of `actor_records_read_a` | about 150 lines, plus a table of list offsets | do it third; it also fixes the order of the resets |
+| gsys GPU culling lists | OoT | the reset is inlined per list, plus 2 calls; the header read is a function; the gather lists' zeroing is inlined in an actor function | `mesh_lists.c` and `mesh_args.c` (about 60 rows), and the 11 count fills of `actor_records_read_a` | about 200 lines and a table of lists | done in OoT: the reset function replaced by host code |
 | agl::utl::DynamicUniformBlockAllocator | all three, and TOTK | init and alloc are functions | none | about 120 lines | only together with mapped pools (uniform rings, step 9) |
 | Readback objects: exposure lights, light visibility, DepthBufferEx, the query object | DepthBufferEx in all three; the rest OoT | makers and readers are functions | covered by the first two rows | none of its own | keep the maker claims |
 | gsys::GeometryCullingMgr | all three, and TOTK | the slot allocator is a function; its address store is inlined in DKB | covered by the first two rows | none of its own | no class replacement |
@@ -84,31 +84,30 @@ another maker's block is still a risk; whether the heap's dedicated-pool path ca
 ## The gsys GPU culling lists
 
 The culling objects (`cull_gpu_object_a_create`, `cull_gpu_object_b_create`) embed list objects: a ring of
-ShaderStorageBlocks, the copy count and current copy, and the counts read last. The first two declared members of
-each list are the head record and the appended count. Only OoT has these lists; DKB's voxel culling and the
-other games' GeometryCullingMgr are different designs.
+ShaderStorageBlocks, the copy count and current copy, the counts read last and a count the CPU sets. Each list declares
+up to 12 members: mesh draw records and appended counts. Only OoT has these lists; DKB's voxel culling and the other
+games' GeometryCullingMgr are different designs.
 
 Its methods:
 
-- **Reset** (flip, read the counts of the copy the GPU filled, zero the head and the count, flush): inlined 12 times
-  in `cull_gpu_lists_reset`, and called twice as `cull_gpu_list_reset_one`. The counts are read without an
-  invalidate, which is why `mesh_lists.c` names them with `nvn_claim_read`.
-- **Set a count and a dispatch record** ({0, 1, 1, 0}): inlined, three of each.
-- **Read the headers:** `report_reader_b`, six calls, all from `cull_gpu_lists_reset`.
-- **Read and zero the gather lists' counts:** inlined 11 times in `actor_records_read_a`.
+- **Reset** (flip, read the counts of the copy the GPU filled, zero records and counts, set a count, set a dispatch
+  record to {0, 1, 1, 0}, flush): inlined for each of object a's lists in `cull_gpu_lists_reset`, and called twice as
+  `cull_gpu_list_reset_one`. Which members each list resets differs per list.
+- **Read the headers:** `report_reader_b`, six calls, all from `cull_gpu_lists_reset`: flip a two-copy UniformBlock,
+  read its 0x40-byte header, zero it.
+- **Read and zero the gather lists' counts:** inlined in `actor_records_read_a`, among unrelated actor logic. Two of its
+  eleven counts are zeroed only when the list's first byte is 1.
 
-A flush cannot replace these patches: the head is 16 bytes of a copy of up to 4.4 MB that the GPU writes.
+A flush cannot stand in for these: the head is 16 bytes of a copy of up to 4.4 MB that the GPU writes.
 
-**The replacement** wraps the methods instead of rewriting them. The game's code still runs, and its stores still land
-in guest memory.
-
-1. At the end of the object's maker, name each list's head records as read by the CPU, from a table of the lists'
-   offsets in the two objects. Do this once, not at each read.
-2. After `cull_gpu_lists_reset` and `actor_records_read_a` return, record the GPU fills for every list they reset, in
-   one batch, from the same table.
-
-This retires about 60 At rows. It also puts the fills at one point in the frame, which is where the open ordering
-question of the foliage pass (see [pool users](pool-users.md)) can be answered.
+**Host code over the class (done in OoT, `games/oot/patches/cull_lists.c`).** `cull_gpu_lists_reset` is replaced
+whole by host code that works on typed views of the game's objects and a table of object a's lists (offset, members
+read, members reset, the set count, the dispatch record). It does what the game did, in the game's order, writes the
+same words into guest memory, and makes each reset a GPU fill; it drops the flushes and invalidates, because the
+pools are VRAM. When the object is made, the patch on its maker names every record the CPU reads with
+`nvn_claim_read`, once, and checks that each block's virtual methods are the ones the game's code assumes (the
+alignment getter and the empty invalidate). `actor_records_read_a` mixes too much other logic to replace; one row after
+its zeroes makes them on the GPU, reading the same condition as the game.
 
 ## agl::utl::DynamicUniformBlockAllocator
 
@@ -158,7 +157,7 @@ the dirty-range copy are each a function with one report. That is already one pa
 
 1. **Marked flushes** (done in OoT). For DKB and MKW, a census of their flushes against their reports comes first.
 2. **The allocation table** on the three allocators (done in OoT). Next DKB's claims, then MKW's pools.
-3. **The culling list wrapper** in OoT, which replaces `mesh_lists.c` and `mesh_args.c`.
+3. **The culling lists** in OoT (done): host code replaces the reset function.
 4. **The dynamic ring's host alloc,** together with mapped pools.
 
 The claims at pool makers, the Vfx3 reports, and the scopes at generic makers' calls stay as they are.

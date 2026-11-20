@@ -26,9 +26,9 @@ Folding the task stage into the mesh stage is not possible: one task workgroup f
 ### The culling's indirect records
 
 The game's GPU culling writes the indirect mesh-draw records. NVN reads a record as `{count, first}`, Vulkan as
-`{x, y, z}`. Two patches make the game's CPU reset write `{0, 1, 1, 0}` instead of zeros, so the culling shaders leave
-a valid Vulkan record in place and no conversion copy is needed: `games/oot/patches/mesh_args.c` and
-`games/oot/patches/mesh_lists.c` (log lines "direct patch mesh args", "direct patch mesh lists").
+`{x, y, z}`. The culling lists' resets (`games/oot/patches/cull_lists.c`, log line "direct patch culling lists") write
+`{0, 1, 1, 0}` where the game wrote zeros, so the culling shaders leave a valid Vulkan record in place and no
+conversion copy is needed.
 
 ## What the task stages do
 

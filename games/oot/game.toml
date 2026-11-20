@@ -19,7 +19,7 @@ icon = "icon.bmp"
 patches = [
     "patches/list_kinds.c", "patches/assets.c", "patches/depth_copy.c", "patches/diag_env.c",
     "patches/diag_nodata.c", "patches/job_sync.c", "patches/layer_ahead.c",
-    "patches/mesh_args.c", "patches/mesh_binds.c", "patches/mesh_lists.c",
+    "patches/cull_lists.c", "patches/mesh_binds.c",
     "patches/mesh_system.c", "patches/movie.c", "patches/ndsr.c", "patches/passes.c", "patches/patch_log.c",
     "patches/rt_ids.c", "patches/sky_lut.c", "patches/tex_dedup.c", "patches/texdata.c",
     "patches/eng_jobs.c", "patches/mouse_native.c", "patches/nn_zstd.c", "patches/oot_probes.c", "patches/prompts.c",

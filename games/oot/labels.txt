@@ -371,8 +371,10 @@
 812342c0 cull_cpu_occlusion_reader        # work/assets/native/engine-layers.md, work/assets/native/nvn-callpaths.md: the CPU culler: per-shape visibility from the occlusion report slots; wraps ring slots as NVNbuffers
 8009bb80 cull_cpu_shapes                  # the CPU culler (calls f_812342c0)
 80364080 cull_gpu_dispatch                # work/assets/native/alloc-transfer.md: dispatches the GPU-culling compute, 112 KB instance list
-80361a00 cull_gpu_list_reset_one          # games/oot/patches/mesh_lists.c, resets one list's first record (an At row after it)
-80361c80 cull_gpu_lists_reset             # games/oot/patches/mesh_lists.c, once a frame, resets the first record of each GPU culling list (At rows after them)
+80361a00 cull_gpu_list_reset_one          # games/oot/patches/cull_lists.c: one list's reset (flip, read the member count and the first record's w0, zero both, flush); only cull_gpu_lists_reset calls it, and that is replaced
+80361c80 cull_gpu_lists_reset             # games/oot/patches/cull_lists.c (replaced whole): once a frame from cull_frame_begin, x0 culling object a: flips, reads and resets each of its lists (0x0, 0x180, 0x1b8, 0x30, 0x68/0x90/0xe0, 0x108, 0x140), the six header lists (report_reader_b), 0x608
+80365940 ssb_alignment_get                # games/oot/patches/cull_lists.c: agl::ShaderStorageBlock's vtable +0x28: returns +0x88 (the block alignment)
+8002a580 ubo_alignment_get                # games/oot/patches/cull_lists.c: agl::UniformBlock's vtable +0x28: returns 0x100
 80822260 cull_grid_occluder               # docs/direct/frame-loop.md: the grid's CPU occluder: one view's grid from the GPU depth grid (f_80365f00) and its camera
 8035d5a0 cull_grid_view_rebuild           # work/assets/native/readback.md: rebuilds the producing frame's camera view
 800a8120 cull_submesh_next_visible        # docs/direct/frame-loop.md: next sub-mesh bounds (0x20-byte AABBs) of a shape's LOD that passes the frustum test of f_80029240
@@ -388,7 +390,7 @@
 83485280 exposure_compute                 # work/assets/native/readback2.md: the exposure / adaptation # ? 4 instructions, no callers; exposure_light_readback calls math_vec4_scale (0x834a5280) instead
 80354060 render_light_visibility_readback # work/assets/native/readback2.md (its 29 x 64-byte readbacks): each frame, for every object of the list at +0xab0 (count +0xaa8), invalidates the 0x40 buffer at object +0x720 (pool +0x750; written by the atomic-add program 6214a97bec4cc0bf), reads its float +0 (0x803541c0), stores it / (12 x [+0x7f0]) at +0x7ec, zeroes it and flushes; not GPU timestamps
 80365f00 report_reader_a                  # runtime/nvn_native.c: (the occlusion grid reader, agl::utl::DepthBufferEx); ENTRY_HOOK marks its run: its 0x3980-byte invalidates do not wait
-80362ff0 report_reader_b                  # docs/direct/task-mesh.md: (GPU-culling append counters, read-and-zero)
+80362ff0 report_reader_b                  # games/oot/patches/cull_lists.c: a header list (UniformBlock at +8): flips its copy, stores the copy's address at +0x20, invalidates, reads the header's counts to +0x98..+0xa8, zeroes the 0x40-byte header, flushes; only cull_gpu_lists_reset calls it, and that is replaced
 80c54290 exposure_light_buffers_create    # exposure_light_readback's object: four buffers by ubo_object_pool_alloc (+0xc0 0x90 bytes, +0x30, +0x1d8, +0x268 0x1010 bytes each, filled from a 0x1010 template, +0x150 0x40 x2), the averages' histories (+0x320, +0x340, +0x360)
 834a5280 math_vec4_scale                  # four floats at x0 times s0, returned in s0..s3
 831e5dd0 render_light_visibility_buffer   # makes an object (0x870 bytes, "Player") with the 0x40 buffer at +0x720 that render_light_visibility_readback reads # ? which objects; reached through a pointer only
@@ -610,7 +612,7 @@
 8004ab40 actor_baseproc_executor          # work/assets/native/cpu-to-gpu.md: BaseProc executor: actors, physics, animation
 804bd8c0 actor_life_write                 # docs/parked-patches.md: an actor's life write (the hearts cheat's sites, the CAS at 0x804bdcf8 and 0x804bded0)
 82c3fab0 actor_player_calc                # work/assets/native/cpu-to-gpu.md: actor/player calc # ? docs/direct/frame-loop.md: called for every actor (~50 a frame) from actor_calc_one
-82c1d750 actor_records_read_a             # work/assets/native/alloc-transfer.md: CPU reads of its own records in GPU pools
+82c1d750 actor_records_read_a             # work/assets/native/alloc-transfer.md, games/oot/patches/cull_lists.c: a gather list of object b (f_80586fd0's +0x80, +0x1a8, +0x2d0): flips, reads its counts and records, zeroes nine counts (m1 and m4 too when its first byte is 1), then builds actor records from them
 82c1d340 actor_records_read_b             # work/assets/native/alloc-transfer.md
 80186a00 actor_update_a                   # work/assets/native/cpu-to-gpu.md: actor update, per actor
 80168320 actor_update_b                   # work/assets/native/cpu-to-gpu.md: actor update, per actor
@@ -1244,4 +1246,5 @@
 # --- agl::UniformBlock and agl::ShaderStorageBlock (the "ubo object"; docs/direct/engine-classes.md; class names from their getName virtuals; TOTK's agl headers, aquacluck/ghidra_scripts dt_totk_gdt_export, are the same classes 8 bytes shorter)
 80521830 ubo_object_name                  # docs/direct/engine-classes.md: agl::UniformBlock's getName virtual ("agl::UniformBlock")
 834bc100 ssb_object_name                  # docs/direct/engine-classes.md: agl::ShaderStorageBlock's getName virtual ("agl::ShaderStorageBlock")
+834bc140 ssb_invalidate_none              # games/oot/patches/cull_lists.c: an empty virtual (ret), the blocks' vtable +0x40 the culling code skips when it is this one (an invalidate hook) # ?
 80521840 ubo_object_set_buffer            # docs/direct/engine-classes.md: gives a UniformBlock its memory (x1: offset +0x20, size +0x28, pool +0x30, block +0x38; x2 the copies into +0x4a, x3 the elements into +0x48), the total size +0x44, the NVNbuffer at +0x50 and its GPU address +0x80, the CPU address +0x18; as DKB's agl_ssb_set_storage
