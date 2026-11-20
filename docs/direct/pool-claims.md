@@ -254,8 +254,9 @@ Open in DKB's tunnel test (parked; the claims above passed the title-and-tunnel 
 
 - **A GPU hang in the punch tutorial.** A gfx ring timeout at about present 5500, once with a GPUVM fault at device
   address 0x800393dab000 (client TCP, PERMISSION_FAULTS 3): 3 hangs in 7 runs with the claims, before `f_804ab060`'s
-  block moved from Host to Readback (GPU work writes it as storage), and none in the 2 runs since; none in 3 runs of the
-  same test before the claims (af634bf0). Likely a claim's, unproven; the faulting address is not yet mapped back to a pool.
+  block moved from Host to Readback (GPU work writes it as storage), and 1 in the 3 runs since (a ring timeout at about
+  present 5700, the submit failing with a lost device), so that move did not end it; none in 3 runs of the same test
+  while DKB's pools were still imported guest memory (af634bf0). Likely a claim's, unproven; the faulting address is not yet mapped back to a pool.
 - **The voxel scene renders black** (the geometry stage is not translated): a renderer issue, not a claim's.
 - **A gsys 0x24 heap pool the CPU reads** after GPU work writes it (the check: "the CPU reads GPU writes outside a
   Readback claim", pool `0x111105d000+0x4f000` in one run): its maker needs a Readback claim.
