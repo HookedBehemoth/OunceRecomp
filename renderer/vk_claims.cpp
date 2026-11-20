@@ -528,32 +528,79 @@ struct SubRange {
     Region* r;
     uint32_t uses;   // (bit ClaimUse)
 };
-/// Staging: host-visible chunks, each holding one copy's bytes (in or out) until its submission completes (check_mu)
+/// Staging: host-visible chunks of kChunk bytes, each holding copies' bytes (in or out) until their submission completes;
+/// a copy larger than a chunk is split. Idle chunks beyond kIdleChunks are freed (check_mu)
+constexpr uint64_t kChunk = 16ull << 20;
+constexpr size_t kIdleChunks = 4;
 struct Staging {
     VkBuffer buf = VK_NULL_HANDLE;
     Mem* mem = nullptr;
     uint8_t* map = nullptr;
-    uint64_t size = 0, busy = 0;   // (busy: the value that frees it; UINT64_MAX while a submission holds it)
+    bool busy = false;   // (a submission holds it until it completes)
 };
-std::vector<Staging> staging;
+std::mutex check_mu;            // (staging, and the check's command buffers below)
+std::deque<Staging> staging;   // (a freed chunk keeps its slot, buf null; its entries stay where they are)
 std::atomic<int64_t> st_memcpy_ns{0}, st_note_ns{0}, st_up_once{0}, st_up_subs{0}, st_up_ranges{0}, st_up_bytes{0}, st_up_whole{0}, st_up_ns{0}, st_up_skipped_gpu{0};
-int64_t staging_take(uint64_t n) {   // (check_mu held: a chunk of at least n bytes no work uses, made when none is)
-    const uint64_t done = sync_completed();
-    int best = -1;
-    for (size_t i = 0; i < staging.size(); i++)
-        if (staging[i].busy <= done && staging[i].size >= n && (best < 0 || staging[i].size < staging[best].size)) best = (int)i;
+std::atomic<int64_t> st_chunks{0}, st_chunks_peak{0};
+int64_t staging_take() {   // (check_mu held: a chunk no work uses, made when none is)
+    int64_t best = -1, slot = -1;
+    size_t idle = 0;
+    for (size_t i = 0; i < staging.size(); i++) {
+        if (!staging[i].buf) {
+            if (slot < 0) slot = (int64_t)i;
+        } else if (!staging[i].busy) {
+            if (best < 0) best = (int64_t)i;
+            else if (++idle >= kIdleChunks) {   // (more idle than kept: freed)
+                mem_buffer_free(staging[i].buf, staging[i].mem);
+                staging[i] = Staging{};
+                st_chunks.fetch_sub(1, std::memory_order_relaxed);
+            }
+        }
+    }
     if (best < 0) {
         Staging c;
-        c.size = std::max<uint64_t>(16ull << 20, (n + (1 << 20) - 1) & ~((1ull << 20) - 1));
         void* map = nullptr;
-        if (!mem_buffer(c.size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, c.buf, c.mem, &map, MO_UPLOAD) || !map)
+        if (!mem_buffer(kChunk, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, c.buf, c.mem, &map, MO_UPLOAD) || !map)
             return -1;
         c.map = (uint8_t*)map;
-        staging.push_back(c);
-        best = (int)staging.size() - 1;
+        if (slot >= 0) staging[slot] = c, best = slot;
+        else staging.push_back(c), best = (int64_t)staging.size() - 1;
+        const int64_t n = st_chunks.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (n > st_chunks_peak.load(std::memory_order_relaxed)) st_chunks_peak.store(n, std::memory_order_relaxed);
     }
-    staging[best].busy = UINT64_MAX;
+    staging[best].busy = true;
     return best;
+}
+/// A submission's staging, filled in order: each place is n <= kChunk bytes in one chunk, a new chunk taken when the
+/// current one is full. The chunks are the submission's until it completes
+struct Stager {
+    std::vector<int64_t>& held;
+    int64_t chunk = -1;
+    uint64_t used = kChunk;
+    /// n bytes' chunk and offset; false when no chunk can be made
+    bool place(uint64_t n, int64_t& c, uint64_t& at) {
+        if (used + n > kChunk) {
+            std::lock_guard lk(check_mu);
+            chunk = staging_take();
+            if (chunk < 0) return false;
+            held.push_back(chunk), used = 0;
+        }
+        c = chunk, at = used, used += n;
+        return true;
+    }
+};
+/// ranges cut so that none is larger than a staging chunk
+template <class T>
+void cut_to_chunks(std::vector<T>& v) {
+    std::vector<T> out;
+    out.reserve(v.size());
+    for (const T& x : v)
+        for (uint64_t a = x.lo; a < x.hi; a += kChunk) {
+            T y = x;
+            y.lo = a, y.hi = std::min(x.hi, a + kChunk);
+            out.push_back(y);
+        }
+    v.swap(out);
 }
 
 /// a copy from guest memory into a region
@@ -667,7 +714,6 @@ void measure(ClaimSubImpl& s, const std::vector<BoundRange>& raw) {
 // the GPU is past it
 PFN_vkCmdCopyBuffer copy_buffer = nullptr;
 PFN_vkCmdFillBuffer fill_buffer = nullptr;
-std::mutex check_mu;
 VkCommandPool check_pool = VK_NULL_HANDLE;
 std::vector<VkCommandBuffer> check_free;
 std::atomic<int64_t> st_checked_ranges{0}, st_checked_bytes{0}, st_mismatches{0}, st_skipped_gpu_written{0};
@@ -1150,27 +1196,31 @@ VkCommandBuffer record_outs(ClaimSub* s) {
         else o[k++] = o[i];
     }
     o.resize(k);
+    cut_to_chunks(o);
     uint64_t total = 0;
     for (const Up& u : o) total += u.hi - u.lo;
-    Staging* st = nullptr;
-    int64_t chunk = -1;
     if (total) {
-        std::lock_guard lk(check_mu);
-        chunk = staging_take(total);
-        if (chunk >= 0) st = &staging[chunk], s->chunks.push_back(chunk);
-    }
-    if (total && !st) logf("direct: claims: ERROR: no readback staging of %llu bytes", (unsigned long long)total);
-    if (st) {
         record_dep(cb, Dep{VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
                            VK_ACCESS_2_TRANSFER_READ_BIT, 0});
-        uint64_t at = 0;
+        Stager sg{s->chunks};
         std::vector<VkBufferCopy> cs;
+        int64_t chunk = -1;
+        auto flush = [&](const Up& u) {
+            if (!cs.empty()) copy_buffer(cb, u.r->buffer, staging[chunk].buf, (uint32_t)cs.size(), cs.data()), cs.clear();
+        };
         for (size_t i = 0; i < o.size(); i++) {
             const Up& u = o[i];
+            int64_t c;
+            uint64_t at;
+            if (!sg.place(u.hi - u.lo, c, at)) {
+                logf("direct: claims: ERROR: no readback staging of %llu bytes", (unsigned long long)(u.hi - u.lo));
+                break;
+            }
+            if (c != chunk && i) flush(o[i - 1]);
+            chunk = c;
             cs.push_back({u.lo - u.r->lo, at, u.hi - u.lo});
-            s->out_sent.push_back({u.lo, u.hi, chunk, at});
-            at += u.hi - u.lo;
-            if (i + 1 == o.size() || o[i + 1].r != u.r) copy_buffer(cb, u.r->buffer, st->buf, (uint32_t)cs.size(), cs.data()), cs.clear();
+            s->out_sent.push_back({u.lo, u.hi, c, at});
+            if (i + 1 == o.size() || o[i + 1].r != u.r) flush(u);
         }
         record_dep(cb, Dep{VK_PIPELINE_STAGE_2_COPY_BIT, VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                            VK_ACCESS_2_HOST_READ_BIT, 0});
@@ -1191,12 +1241,7 @@ void copy_out(ClaimSub& s) {
         while (!cancels.empty() && cancels.front().upto < s.seq) cancels.pop_front();   // (no later submission is that old)
         cs.assign(cancels.begin(), cancels.end());
     }
-    Staging* st;
-    {
-        std::lock_guard lk(check_mu);
-        st = &staging[s.out_sent[0].chunk];
-    }
-    mem_invalidate(st->mem);
+    for (int64_t c : s.chunks) mem_invalidate(staging[c].mem);   // (its chunks are its own until it completes)
     std::unique_lock<std::mutex> ok;
     if (track_check) ok = std::unique_lock<std::mutex>(owned_mu);
     for (const ClaimSubImpl::Out& x : s.out_sent) {
@@ -1209,7 +1254,7 @@ void copy_out(ClaimSub& s) {
                 else e = c.lo;
             }
             if (dropped) st_out_dropped.fetch_add((int64_t)(e - a), std::memory_order_relaxed);
-            else host->gpu_write(a, st->map + x.at + (a - x.lo), e - a);
+            else host->gpu_write(a, staging[x.chunk].map + x.at + (a - x.lo), e - a);
             a = e;
         }
         if (track_check) owned_rehash(x.lo, x.hi);
@@ -1337,7 +1382,7 @@ VkCommandBuffer claims_sub_prepare(ClaimSub* s, ClaimPrep what) {
     if (track_check)
         for (const Up& u : ups)
             if (u.r->claim == NVN_CLAIM_VRAM) own_pages(u.lo, u.hi);
-    const size_t whole_n = ups.size();   // (copies no work of it reads: left out of the check of CPU writes during flight)
+    size_t whole_n = ups.size();   // (copies no work of it reads: left out of the check of CPU writes during flight)
     for (const Up& x : s->once)
         for (uint64_t a = x.lo & ~(kPage - 1); a < x.hi; a += kPage) {
             const uint64_t p = (a - x.r->lo) >> kPageShift, m = 1ull << (p & 63);
@@ -1357,9 +1402,16 @@ VkCommandBuffer claims_sub_prepare(ClaimSub* s, ClaimPrep what) {
         else r->listed.store(false);
     std::vector<Fill> fs;
     take_reported(s, ups, fs);
+    {   // (no copy larger than a staging chunk; the whole copies' pieces first, still)
+        std::vector<Up> whole(ups.begin(), ups.begin() + (ptrdiff_t)whole_n), rest(ups.begin() + (ptrdiff_t)whole_n, ups.end());
+        cut_to_chunks(whole), cut_to_chunks(rest);
+        whole_n = whole.size();
+        whole.insert(whole.end(), rest.begin(), rest.end());
+        ups.swap(whole);
+    }
     uint64_t up_total = 0;
     for (const Up& u : ups) up_total += u.hi - u.lo;
-    std::vector<uint64_t> up_at(ups.size());   // (each upload's place in the staging chunk)
+    std::vector<std::pair<int64_t, uint64_t>> up_at(ups.size());   // (each upload's staging chunk and place in it)
     // (the check: what the CPU writes and the GPU only reads, after the uploads)
     uint64_t total = 0;
     ClaimSubImpl::Part* part = track_check ? &s->parts.emplace_back() : nullptr;
@@ -1374,41 +1426,43 @@ VkCommandBuffer claims_sub_prepare(ClaimSub* s, ClaimPrep what) {
         }
     VkCommandBuffer cb = check_buffer();
     s->cbs.push_back(cb);
-    int64_t staged = -1;
+    bool staged = false;
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(cb, &bi);
     if (up_total) {
-        Staging* st = nullptr;
-        {
-            std::lock_guard lk(check_mu);
-            staged = staging_take(up_total);
-            if (staged >= 0) st = &staging[staged], s->chunks.push_back(staged);
-        }
-        if (!st) {
-            logf("direct: claims: ERROR: no upload staging of %llu bytes", (unsigned long long)up_total);
-        } else {
-            record_dep(cb, Dep{VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
-                               VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, 0});
-            uint64_t at = 0;
-            std::vector<VkBufferCopy> cs;
-            for (size_t i = 0; i < ups.size(); i++) {
-                const Up& u = ups[i];
-                up_at[i] = at;
-                const auto m0 = std::chrono::steady_clock::now();
-                host->gpu_read(u.lo, st->map + at, u.hi - u.lo);
-                st_memcpy_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - m0).count(), std::memory_order_relaxed);
-                cs.push_back({at, u.lo - u.r->lo, u.hi - u.lo});
-                at += u.hi - u.lo;
-                if (i + 1 == ups.size() || ups[i + 1].r != u.r) copy_buffer(cb, st->buf, u.r->buffer, (uint32_t)cs.size(), cs.data()), cs.clear();
+        record_dep(cb, Dep{VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
+                           VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, 0});
+        Stager sg{s->chunks};
+        std::vector<VkBufferCopy> cs;
+        staged = true;
+        auto flush = [&](size_t i) {   // (the copies so far, all of ups[i]'s region and chunk)
+            if (cs.empty()) return;
+            const Staging& st = staging[up_at[i].first];
+            mem_flush(st.mem);
+            copy_buffer(cb, st.buf, ups[i].r->buffer, (uint32_t)cs.size(), cs.data()), cs.clear();
+        };
+        for (size_t i = 0; i < ups.size(); i++) {
+            const Up& u = ups[i];
+            if (!sg.place(u.hi - u.lo, up_at[i].first, up_at[i].second)) {
+                logf("direct: claims: ERROR: no upload staging of %llu bytes", (unsigned long long)(u.hi - u.lo));
+                ups.resize(i), up_at.resize(i), staged = i > 0;
+                break;
             }
-            mem_flush(st->mem);
-            for (size_t i = whole_n; i < ups.size(); i++) s->sent.push_back({ups[i].lo, ups[i].hi, ups[i].r, staged, up_at[i]});
-            record_dep(cb, Dep{VK_PIPELINE_STAGE_2_COPY_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                               VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT, 0});
-            st_up_subs.fetch_add(1, std::memory_order_relaxed), st_up_ranges.fetch_add((int64_t)ups.size(), std::memory_order_relaxed);
-            st_up_bytes.fetch_add((int64_t)up_total, std::memory_order_relaxed);
+            if (i && up_at[i].first != up_at[i - 1].first) flush(i - 1);
+            const auto m0 = std::chrono::steady_clock::now();
+            host->gpu_read(u.lo, staging[up_at[i].first].map + up_at[i].second, u.hi - u.lo);
+            st_memcpy_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - m0).count(), std::memory_order_relaxed);
+            cs.push_back({up_at[i].second, u.lo - u.r->lo, u.hi - u.lo});
+            if (i + 1 == ups.size() || ups[i + 1].r != u.r) flush(i);
         }
+        flush(ups.empty() ? 0 : ups.size() - 1);
+        for (size_t i = std::min(whole_n, ups.size()); i < ups.size(); i++)
+            s->sent.push_back({ups[i].lo, ups[i].hi, ups[i].r, up_at[i].first, up_at[i].second});
+        record_dep(cb, Dep{VK_PIPELINE_STAGE_2_COPY_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT, 0});
+        st_up_subs.fetch_add(1, std::memory_order_relaxed), st_up_ranges.fetch_add((int64_t)ups.size(), std::memory_order_relaxed);
+        st_up_bytes.fetch_add((int64_t)up_total, std::memory_order_relaxed);
     }
     void* map = nullptr;
     if (total && (!mem_buffer(total, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, part->buf, part->mem, &map, MO_OTHER) || !map)) {
@@ -1430,7 +1484,10 @@ VkCommandBuffer claims_sub_prepare(ClaimSub* s, ClaimPrep what) {
                 for (const Up& w : ups)
                     if (w.r == x.r && w.lo <= a && a < w.hi) u = &w;
                 const uint64_t e = u ? std::min(x.hi, u->hi) : x.hi;
-                if (u && staged >= 0) std::memcpy(part->want.data() + at + (a - x.lo), staging[staged].map + up_at[u - ups.data()] + (a - u->lo), e - a);
+                if (u && staged) {
+                    const auto& [c, off] = up_at[u - ups.data()];
+                    std::memcpy(part->want.data() + at + (a - x.lo), staging[c].map + off + (a - u->lo), e - a);
+                }
                 else host->gpu_read(a, part->want.data() + at + (a - x.lo), e - a);
                 a = e;
             }
@@ -1466,7 +1523,7 @@ void claims_sub_sent(ClaimSub* s, uint64_t value) {
         for (List* l : s->lists) list_unref(l);
         std::lock_guard lk(check_mu);
         check_free.insert(check_free.end(), s->cbs.begin(), s->cbs.end());
-        for (int64_t c : s->chunks) staging[c].busy = 0;
+        for (int64_t c : s->chunks) staging[c].busy = false;
         delete s;
     });
 }
@@ -1734,11 +1791,11 @@ void claims_stats(char* out, size_t cap) {
                   (long long)st_own_imports, (long long)st_span_missed.load());
     const size_t k = std::strlen(out);
     std::snprintf(out + k, cap - k, "; uploads since the start: %lld submissions, %lld ranges, %lld MB, %lld whole regions, %.1f ms on the "
-                  "submitting threads, %lld ranges or pages left to the GPU (it writes them); load-once pages copied %lld; staging %zu chunks; noted in %.1f ms; guest reads %.1f ms; after held event waits %lld refreshes, %lld KB again in %.1f ms; "
+                  "submitting threads, %lld ranges or pages left to the GPU (it writes them); load-once pages copied %lld; staging %lld chunks of %llu MB (%lld at most); noted in %.1f ms; guest reads %.1f ms; after held event waits %lld refreshes, %lld KB again in %.1f ms; "
                   "copied out %lld submissions, %lld ranges, %lld MB, %lld KB of them dropped for the CPU's later writes; CPU writes reported %lld, %lld KB; "
                   "resets made on the GPU %lld, %lld KB; read windows %lld",
                   (long long)st_up_subs.load(), (long long)st_up_ranges.load(), (long long)(st_up_bytes.load() >> 20), (long long)st_up_whole.load(),
-                  st_up_ns.load() / 1e6, (long long)st_up_skipped_gpu.load(), (long long)st_up_once.load(), staging.size(), st_note_ns.load() / 1e6, st_memcpy_ns.load() / 1e6, (long long)st_refreshes.load(),
+                  st_up_ns.load() / 1e6, (long long)st_up_skipped_gpu.load(), (long long)st_up_once.load(), (long long)st_chunks.load(), (unsigned long long)(kChunk >> 20), (long long)st_chunks_peak.load(), st_note_ns.load() / 1e6, st_memcpy_ns.load() / 1e6, (long long)st_refreshes.load(),
                   (long long)(st_refreshed.load() >> 10), st_refresh_ns.load() / 1e6, (long long)st_out_subs.load(), (long long)st_out_ranges.load(),
                   (long long)(st_out_bytes.load() >> 20), (long long)(st_out_dropped.load() >> 10), (long long)st_reports.load(),
                   (long long)(st_report_bytes.load() >> 10), (long long)st_fills.load(), (long long)(st_fill_bytes.load() >> 10),

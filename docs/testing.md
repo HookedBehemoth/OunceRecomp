@@ -117,9 +117,12 @@ scene keeps its overlay beside its golden data.
    ```
 
 The verdict lists fatal log lines, screenshots whose perceptual hash differs from every golden run's by more than 12
-of 64 bits, rough numbers beside the golden run's (frame rate, replay times, memory), and warning groups that are not
+of 64 bits or whose colours differ in 8 or more of 144 cells (a 16 x 9 thumbnail, a cell off by more than 12 in a
+channel), rough numbers beside the golden run's (frame rate, replay times, memory), and warning groups that are not
 in the test's `known.txt`. It ends with `VERDICT: PASS` or `VERDICT: FAIL (<why>)`, and `ounce test` exits with 1 on a
-failure. Read the verdict, not the log. `--keep-shots` keeps the screenshots, and `--golden-reset` starts the golden
+failure. Read the verdict, not the log. The colours catch a layer that goes without changing the
+picture's shapes, such as Kokiri's grass, which the hash misses; golden runs recorded before the thumbnails have none
+and are compared by hash only. `--keep-shots` keeps the screenshots, and `--golden-reset` starts the golden
 set anew. The golden data is in `~/.local/share/ounce/<game>/golden/<test>/`.
 
 ### Benchmark a scene

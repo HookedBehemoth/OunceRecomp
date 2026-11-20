@@ -55,7 +55,8 @@ copied whole from guest memory at the first submission after its pool is made. A
 bit per 16 bytes. The sender thread prepares a submission's copies just before it submits the submission's first chunk,
 in queue order. It marks the ranges the submission's lists read in the bitmaps, then clears every marked bit and
 copies its bytes from guest memory into a host-visible staging chunk, and from there into the regions, before the
-work. No sorting or merging of ranges is needed. A staging chunk is kept until its submission completes.
+work. No sorting or merging of ranges is needed. Staging is chunks of 16 MB, a copy larger than a chunk split over several; a
+submission holds its chunks until it completes, and idle chunks beyond four are freed.
 
 **Event waits the CPU signals.** OoT's frame starts with a gate: the Presentation Thread submits the frame with a GPU
 wait on an event, and the main thread signals that event from the CPU at the frame's end. On the console, everything

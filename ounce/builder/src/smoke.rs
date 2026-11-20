@@ -3,7 +3,8 @@
 //! Against the test's golden folder (the data folder's `<game>/golden/<test>/`: golden.json, known.txt) it checks:
 //! - fatal signs in log.txt (device lost, Vulkan errors, crashes, traps) and a run that stopped presenting;
 //! - pictures from present `skip` on: a 64-bit DCT perceptual hash of each screenshot against the golden runs' shot of
-//!   the same present (Hamming distance; two near-black shots are equal, one black and one not a failure);
+//!   the same present (Hamming distance; two near-black shots are equal, one black and one not a failure), and its
+//!   colours in a 16 x 9 thumbnail, which catch a missing layer the hash does not (Kokiri's grass);
 //! - rough numbers: steady fps and replay times from the renderer's log lines, peak RSS, the least free and the most
 //!   shared memory; shown beside the golden run's;
 //! - warning and error groups: log lines that look like one, normalised (numbers and addresses masked), less the known
@@ -22,6 +23,14 @@ use std::path::Path;
 const HASH_BAD: u32 = 12;
 /// the mean luminance below which a shot counts as black
 const DARK: f64 = 8.0;
+/// The colour thumbnail's cells (16 x 9: 80-pixel squares at 1280 x 720). A cell is off when a channel of its mean
+/// differs from the golden shot's by more than CELL_BAD, and a shot is bad when CELLS_BAD cells are off against every
+/// golden run. The hash misses a layer that changes colour but not shape: Kokiri's grass gone moves 14 to 17 cells,
+/// golden runs of the same scene at most 4.
+const THUMB_W: usize = 16;
+const THUMB_H: usize = 9;
+const CELL_BAD: u8 = 12;
+const CELLS_BAD: usize = 8;
 
 struct Patterns {
     fatal: Regex,
@@ -121,8 +130,8 @@ fn resize(px: &[u8], w: usize, h: usize, ow: usize, oh: usize) -> Vec<u8> {
     out
 }
 
-/// A PNG as 8-bit grey (PIL's convert("L"): ITU-R 601-2 in 16-bit fixed point).
-fn grey(path: &Path) -> Result<(Vec<u8>, usize, usize), String> {
+/// A PNG as 8-bit RGB pixels, with its size.
+fn rgb(path: &Path) -> Result<(Vec<[u8; 3]>, usize, usize), String> {
     let f = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut d = png::Decoder::new(std::io::BufReader::new(f));
     d.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
@@ -140,15 +149,53 @@ fn grey(path: &Path) -> Result<(Vec<u8>, usize, usize), String> {
     let px = buf[..info.buffer_size()]
         .chunks_exact(info.line_size)
         .flat_map(|row| row[..w * n].chunks_exact(n))
-        .map(|p| if n < 3 { p[0] } else { ((p[0] as u32 * 19595 + p[1] as u32 * 38470 + p[2] as u32 * 7471 + 0x8000) >> 16) as u8 })
+        .map(|p| if n < 3 { [p[0]; 3] } else { [p[0], p[1], p[2]] })
         .collect();
     Ok((px, w, h))
 }
 
+/// RGB pixels as 8-bit grey (PIL's convert("L"): ITU-R 601-2 in 16-bit fixed point).
+fn grey(px: &[[u8; 3]]) -> Vec<u8> {
+    px.iter().map(|p| ((p[0] as u32 * 19595 + p[1] as u32 * 38470 + p[2] as u32 * 7471 + 0x8000) >> 16) as u8).collect()
+}
+
+/// The shot's colours in THUMB_W x THUMB_H cells, each its pixels' mean, as hex (RGB per cell, rows from the top).
+fn thumb(px: &[[u8; 3]], w: usize, h: usize) -> String {
+    let mut out = String::with_capacity(THUMB_W * THUMB_H * 6);
+    for cy in 0..THUMB_H {
+        let (y0, y1) = (cy * h / THUMB_H, ((cy + 1) * h / THUMB_H).max(cy * h / THUMB_H + 1));
+        for cx in 0..THUMB_W {
+            let (x0, x1) = (cx * w / THUMB_W, ((cx + 1) * w / THUMB_W).max(cx * w / THUMB_W + 1));
+            let mut sum = [0u64; 3];
+            for y in y0..y1.min(h) {
+                for p in &px[y * w + x0..y * w + x1.min(w)] {
+                    for c in 0..3 {
+                        sum[c] += p[c] as u64;
+                    }
+                }
+            }
+            let n = ((y1.min(h) - y0) * (x1.min(w) - x0)).max(1) as u64;
+            for v in sum {
+                out.push_str(&format!("{:02x}", (v + n / 2) / n));
+            }
+        }
+    }
+    out
+}
+
+/// How many cells of two thumbnails differ by more than CELL_BAD in a channel (None: one is not a thumbnail).
+fn cells_off(a: &str, b: &str) -> Option<usize> {
+    let dec = |s: &str| -> Option<Vec<u8>> {
+        (s.len() == THUMB_W * THUMB_H * 6).then_some(())?;
+        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok()).collect()
+    };
+    let (a, b) = (dec(a)?, dec(b)?);
+    Some(a.chunks_exact(3).zip(b.chunks_exact(3)).filter(|(x, y)| x.iter().zip(y.iter()).any(|(p, q)| p.abs_diff(*q) > CELL_BAD)).count())
+}
+
 /// The shot's perceptual hash (the 8x8 low frequencies of a 32x32 DCT, each above their median or not) and its mean.
-pub fn phash(path: &Path) -> Result<(u64, f64), String> {
-    let (px, w, h) = grey(path)?;
-    let a: Vec<f64> = resize(&px, w, h, 32, 32).into_iter().map(f64::from).collect();
+fn hash_of(px: &[u8], w: usize, h: usize) -> (u64, f64) {
+    let a: Vec<f64> = resize(px, w, h, 32, 32).into_iter().map(f64::from).collect();
     let c = |k: usize, n: usize| (std::f64::consts::PI * (2 * n + 1) as f64 * k as f64 / 64.0).cos();
     // (C a C^T, its top left 8x8)
     let mut ca = [[0f64; 32]; 8];
@@ -167,16 +214,26 @@ pub fn phash(path: &Path) -> Result<(u64, f64), String> {
     rest.sort_by(f64::total_cmp);
     let med = rest[rest.len() / 2];
     let hash = d.iter().fold(0u64, |h, &v| (h << 1) | (v > med) as u64);
-    Ok((hash, a.iter().sum::<f64>() / a.len() as f64))
+    (hash, a.iter().sum::<f64>() / a.len() as f64)
 }
 
-/// present -> (hash, mean); an unreadable shot has no hash
-fn shots(run: &Path) -> BTreeMap<u64, (Option<u64>, f64)> {
+/// A shot's signature: its hash and mean (None: unreadable), and its colour thumbnail.
+type Shot = (Option<u64>, f64, String);
+
+/// present -> its shot's signature
+fn shots(run: &Path) -> BTreeMap<u64, Shot> {
     let mut out = BTreeMap::new();
     for e in std::fs::read_dir(run.join("shots")).into_iter().flatten().flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
         let Some(n) = name.strip_prefix("vk_").and_then(|r| r.strip_suffix(".png")).and_then(|n| n.parse().ok()) else { continue };
-        out.insert(n, phash(&e.path()).map_or((None, 0.0), |(h, m)| (Some(h), m)));
+        let sig = match rgb(&e.path()) {
+            Ok((px, w, h)) => {
+                let (hash, mean) = hash_of(&grey(&px), w, h);
+                (Some(hash), mean, thumb(&px, w, h))
+            }
+            Err(_) => (None, 0.0, String::new()),
+        };
+        out.insert(n, sig);
     }
     out
 }
@@ -296,7 +353,7 @@ pub fn verdict(run: &Path, gd: &Path, skip: u64, record: bool, reset: bool) -> R
     let mut out = Vec::new();
     if record {
         let mut runs = if reset { Vec::new() } else { golden_runs(gd) };
-        let shots: Map<String, Value> = sh.iter().map(|(k, (h, m))| (k.to_string(), json!([h, m]))).collect();
+        let shots: Map<String, Value> = sh.iter().map(|(k, (h, m, t))| (k.to_string(), json!([h, m, t]))).collect();
         runs.push(json!({ "numbers": num, "shots": shots }));
         let n = runs.len();
         let text = serde_json::to_string_pretty(&json!({ "runs": runs })).map_err(|e| e.to_string())?;
@@ -325,9 +382,10 @@ pub fn verdict(run: &Path, gd: &Path, skip: u64, record: bool, reset: bool) -> R
         fails.push("fatal");
         out.push(format!("FATAL ({} shown):\n  {}", fatal.len(), fatal.join("\n  ")));
     }
-    let set_of = |r: &Value| -> HashMap<u64, (Option<u64>, f64)> {
+    let set_of = |r: &Value| -> HashMap<u64, Shot> {
         r.get("shots").and_then(Value::as_object).into_iter().flatten().filter_map(|(k, v)| {
-            Some((k.parse().ok()?, (v.get(0).and_then(Value::as_u64), v.get(1).and_then(Value::as_f64).unwrap_or(0.0))))
+            let t = v.get(2).and_then(Value::as_str).unwrap_or_default().to_string();
+            Some((k.parse().ok()?, (v.get(0).and_then(Value::as_u64), v.get(1).and_then(Value::as_f64).unwrap_or(0.0), t)))
         }).collect()
     };
     if let Some(last) = gruns.last() {
@@ -337,11 +395,24 @@ pub fn verdict(run: &Path, gd: &Path, skip: u64, record: bool, reset: bool) -> R
         let mut common: Vec<u64> = gs.keys().filter(|p| **p >= skip && sh.contains_key(p)).copied().collect();
         common.sort();
         let (mut bad, mut worst) = (Vec::new(), (0u32, None::<u64>));
+        // (the colours: shots compared, the worst shot's cells off and its present; golden runs older than the
+        // thumbnails have none)
+        let (mut ccount, mut cworst) = (0usize, (0usize, None::<u64>));
         for &pr in &common {
-            let (h, m) = sh[&pr];
+            let (h, m, ref t) = sh[&pr];
+            let off = gsets.iter().filter_map(|g| cells_off(t, &g.get(&pr)?.2)).min();
+            if let Some(off) = off {
+                ccount += 1;
+                if cworst.1.is_none() || off > cworst.0 {
+                    cworst = (off, Some(pr));
+                }
+                if off >= CELLS_BAD {
+                    bad.push((pr, format!("colours: {off} of {} cells off", THUMB_W * THUMB_H)));
+                }
+            }
             let mut best: Option<(u32, Option<String>)> = None;
             for gset in &gsets {
-                let Some(&(gh, gm)) = gset.get(&pr) else { continue };
+                let Some(&(gh, gm, _)) = gset.get(&pr) else { continue };
                 let why = match (h, gh) {
                     (None, _) | (_, None) => (99, Some("unreadable".to_string())),
                     _ if m < DARK && gm < DARK => (0, None),
@@ -363,6 +434,7 @@ pub fn verdict(run: &Path, gd: &Path, skip: u64, record: bool, reset: bool) -> R
                 bad.push((pr, w));
             }
         }
+        bad.sort();
         let missing = gs.keys().filter(|p| **p >= skip && !sh.contains_key(p)).count();
         out.push(format!(
             "pictures: {} compared against {} golden run(s), worst distance {} (present {}), {} bad{}",
@@ -373,6 +445,10 @@ pub fn verdict(run: &Path, gd: &Path, skip: u64, record: bool, reset: bool) -> R
             bad.len(),
             if missing > 0 { format!(", {missing} golden shots missing") } else { String::new() }
         ));
+        out.push(match cworst.1 {
+            Some(p) => format!("colours: {ccount} compared, worst {} of {} cells off (present {p}); bad from {CELLS_BAD}", cworst.0, THUMB_W * THUMB_H),
+            None => "colours: no golden run has thumbnails (ounce test <game> --golden records one)".into(),
+        });
         for (pr, why) in bad.iter().take(6) {
             out.push(format!("  present {pr}: {why}"));
         }
@@ -420,6 +496,22 @@ mod tests {
         assert_eq!(p.norm("[12.5] vk: warning at 0xdeadBEEF, 3 of 4.5 (cafebabe12)"), "vk: warning at #, N of N (#)");
         assert!(p.warn.is_match("a Stub here") && !p.warn.is_match("stubborn"));
         assert!(p.fatal.is_match("Assertion `x' failed"));
+    }
+
+    #[test]
+    fn thumbnails_count_the_cells_off() {
+        let (w, h) = (64, 36);
+        let a = vec![[40u8, 90, 30]; w * h];
+        let mut b = a.clone();
+        for y in 0..h / 3 {
+            for x in 0..w {
+                b[y * w + x] = [40, 90 + CELL_BAD + 1, 30];
+            }
+        }
+        let (ta, tb) = (thumb(&a, w, h), thumb(&b, w, h));
+        assert_eq!(cells_off(&ta, &ta), Some(0));
+        assert_eq!(cells_off(&ta, &tb), Some(THUMB_W * 3));
+        assert_eq!(cells_off(&ta, ""), None);
     }
 
     #[test]
