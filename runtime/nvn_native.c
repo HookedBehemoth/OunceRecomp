@@ -118,9 +118,14 @@ static os_mutex vbase_lock = OS_MUTEX_INIT;
 uint64_t nvn_virtual_pool_tail(void) { return 2ull << 30; }
 
 /* ---- pool claims (nvn_claims.h) ---- */
-static _Thread_local struct { int kind; const char *by; } tl_claim;
-void nvn_claim_begin(int kind, const char *by) { tl_claim.kind = kind, tl_claim.by = by; }
-void nvn_claim_end(void) { tl_claim.kind = NVN_CLAIM_NONE, tl_claim.by = NULL; }
+static _Thread_local struct { int kind, depth; const char *by; } tl_claim;
+void nvn_claim_begin(int kind, const char *by) {
+    if (!tl_claim.depth++) tl_claim.kind = kind, tl_claim.by = by;
+}
+void nvn_claim_end(void) {
+    if (tl_claim.depth > 0 && !--tl_claim.depth) tl_claim.kind = NVN_CLAIM_NONE, tl_claim.by = NULL;
+}
+static const char *const kClaimNames[NVN_CLAIM_KINDS] = {"none", "textures", "targets", "host", "vram", "upload", "readback", "layer 0"};
 /* An NVN memory call the back end does not serve: one loud error with the guest's call chain, and a strict event */
 static void guest_chain(Ctx *c, char *b, size_t cap);
 static void pool_error(Ctx *c, const char *reason, const char *fmt, ...) {
@@ -287,9 +292,16 @@ NV(nvnMemoryPoolInitialize,
     o->flags = b->flags;
     o->size = b->size;
     o->claim = (uint32_t)tl_claim.kind;
+    if (o->claim == NVN_CLAIM_NONE) {
+        pool_error(c, "a memory pool no claim covers", "nvnMemoryPoolInitialize flags %#x size %#llx", o->flags,
+                   (unsigned long long)o->size);
+        RET(0);
+        return;
+    }
     if ((o->flags & (NVN_MEMORY_POOL_FLAGS_VIRTUAL | NVN_MEMORY_POOL_FLAGS_PHYSICAL)) && o->claim != NVN_CLAIM_TARGETS) {
-        pool_error(c, "a virtual or physical memory pool no claim covers", "nvnMemoryPoolInitialize flags %#x size %#llx",
-                   o->flags, (unsigned long long)o->size);
+        pool_error(c, "a virtual or physical memory pool not claimed as render-target storage",
+                   "nvnMemoryPoolInitialize flags %#x size %#llx, claimed %s by %s", o->flags, (unsigned long long)o->size,
+                   kClaimNames[o->claim], tl_claim.by);
         RET(0);
         return;
     }
@@ -314,8 +326,8 @@ NV(nvnMemoryPoolInitialize,
     if (setting_bool(SET_NVN_LOG_POOLS)) {   /* (debugging) who makes each pool */
         char b[400];
         guest_chain(c, b, sizeof b);
-        hos_log("nvn: pool %#llx size %#llx flags %#x claim %u made by %s", (unsigned long long)o->gpu, (unsigned long long)o->size,
-                o->flags, o->claim, b);
+        hos_log("nvn: pool %#llx size %#llx flags %#x claimed %s by %s, made by %s", (unsigned long long)o->gpu,
+                (unsigned long long)o->size, o->flags, kClaimNames[o->claim], tl_claim.by, b);
     }
     game_pool_made(o->gpu, o->size);   /* (the patches may name the pool to the back end before its binding) */
     rx_nvn_pool_native(o->gpu, o->size, o->flags, pool_creation_key(c), 1);   /* (native-vk layer 0: placed by its flags, before any binding) */

@@ -20,6 +20,7 @@
    (gpu_texels) of its cell. */
 #include "hos.h"
 #include "patches.h"
+#include "nvn_claims.h"
 #include "rx_nvn.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -292,10 +293,11 @@ PATCH_AT(0x80768504, word(0xf94f4e60), after, none, assets_glyph_plotted, as(x19
    them unbound (it takes every texel of them from the store and never reads them). */
 static _Thread_local int tl_heap_init;
 PATCH_FUNC(0x80577140, word(0xd503237f), body(0xd76e3c5e7f45b5b0), aapcs, x0, assets_heap_init, orig) {
-    if (!assets_on()) return guest_orig(orig);
-    tl_heap_init = 1;
+    nvn_claim_begin(NVN_CLAIM_TEXTURES, "agl::TextureDataMgr::InitializeHeap");
+    tl_heap_init = assets_on();
     const uint64_t r = guest_orig(orig);
     tl_heap_init = 0;
+    nvn_claim_end();
     return r;
 }
 /* (in f_80577b30, after ldr x8, [x8] before its blr to nvnMemoryPoolInitialize at 0x80577be0) the next pool this thread

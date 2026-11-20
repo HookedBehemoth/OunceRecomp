@@ -28,6 +28,7 @@
    A line every 10 s: the asset heap's resident pages and the guest memory's (mincore), the copies skipped. */
 #include "hos.h"
 #include "patches.h"
+#include "nvn_claims.h"
 #include "hos_ledger.h"
 #include "rx_nvn.h"
 #include <stdio.h>
@@ -344,10 +345,11 @@ PATCH_AT(0x83537d90, word(0xd503237f), before, none, assets_replace_load, as(x1,
 static _Thread_local int tl_heap_init;
 PATCH_FUNC(0x80f6c580, word(0xd503237f), body(0xd879562121f32735), aapcs, x0, assets_heap_init,
            orig) {
-    if (!assets_on()) return guest_orig(orig);
-    tl_heap_init = 1;
+    nvn_claim_begin(NVN_CLAIM_TEXTURES, "agl::TextureDataMgr::InitializeHeap");
+    tl_heap_init = assets_on();
     const uint64_t r = guest_orig(orig);
     tl_heap_init = 0;
+    nvn_claim_end();
     return r;
 }
 /* (an At row in f_80f6c9d0 agl_memory_pool_create, after ldr x8, [x8] before its blr to nvnMemoryPoolInitialize at
