@@ -237,3 +237,8 @@
 # --- resource loading (tools/shadercensus/shadermap.py, scene loads)
 8055cb98 res_gsys_package_lists_load      # tools/shadercensus/shadermap.py (scene loads): as OoT's: gsys.gapkginfo / gapkglist, each package's shader_%02d, agl_sharc_%02d and bfres_%02d entries
 805e81bc res_factories_register           # tools/shadercensus/shadermap.py (scene loads): the resource system's factories by extension (bfarc, alsarc, vmat, pack, sarc, genvb, bfres, asb, bgyml, ...)
+80198500 gsys_gpu_heap_pool_create        # games/dkb/patches/pools.c: the gsys GPU heap's pool maker (OoT gpu_pool_create)
+805ba7c0 shader_archive_pool_init         # games/dkb/patches/pools.c: shader archives' code pools (flags 0x62), claimed host
+8086a680 gfx_shader_binary_pool_init      # games/dkb/patches/pools.c: in-place shader binaries' nn::gfx pools (flags 0x64), claimed host
+80577b30 agl_memory_pool_create           # games/dkb/patches/pools.c: agl's pool wrapper (OoT agl_memory_pool_create)
+80802d48 display_buffers_pool_init        # games/dkb/patches/pools.c: the display's buffers at boot (flags 0x21, 95.6 MB) # ?

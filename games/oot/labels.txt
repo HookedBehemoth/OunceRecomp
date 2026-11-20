@@ -1175,3 +1175,8 @@
 802eec30 gamedata_get_bool_c              # agent/gameui game-ui.md, not re-read: (mgr, &out, hash of the full name)
 80424760 gamedata_struct_get_enum_b       # games/oot/patches/option_rows.c: (mgr, &out hash, &handle, member hash): refuses member 0 # ?
 833195c0 seq_query_selected_option_type # games/oot/patches/option_rows.c: SeqQueryGetSelectedOptionType: the Options screen's +0x370 (through f_802f1340) as a float
+8093d130 gpu_storage_cpu_flush            # games/oot/patches/tex_cpu.c: (obj, off, size): nvnMemoryPoolFlushMappedRange of a CPU_CACHED pool's range after a CPU write into a texture's or buffer's storage
+812c3d60 gfx_shader_binary_pool_init      # games/oot/patches/pools.c: the in-place shader binaries' nn::gfx pools (flags 0x64), claimed host
+8114e4f0 display_buffers_pool_init        # games/oot/patches/pools.c: the display's buffers at boot (flags 0x21, 95.6 MB) # ?
+80c553b0 rgba32f_targets_init             # games/oot/patches/tex_cpu.c: makes 1x1 NVN format 0x2e targets by dta_alloc_b and clears them with memset at 0x80c558bc
+8093e7c0 tera_unit_textures_init          # games/oot/patches/tex_cpu.c: 1x1 format 0x25 textures by dta_alloc_b, cleared with memset at 0x8093ea3c # ?
