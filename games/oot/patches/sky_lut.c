@@ -33,7 +33,7 @@ PATCH_AT(0x808460e4, word(0x9a8803e0), after, x2, sky_lut_part, as(x0, dst), as(
                     (unsigned long long)size, (unsigned long long)src);
         return size;
     }
-    if (!hos_guest_range(src, size) || !assets_texels_bl(GPU_TEXELS_FILE, &t, GP(src), size, &st)) {
+    if (!hos_guest_range(src, size) || !nvn_texels_storage(GPU_TEXELS_FILE, &t, GP(src), size, &st)) {
         if (os_atomic_inc(&n.badsite) <= 5)
             hos_log("direct patch sky lut: texture %#llx (%ux%ux%u, format %#x, target %d, storage %llu bytes) and a part of %llu "
                     "bytes: left alone", (unsigned long long)t.gpu, t.d.width, t.d.height, t.d.depth, t.d.format, t.d.target,

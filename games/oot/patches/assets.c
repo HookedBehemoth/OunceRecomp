@@ -185,14 +185,26 @@ static int index_in(uint64_t bntx, uint64_t brti, const char *nm, uint32_t nl, u
     return -1;
 }
 
+/* texdata_from_texture_info (agl::TextureDataMgr's TextureData from a TextureInfo): the game's code made the texture and
+   its texels (gfx_system_init's DummyTextureForEvent): its load is GPU_ASSET_CPU, and the texels go to the image after
+   the load initialized the texture (cpu_texels) */
+static _Thread_local int tl_cpu_made;
+PATCH_FUNC(0x809ee930, word(0xd503237f), body(0x6ea86342c03d505e), aapcs, x0, assets_texture_info, orig) {
+    tl_cpu_made++;
+    const uint64_t r = guest_orig(orig);
+    tl_cpu_made--;
+    return r;
+}
 /* TextureData::loadImage_(td, ctx, src): the game's load (orig), without src when the back end takes the texels from
-   the store */
+   the store or, for a texture the game's code made, from src after the load (nvn_texels_cpu_made) */
 void diag_nodata_load(uint64_t td, uint64_t src, uint64_t lr);   /* (M4g: debug.nodata, either back end) */
 static int load_image(uint64_t td, uint64_t src);
 PATCH_FUNC(0x80798690, word(0xd503237f), body(0xd3402c5c84ac23f3), aapcs, x0, assets_load_image,
            orig, as(x0, td), as(x1, ctx), as(x2, src), as(x30, lr)) {
     diag_nodata_load(td, src, lr);
-    return guest_orig(orig, td, ctx, load_image(td, src) ? 0 : src);   /* (x2 changed: x0-x2 passed) */
+    const uint64_t r = guest_orig(orig, td, ctx, load_image(td, src) ? 0 : src);   /* (x2 changed: x0-x2 passed) */
+    if (tl_cpu_made && assets_on() && hos_guest_range(td, 0x100) && G64(td + 0xd8)) nvn_texels_cpu_made(GP(G64(td + 0xd8) + 0x10), src);
+    return r;
 }
 /* 1: the back end has the texture's texels; its src is not copied into the heap */
 static int load_image(uint64_t td, uint64_t src) {
@@ -206,7 +218,7 @@ static int load_image(uint64_t td, uint64_t src) {
     gpu_asset_key k;
     memset(&k, 0, sizeof k);
     k.tex = GP(gfx + 0x10);
-    k.path = GPU_ASSET_LOAD;
+    k.path = tl_cpu_made ? GPU_ASSET_CPU : GPU_ASSET_LOAD;
     key_of_brti(&k, brti);
     /* (its BNTX: the store's records of its name and descriptor say where mip 0 is in their file; the one whose file
        header is that far back from src is the one: gpu_asset_load) */
@@ -351,35 +363,6 @@ void game_pool_made(uint64_t gpu, uint64_t size) {
     rx_direct()->texture_data_pool(gpu, gpu + size);
 }
 
-/* ---- block-linear storage bytes to an image ---- */
-int assets_texels_bl(uint32_t source, const void *tex, const uint8_t *src, uint64_t n, bl_stats *st) {
-    const nvn_tex *t = (const nvn_tex *)tex;
-    int bw = 1, bh = 1;
-    const int bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
-    if (bpb <= 0 || n != t->L.size) return 0;
-    const uint32_t depth = t->d.target == NVN_TEXTURE_TARGET_3D ? (t->d.depth ? t->d.depth : 1) : t->L.layers;
-    const uint64_t lin = (uint64_t)((t->d.width + bw - 1) / bw) * ((t->d.height + bh - 1) / bh) * (uint64_t)bpb * depth;
-    static _Thread_local struct { uint8_t *p; uint64_t cap; } buf;   /* (grows to the largest texture this thread uploads) */
-    if (lin > buf.cap) {
-        free(buf.p);
-        buf.p = (uint8_t *)malloc(lin), buf.cap = buf.p ? lin : 0;
-        if (!buf.p) return 0;
-    }
-    const int64_t t0 = os_now_ns();
-    if (nvn_tex_level0_linear(&t->d, src, n, buf.p) != lin) return 0;
-    const int64_t ns = os_now_ns() - t0;
-    NVNcopyRegion r = {0, 0, 0, (int)t->d.width, (int)t->d.height, (int)depth};
-    rx_direct()->texels(source, t, 0, 0, &r, buf.p, 0, 0);
-    const int64_t k = os_atomic_inc(&st->uploads);
-    os_atomic_add(&st->bytes, (int64_t)n);
-    os_atomic_add(&st->ns, ns);
-    for (int64_t m = st->max_ns; ns > m && !__sync_bool_compare_and_swap(&st->max_ns, m, ns); m = st->max_ns) {}
-    if (k <= 3)
-        hos_log("assets: deswizzled %ux%ux%u format %#x (%llu bytes, block height %u) in %.3f ms on thread %s", t->d.width,
-                t->d.height, depth, t->d.format, (unsigned long long)n, t->L.tileH, ns / 1e6, hos_thread_name(hos_self()));
-    return 1;
-}
-
 /* ---- the tiles' bytes, kept by storage address ----
    The memcpy below writes nothing (the direct back end never reads texture storage), so the bytes it would have left in
    the storage are kept here, by the storage's address, as the storage would keep them: given to the texture live there
@@ -500,7 +483,7 @@ PATCH_AT(0x80c17580, word(0x9a8803e1), after, x2, assets_tile, as(x0, dst), as(x
 }
 
 static void tile_upload_as(uint32_t source, const nvn_tex *t, const uint8_t *src, uint32_t n) {
-    if (assets_texels_bl(source, t, src, n, &tiles_bl)) return;
+    if (nvn_texels_storage(source, t, src, n, &tiles_bl)) return;
     rx_direct()->texels(GPU_TEXELS_TERRAIN, t, 0, 0, &(NVNcopyRegion){0, 0, 0, (int)t->d.width, (int)t->d.height, 1}, NULL, 0, 0);
     if (os_atomic_inc(&n_tiles_unconv) <= 5)
         hos_log("assets: terrain: a tile of %u bytes for texture %#llx (%ux%ux%u, format %#x, storage %llu bytes): the placeholder", n,

@@ -118,6 +118,16 @@ static void key_of_brti(gpu_asset_key *k, uint64_t brti) {
     k->mips = *(const uint16_t *)GP(brti + 0x16), k->image_size = G32(brti + 0x50);
 }
 
+/* texdata_from_texture_info (agl::TextureDataMgr's TextureData from a TextureInfo): the game's code made the texture and
+   its texels (DummyTexNotFound): its load is GPU_ASSET_CPU, and the texels go to the image after
+   the load initialized the texture (cpu_texels) */
+static _Thread_local int tl_cpu_made;
+PATCH_FUNC(0x80576180, word(0xd503237f), body(0xab612c338ebd7a6c), aapcs, x0, assets_texture_info, orig) {
+    tl_cpu_made++;
+    const uint64_t r = guest_orig(orig);
+    tl_cpu_made--;
+    return r;
+}
 /* 1: the back end has the texture's texels; its src is not copied into the heap */
 static int load_image(uint64_t td, uint64_t src) {
     if (!ready() || !hos_guest_range(td, 0x100)) return 0;
@@ -127,7 +137,7 @@ static int load_image(uint64_t td, uint64_t src) {
     gpu_asset_key k;
     memset(&k, 0, sizeof k);
     k.tex = GP(gfx + 0x10);
-    k.path = GPU_ASSET_LOAD;
+    k.path = tl_cpu_made ? GPU_ASSET_CPU : GPU_ASSET_LOAD;
     key_of_brti(&k, brti);
     /* (its BNTX: the store's records of its name and descriptor say where mip 0 is in their file; the one whose file
        header is that far back from src is the one: gpu_asset_load) */
@@ -143,10 +153,13 @@ static int load_image(uint64_t td, uint64_t src) {
     os_atomic_add(&n_load_bytes, G32(td + 0xa8));
     return 1;
 }
-/* TextureData::loadImage_(td, ctx, src): the game's load (orig), without src when the back end takes the texels */
+/* TextureData::loadImage_(td, ctx, src): the game's load (orig), without src when the back end takes the texels (from
+   the store, or for a texture the game's code made from src after the load: nvn_texels_cpu_made) */
 PATCH_FUNC(0x80210d50, word(0xd503237f), body(0x9cc63809f6c28c83), aapcs, x0, assets_load_image,
            orig, as(x0, td), as(x1, ctx), as(x2, src)) {
-    return guest_orig(orig, td, ctx, load_image(td, src) ? 0 : src);   /* (x2 changed: x0-x2 passed) */
+    const uint64_t r = guest_orig(orig, td, ctx, load_image(td, src) ? 0 : src);   /* (x2 changed: x0-x2 passed) */
+    if (tl_cpu_made && assets_on() && hos_guest_range(td, 0x100) && G64(td + 0xd8)) nvn_texels_cpu_made(GP(G64(td + 0xd8) + 0x10), src);
+    return r;
 }
 
 /* TextureData::rebind_(td, base, res, ctx) */

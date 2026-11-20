@@ -13,7 +13,7 @@ title = "Donkey Kong Bananza"
 
 # the game's patch files (C, beside this file), built with the runtime's and read by the patch scan. Rows at one
 # instruction run in this order (list_kinds.c's before eng_jobs.c's)
-patches = ["patches/list_kinds.c", "patches/eng_jobs.c", "patches/passes.c", "patches/assets.c", "patches/texdata.c", "patches/pools.c", "patches/ndsr.c", "patches/frame_rate.c", "patches/widescreen.c", "patches/hooks.c"]
+patches = ["patches/list_kinds.c", "patches/eng_jobs.c", "patches/passes.c", "patches/assets.c", "patches/texdata.c", "patches/pools.c", "patches/tex_cpu.c", "patches/ndsr.c", "patches/frame_rate.c", "patches/widescreen.c", "patches/hooks.c"]
 
 # the main module's build id and the SHA-256 of exefs/main: another dump stops the lift and the build
 [identity]

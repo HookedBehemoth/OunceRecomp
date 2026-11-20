@@ -37,6 +37,7 @@ nvdrv.c
 nvn_layout.c
 nvn_list.c
 nvn_native.c
+nvn_texels.c
 media/pad_sdl.c
 rx_backend.c
 media/display_sdl.c

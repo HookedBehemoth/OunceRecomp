@@ -142,6 +142,7 @@ struct Link {
     uint64_t plain = 0;
 };
 std::atomic<uint64_t> plain_ids{0};
+std::atomic<int64_t> st_cpu_made{0};   // (GPU_ASSET_CPU loads: textures the game's code made)
 std::atomic<int64_t> st_plain{0};
 std::mutex links_mu;
 std::unordered_map<const void*, Link> links;
@@ -386,6 +387,15 @@ extern "C" MKWVK_EXPORT int gpu_asset_load(const gpu_asset_key* k) {
     if (!k || !k->tex) return 0;
     if (k->path == GPU_ASSET_REBIND) return rebind_load(k);
     if (k->path == GPU_ASSET_SAME) return same_load(k);
+    if (k->path == GPU_ASSET_CPU) {   // (texels the game's code made: a plain image the patch's upload fills)
+        Link l;
+        l.armed = true;
+        l.plain = plain_ids.fetch_add(1, std::memory_order_relaxed) + 1;
+        st_cpu_made.fetch_add(1, std::memory_order_relaxed);
+        std::lock_guard lk(links_mu);
+        links[k->tex] = l;
+        return 0;
+    }
     (k->path == GPU_ASSET_INPLACE ? st_inplace : st_loads).fetch_add(1, std::memory_order_relaxed);
     Link l;
     l.armed = true;
@@ -1007,12 +1017,12 @@ void assets_present(uint64_t present) {
 }
 
 void assets_stats(char* out, size_t cap, double frames) {
-    int k = std::snprintf(out, cap, "assets: loads %lld, in place %lld: prepared %lld (by name and descriptor alone, no data: %lld), no data and no BNTX (plain images) %lld; placeholders: no record of the name %lld, of the "
+    int k = std::snprintf(out, cap, "assets: loads %lld, in place %lld: prepared %lld (by name and descriptor alone, no data: %lld), no data and no BNTX (plain images) %lld, made by the game's code %lld; no image: no record of the name %lld, of the "
                           "descriptor %lld, of the place %lld (ambiguous %lld), not from a BNTX %lld, no store %lld, in the heap unseen %lld, descriptor "
                           "at initialization %lld; initializations %lld (not armed %lld), rebinds %lld (a file's record %lld: the same %lld, another %lld; the link kept %lld; no link %lld); fills %lld (%.0f MB "
                           "from %.0f MB of frames, %lld uploads, staging peak %.1f MB; %.0f ms, of it zstd %.0f ms), failed %lld; "
                           "uploads a frame:",
-                          (long long)st_loads.load(), (long long)st_inplace.load(), (long long)st_prepared.load(), (long long)st_by_name.load(), (long long)st_plain.load(),
+                          (long long)st_loads.load(), (long long)st_inplace.load(), (long long)st_prepared.load(), (long long)st_by_name.load(), (long long)st_plain.load(), (long long)st_cpu_made.load(),
                           (long long)st_miss_name.load(), (long long)st_miss_desc.load(), (long long)st_miss_place.load(), (long long)st_ambiguous.load(),
                           (long long)st_miss_nobntx.load(), (long long)st_miss_nostore.load(), (long long)st_unseen.load(),
                           (long long)st_link_desc.load(), (long long)st_created.load(), (long long)st_unarmed.load(),

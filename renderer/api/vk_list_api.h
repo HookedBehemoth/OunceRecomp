@@ -55,10 +55,12 @@ typedef struct gpu_asset_key {
     const void *same_as;           /* GPU_ASSET_SAME: the NVNtexture whose load's content this texture has (M6f: an
                                       alias's target, docs/direct/texture-streaming.md) */
 } gpu_asset_key;
-enum { GPU_ASSET_LOAD = 1, GPU_ASSET_INPLACE = 2, GPU_ASSET_REBIND = 3, GPU_ASSET_SAME = 4 };
+enum { GPU_ASSET_LOAD = 1, GPU_ASSET_INPLACE = 2, GPU_ASSET_REBIND = 3, GPU_ASSET_SAME = 4, GPU_ASSET_CPU = 5 };
 /* (REBIND: a record found replaces the link; none: the link stays, armed as by gpu_asset_rebind. SAME : a load with no
    data whose texels are another texture's, same_as: it takes that texture's link (its record or its plain image) when the
-   descriptors agree; the host's game patch names it (the alias's target, read from the alias's chain) */
+   descriptors agree; the host's game patch names it (the alias's target, read from the alias's chain). CPU: a texture
+   whose texels the game's code made (agl's TextureInfo path: a default such as DummyTexNotFound), not in the store: a
+   plain image, filled by the patch's GPU_TEXELS_CPU upload after its initialization) */
 GPU_LIST_EXPORT int  gpu_assets_open(const char *dir);              /* the store's folder (index.bin, pack_NNN.bin): its textures, 0 none */
 GPU_LIST_EXPORT int  gpu_asset_load(const gpu_asset_key *k);        /* 1: a prepared record; 0: the texture gets the placeholder (named) */
 GPU_LIST_EXPORT void gpu_asset_rebind(const void *tex);             /* tex is initialized again over new storage (the same record) */
@@ -66,8 +68,9 @@ GPU_LIST_EXPORT void gpu_asset_pool(uint64_t lo, uint64_t hi);      /* the asset
 GPU_LIST_EXPORT void gpu_texture_data_pool(uint64_t lo, uint64_t hi);   /* a texture data pool, named at its creation: layer 0 leaves it unbound */
 /* texels from the CPU that no NVN call carries (game patches): an NVNcopyRegion of tex's level and first layer from
    src (row bytes, layer bytes; 0: packed); src NULL: none to give (the placeholder content, counted) */
-enum { GPU_TEXELS_TERRAIN = 1, GPU_TEXELS_GLYPH = 2, GPU_TEXELS_FILE = 3, GPU_TEXELS_TERRAIN_KEPT = 4 };
-/* (FILE: a prepared file's linear texels, M4e. TERRAIN_KEPT : a tile's bytes the storage still holds, for a texture
+enum { GPU_TEXELS_TERRAIN = 1, GPU_TEXELS_GLYPH = 2, GPU_TEXELS_FILE = 3, GPU_TEXELS_TERRAIN_KEPT = 4, GPU_TEXELS_CPU = 5 };
+/* (FILE: a prepared file's linear texels, M4e. CPU: texels the game's code writes, handed over at the writer.
+   TERRAIN_KEPT : a tile's bytes the storage still holds, for a texture
    initialized there again: taken only into an image nothing has written) */
 GPU_LIST_EXPORT void gpu_texels(uint32_t source, const void *tex, unsigned level, unsigned layer0, const void *region, const void *src,
                 uint64_t row, uint64_t img);
