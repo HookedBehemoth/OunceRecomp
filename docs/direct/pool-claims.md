@@ -24,7 +24,7 @@ error: a log line that names the guest call, and a strict event.
 | Targets | none: an address range with no memory | images the back end owns | render-target allocators (agl::utl::DynamicTextureAllocator), render buffers |
 | Host | none | the host reads guest memory | shader code, command memory |
 | VRAM | device-local memory the back end owns | GPU only: the GPU's copies fill it | pools the CPU cannot access, GPU scratch |
-| Upload | memory the back end owns, read by the GPU | the CPU's writes are copied in at the game's flush, or at the submit for the ranges a ring patch reports | uniform rings, vertex and index data, per-frame CPU data |
+| Upload | memory the back end owns, read by the GPU | the ranges the CPU wrote, reported by a patch on the ring or allocator that hands them out or on the writer, are copied in before the next submit | uniform rings, vertex and index data, per-frame CPU data |
 | Readback | memory the back end owns, written by the GPU | the GPU's writes are copied into the game's memory when their submit completes, before any wait on it returns | report and query memory, GPU results the CPU reads |
 
 A pool can need two kinds for parts of it, for example an object block the CPU fills from a template and the GPU then
@@ -53,7 +53,7 @@ The descriptor heap does not change: textures and samplers were never in pool me
 | Buffer copies and fills (`CopyBufferToBuffer`, `ClearBuffer`) | the import windows | the claim's buffer |
 | Report and occlusion results | a compute step writes 16 bytes into guest memory | the step writes into a Readback claim; the copy to guest memory runs when the submit completes |
 | Render conditions | the report's word read through the windows | the Readback claim's buffer, on the GPU |
-| GPU results the CPU reads (exposure light sums, light visibility) | the CPU reads imported memory | Readback claims on the allocations; the game invalidates before it reads |
+| GPU results the CPU reads (exposure light sums, light visibility) | the CPU reads imported memory | Readback claims on the allocations, copied when their submit completes |
 | CPU_NO_ACCESS pools | layer 0's VRAM class | VRAM claims |
 | The texture heap, shader code | already left unbound | Textures and Host claims |
 
@@ -100,7 +100,7 @@ Each step is one commit. Each one passes `ounce test oot`, a 60-second DKB run, 
 | 2 | Host and Textures claims leave layer 0: shader code, command memory, descriptor pools, texture heaps, in-place texture files. The back end's texture-data-pool and shader-code special cases go | 200 lines, deletes about as many |
 | 3 | Back-end buffers for claims: a VkBuffer per claimed pool, the address table's entries pointed into it, the CPU lookup that replaces `layer0_span`. VRAM claims move first (CPU_NO_ACCESS pools) | 500 lines |
 | 4 | Readback: GPU writes copied into guest memory when their submit completes, before the guest's wait returns. Reports, queries and the light-sum buffers move | 400 lines |
-| 5 | Upload: copies at the game's flush calls (CPU_CACHED pools) and at the submit for ring ranges a patch reports. The uniform rings, object blocks and the in-place files' vertex data move | 700 lines, plus a ring patch per engine allocator |
+| 5 | Upload: the ranges patches report (rings, allocators, writers) copied in before the next submit. The uniform rings, object blocks and the in-place files' vertex data move | 700 lines, plus a patch per engine allocator or writer |
 | 6 | Remove layer 0: the import, the sparse windows, the regions' imports, udmabuf and the host-pointer path, `os_guest`'s export, the import probes, their settings and docs | deletes about 1,500 lines |
 | 7 | The agl texture takeover, then MKW's pools on the same patches | 600 lines across the games |
 
@@ -109,7 +109,8 @@ running.
 
 ## Open questions
 
-- Which 0x22 (CPU uncached) pools the CPU writes every frame without a flush call. Those need a ring patch that
-  reports the written ranges; measure the flush calls per pool before step 5.
+- Every CPU writer into a GPU-read pool, whatever the pool's flags: the games assume unified memory, so a flush or
+  invalidate call is never a signal, only a count for diagnosis. Measure the writers per pool before step 5; each
+  one needs a ring, allocator or writer patch that reports what it wrote.
 - Whether a pool the CPU fills once at load and then never touches can be claimed as Upload with one copy at its
   first use, or needs a load-end signal from its loader.
