@@ -100,6 +100,17 @@ patch, flags, claim) and per use, the largest ranges, the pages that changed sin
 uses, and the guest data shaders reach through stored addresses (a storage buffer addressed by a word outside the
 binding table, or an address held in a small storage buffer of a program that uses global memory).
 
+**The census.** `debug.poolcensus` names who on the CPU writes and reads a pool the GPU uses, and when. It watches the
+pools that `layer0` (the value `1`), claim names (`vram`, `upload`, `readback`, `loadonce`), `by:<patch>` or a hex
+address pick, joined by `+`; `whole` also watches the pages no submission binds, which shaders reach through stored
+addresses. A page a submission binds faults on its next CPU write, and a page GPU work writes faults on its next CPU read
+too, once per present. Each fault is counted by pool maker (its creation call chain) and by writer or reader (function,
+guest call chain, thread), and timed against the submissions that use the page: none outstanding, submitted but not
+started, or on the GPU, and for reads whether the writing submission completed this present or earlier. A write on a
+grain GPU work writes, and whether a writer's report followed it, are noted too. It writes `poolcensus.txt` into the run
+folder every 300 presents. It changes no behaviour; the faults cost about 5 µs each. Host code in the executable is named
+`f_<nearest lifted function>(exe+<offset>)`: `tools/re/samap.py` names the offset.
+
 ## How the GPU finds a claimed pool
 
 Translated shaders read buffers through the address table (`bda_emit.h`): one entry per 64 KB of guest addresses,
