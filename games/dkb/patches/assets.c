@@ -219,7 +219,10 @@ PATCH_FUNC(0x8088e790, word(0xd503237f), body(0x21fbddced3eded15), aapcs, x0, as
 }
 /* a font's BNTX in place (the bffnt's sheets, f_8057f61c): (obj, device, pool, offset), the file at [obj+8] */
 PATCH_FUNC(0x808aa478, word(0xd503237f), body(0xba0dde2aaaa72996), aapcs, x0, assets_font_bntx, orig, as(x0, obj)) {
-    return run_inplace(orig, hos_guest_range(obj, 0x10) ? G64(obj + 8) : 0);
+    nvn_claim_begin(NVN_CLAIM_TEXTURES, "font_bntx_texture_init");   /* (its pool holds the BNTX) */
+    const uint64_t r = run_inplace(orig, hos_guest_range(obj, 0x10) ? G64(obj + 8) : 0);
+    nvn_claim_end();
+    return r;
 }
 
 static int index_in(uint64_t bntx, uint64_t brti) {
@@ -288,27 +291,11 @@ PATCH_AT(0x80768504, word(0xf94f4e60), after, none, assets_glyph_plotted, as(x19
     os_atomic_inc(&n_glyphs);
 }
 
-/* The texture heap's pools are made inside agl::TextureDataMgr::InitializeHeap (assets_heap_init f_80577140), through
-   agl's pool wrapper f_80577b30: named to the back end at their creation, before layer 0 binds pools, so that it leaves
-   them unbound (it takes every texel of them from the store and never reads them). */
-static _Thread_local int tl_heap_init;
+/* agl::TextureDataMgr::InitializeHeap (f_80577140): its pools hold texture storage only: claimed as such
+   (runtime/nvn_claims.h), so nothing backs them on the GPU */
 PATCH_FUNC(0x80577140, word(0xd503237f), body(0xd76e3c5e7f45b5b0), aapcs, x0, assets_heap_init, orig) {
     nvn_claim_begin(NVN_CLAIM_TEXTURES, "agl::TextureDataMgr::InitializeHeap");
-    tl_heap_init = assets_on();
     const uint64_t r = guest_orig(orig);
-    tl_heap_init = 0;
     nvn_claim_end();
     return r;
-}
-/* (in f_80577b30, after ldr x8, [x8] before its blr to nvnMemoryPoolInitialize at 0x80577be0) the next pool this thread
-   makes is agl's wrapper's */
-static _Thread_local int tl_agl_pool;
-PATCH_AT(0x80577bdc, word(0xf9400108), after, none, assets_agl_pool) { tl_agl_pool = 1; }
-void game_pool_made(uint64_t gpu, uint64_t size) {
-    const int agl = tl_agl_pool;
-    tl_agl_pool = 0;
-    if (!agl || !tl_heap_init || !assets_on()) return;
-    hos_log("assets: the texture data pool made: %#llx + %llu MB (agl::TextureDataMgr)", (unsigned long long)gpu,
-            (unsigned long long)(size >> 20));
-    rx_direct()->texture_data_pool(gpu, gpu + size);
 }

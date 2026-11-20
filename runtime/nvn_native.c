@@ -33,7 +33,7 @@
 #include "os.h"
 uint64_t hos_hostcall(const char *name, void (*fn)(Ctx *, void *), void *user);   /* hos_hostcall.c */
 void hos_gpu_track(uint64_t guest, uint64_t size, int on);                          /* nvdrv.c */
-void rx_nvn_pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t key, int on);   /* rx_backend.c (native-vk layer 0) */
+void rx_nvn_pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, uint64_t key, int on);   /* rx_backend.c (native-vk layer 0) */
 uint64_t hos_guest_size(void);                                                       /* hos_main.c */
 
 /* (native-vk layer 0) a pool's creation key: FNV-1a over the caller's return address and up to 5 more from the guest frame-pointer
@@ -329,8 +329,7 @@ NV(nvnMemoryPoolInitialize,
         hos_log("nvn: pool %#llx size %#llx flags %#x claimed %s by %s, made by %s", (unsigned long long)o->gpu,
                 (unsigned long long)o->size, o->flags, kClaimNames[o->claim], tl_claim.by, b);
     }
-    game_pool_made(o->gpu, o->size);   /* (the patches may name the pool to the back end before its binding) */
-    rx_nvn_pool_native(o->gpu, o->size, o->flags, pool_creation_key(c), 1);   /* (native-vk layer 0: placed by its flags, before any binding) */
+    rx_nvn_pool_native(o->gpu, o->size, o->flags, o->claim, pool_creation_key(c), 1);   /* (native-vk layer 0: placed by its flags, before any binding) */
     rx_nvn_pool_created(o->gpu, o->size);
     OLOG("pool %#llx size %#llx flags %#x", (unsigned long long)o->gpu, (unsigned long long)o->size, o->flags);
     RET(1);
@@ -349,7 +348,7 @@ NV(nvnMemoryPoolFinalize) {
     if (no_pool(c, "finalize")) return;
     nvn_pool *o = (nvn_pool *)P(0);
     if (o->mem && o->magic == NVN_MAGIC('P', 'O', 'O', 'L')) {   /* (a virtual pool's GPU range is not reused) */
-        rx_nvn_pool_native(o->gpu, o->size, o->flags, 0, 0);   /* (native-vk layer 0: kept a while for an identical Initialize) */
+        rx_nvn_pool_native(o->gpu, o->size, o->flags, o->claim, 0, 0);   /* (native-vk layer 0: kept a while for an identical Initialize) */
         hos_gpu_track(o->gpu, o->size, 0);
     }
     o->magic = 0;

@@ -65,7 +65,6 @@ GPU_LIST_EXPORT int  gpu_assets_open(const char *dir);              /* the store
 GPU_LIST_EXPORT int  gpu_asset_load(const gpu_asset_key *k);        /* 1: a prepared record; 0: the texture gets the placeholder (named) */
 GPU_LIST_EXPORT void gpu_asset_rebind(const void *tex);             /* tex is initialized again over new storage (the same record) */
 GPU_LIST_EXPORT void gpu_asset_pool(uint64_t lo, uint64_t hi);      /* the asset heap's pool (pool 127): its textures need a load */
-GPU_LIST_EXPORT void gpu_texture_data_pool(uint64_t lo, uint64_t hi);   /* a texture data pool, named at its creation: layer 0 leaves it unbound */
 /* texels from the CPU that no NVN call carries (game patches): an NVNcopyRegion of tex's level and first layer from
    src (row bytes, layer bytes; 0: packed); src NULL: none to give (the placeholder content, counted) */
 enum { GPU_TEXELS_TERRAIN = 1, GPU_TEXELS_GLYPH = 2, GPU_TEXELS_FILE = 3, GPU_TEXELS_TERRAIN_KEPT = 4, GPU_TEXELS_CPU = 5 };

@@ -7,7 +7,6 @@
 
 /* ---- textures (nvn_native.c) ---- */
 /* a memory pool made at gpu (the patches may know which of the game's pools it is) */
-void game_pool_made(uint64_t gpu, uint64_t size);
 /* 1: a texture's packaged data of this size is not copied into its storage (the back end has its texels) */
 /* a texture initialized: obj its guest object, gpu its storage's address, desc its nvn_texdesc, lr the caller's
    return address; before the runtime's own record of it */

@@ -167,7 +167,6 @@ const gpu_fns *rx_direct(void) {
         DIRECT_FN(asset_load, "gpu_asset_load")
         DIRECT_FN(asset_rebind, "gpu_asset_rebind")
         DIRECT_FN(asset_pool, "gpu_asset_pool")
-        DIRECT_FN(texture_data_pool, "gpu_texture_data_pool")
         DIRECT_FN(texels, "gpu_texels")
         DIRECT_FN(pass_known, "gpu_pass_known")
         DIRECT_FN(pass_inline, "gpu_pass_inline")
@@ -329,8 +328,8 @@ void rx_nvn_texture_created(const nvn_tex *t) {
 void rx_nvn_program_released(const nvn_prog *p) { if (vk) vk->nvn_program_released(p); }
 void rx_nvn_program_set(const nvn_prog *p) { if (vk && vk->nvn_program_set) vk->nvn_program_set(p); }
 /* (native-vk layer 0) a pool made or finalized, with its flags and creation key (gpu/legacy/vk/vk_pools.cpp) */
-void rx_nvn_pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t key, int on) {
-    if (vk && vk->nvn_pool_native) vk->nvn_pool_native(gpu, size, flags, key, on);
+void rx_nvn_pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, uint64_t key, int on) {
+    if (vk && vk->nvn_pool_native) vk->nvn_pool_native(gpu, size, flags, claim, key, on);
 }
 void rx_nvn_read_texels(const nvn_tex *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, uint8_t *dst,
                         size_t row, size_t img) {

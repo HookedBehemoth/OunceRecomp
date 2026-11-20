@@ -187,7 +187,7 @@ uint64_t present_count();   // (presents the host asked for so far: the frame nu
 // ---- vk_pools.cpp: layer 0 ----
 bool layer0_on();
 void layer0_pool_created(uint64_t gpu, uint64_t size);
-void layer0_pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t key, int on);
+void layer0_pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, uint64_t key, int on);
 bool layer0_bound(uint64_t lo, uint64_t hi);
 /// Guest [gpu, gpu + size) as a window buffer and offset, bound first if it is not (imported now: a wait); false: not
 /// in one window, not guest memory, or not importable

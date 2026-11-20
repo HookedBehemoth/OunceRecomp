@@ -284,11 +284,17 @@ static uint64_t run_inplace(GuestFn *orig, uint64_t file) {
 /* ResTextureFile in place (ui2d) */
 PATCH_FUNC(0x80798b60, word(0xd503237f), body(0xbc01f749f0fff475), aapcs, x0, assets_inplace_res,
            orig, x0) {
-    return run_inplace(orig, x0);
+    nvn_claim_begin(NVN_CLAIM_TEXTURES, "texdata_load_in_place_a");   /* (its pool holds the file's textures) */
+    const uint64_t r = run_inplace(orig, x0);
+    nvn_claim_end();
+    return r;
 }
 PATCH_FUNC(0x80792bd0, word(0xd503237f), body(0x388a5e46c19d2d62), aapcs, x0, assets_inplace_bntx,
            orig, x1) {
-    return run_inplace(orig, x1);   /* in-place BNTX */
+    nvn_claim_begin(NVN_CLAIM_TEXTURES, "texdata_load_in_place_b");
+    const uint64_t r = run_inplace(orig, x1);   /* in-place BNTX */
+    nvn_claim_end();
+    return r;
 }
 
 /* nn::gfx TextureImpl<NVN>::Initialize(obj, device, info, pool, offset, size): an in-place file's texture */
@@ -334,35 +340,13 @@ PATCH_AT(0x83537d90, word(0xd503237f), before, none, assets_replace_load, as(x1,
                 (unsigned long long)size);
 }
 
-/* The texture data pool (pool 127, 2.4 GB) is made by agl::TextureDataMgr, whose nvnMemoryPoolInitialize returns to
-   0x80f6cb20 (nvn.log_pools, run m4f_pl_d: the only pool made from there). The direct back end takes every texel of
-   it from the store and never reads it, so its layer 0 leaves it unbound: named here, at its creation, before layer 0
-   binds pools (vk_pools.cpp layer0_pool_native). The manager makes more than one (Kokiri: 2432 MB at boot, 201 MB and
-   2 MB at the scene load): each is named. find_heap still names the asset heap's pool (127) to the asset path, as before. */
-/* f_80f6c9d0 (lr 0x80f6cb20) is agl's generic pool wrapper (tera's pools and Replace requests use it too:
-   docs/direct/texture-streaming.md): the texture heap is the pool it makes inside agl::TextureDataMgr::InitializeHeap
-   (f_80f6c580), whose body runs from here with this thread noted */
-static _Thread_local int tl_heap_init;
-PATCH_FUNC(0x80f6c580, word(0xd503237f), body(0xd879562121f32735), aapcs, x0, assets_heap_init,
-           orig) {
+/* agl::TextureDataMgr::InitializeHeap (f_80f6c580): its pools, the texture heap (pool 127, 2.4 GB) and the others the
+   manager makes, hold texture storage only: claimed as such (runtime/nvn_claims.h), so nothing backs them on the GPU */
+PATCH_FUNC(0x80f6c580, word(0xd503237f), body(0xd879562121f32735), aapcs, x0, assets_heap_init, orig) {
     nvn_claim_begin(NVN_CLAIM_TEXTURES, "agl::TextureDataMgr::InitializeHeap");
-    tl_heap_init = assets_on();
     const uint64_t r = guest_orig(orig);
-    tl_heap_init = 0;
     nvn_claim_end();
     return r;
-}
-/* (an At row in f_80f6c9d0 agl_memory_pool_create, after ldr x8, [x8] before its blr to nvnMemoryPoolInitialize at
-   0x80f6cb1c) the next pool this thread makes is agl's wrapper's */
-static _Thread_local int tl_agl_pool;
-PATCH_AT(0x80f6cb18, word(0xf9400108), after, none, assets_agl_pool) { tl_agl_pool = 1; }
-void game_pool_made(uint64_t gpu, uint64_t size) {
-    const int agl = tl_agl_pool;
-    tl_agl_pool = 0;
-    if (!agl || !tl_heap_init || !assets_on()) return;
-    hos_log("assets: the texture data pool made: %#llx + %llu MB (agl::TextureDataMgr)", (unsigned long long)gpu,
-            (unsigned long long)(size >> 20));
-    rx_direct()->texture_data_pool(gpu, gpu + size);
 }
 
 /* ---- the tiles' bytes, kept by storage address ----

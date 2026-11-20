@@ -25,6 +25,10 @@ PATCH_FUNC(0x80b65f00, word(0xd503237f), body(0x1688e4429b5f5bb0), aapcs, x0, po
 PATCH_FUNC(0x80f71a00, word(0xd503237f), body(0xe6b4bb892a0f8c6d), aapcs, x0, pools_ndsr, orig) {
     CLAIM("ndsr_network_setup", NVN_CLAIM_HOST);
 }
+/* the in-place shader binaries (nn::gfx pools of flags 0x64) */
+PATCH_FUNC(0x812c3d60, word(0xd503237f), body(0x29df94e62f1665a4), aapcs, x0, pools_shader_binary, orig) {
+    CLAIM("f_812c3d60", NVN_CLAIM_HOST);
+}
 /* the gsys GPU heap (0x12, 0x22, 0x24, 0xa1: uniform blocks, vertex streams, GPU scratch) */
 PATCH_FUNC(0x809de920, word(0xd503237f), body(0x02d1932cc850ce16), aapcs, x0, pools_gpu_heap, orig) {
     CLAIM("gpu_pool_create", NVN_CLAIM_LAYER0);

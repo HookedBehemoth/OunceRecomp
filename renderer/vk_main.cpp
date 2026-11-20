@@ -358,9 +358,9 @@ void pool_created(uint64_t gpu, uint64_t size) {
     count(R_POOL);
     layer0_pool_created(gpu, size);
 }
-void pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t key, int on) {
+void pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, uint64_t key, int on) {
     count(R_POOL_NATIVE);
-    layer0_pool_native(gpu, size, flags, key, on);
+    layer0_pool_native(gpu, size, flags, claim, key, on);
 }
 int guest_imported(uint64_t lo, uint64_t hi) { return layer0_bound(lo, hi) ? 1 : 0; }
 

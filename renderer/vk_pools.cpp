@@ -33,6 +33,7 @@
 #include "vk_query.h"
 #include "layer0_windows.h"
 #include "vk_assets.h"
+#include "nvn_claims.h"
 #include "os.h"
 #include "os_guest.h"
 
@@ -49,7 +50,7 @@ namespace l0 = mkwvk::l0;
 using clk = std::chrono::steady_clock;
 constexpr uint64_t G = l0::kGran;
 constexpr uint32_t kCpuNoAccess = 0x1, kCpuUncached = 0x2, kCpuCached = 0x4, kGpuNoAccess = 0x8, kPhysical = 0x100,
-                   kVirtual = 0x200, kShaderCode = 0x40;   // (NVNmemoryPoolFlags)
+                   kVirtual = 0x200;   // (NVNmemoryPoolFlags)
 constexpr uint64_t kBlock = 256ull << 20;
 constexpr uint64_t kChunkMb = 16,   // (64 MB: 1.7 GB more pinned in Kokiri, boot binds 4x slower, no submit gain)
                 kVramLimit = 2048ull << 20;
@@ -578,17 +579,14 @@ void vram_pool_made(uint64_t base, uint64_t size, uint32_t flags, uint64_t key) 
 /// A pool made: bound in full now (its host chunks queued for the importer), whatever its size, when the GPU can read it.
 /// Shaders follow pointers the game stores in memory (the probe tables of a 150 MB pool in Kokiri), so any
 /// GPU-readable pool may be read with no binding naming it; before, only pools up to 64 MB were bound ahead and the rest
-/// at a binding's use, and memory reached only by a stored pointer read the null window: zeros. Not bound: pools the GPU
-/// cannot read, virtual pools (GPU addresses past layer 0's window: their physical pools are what is bound), shader code
-/// (translated, never read), and one named pool: the texture data pool (games/oot/patches/assets.c names it at its creation),
-/// whose texels come from the store and are never read from guest memory, bound at its uses as before. A VRAM-class pool's
+/// at a binding's use, and memory reached only by a stored pointer read the null window: zeros. Only pools claimed as
+/// layer 0's (nvn_claims.h) come here; of those, the ones the GPU cannot read are not bound. A VRAM-class pool's
 /// interior granules are in VRAM already (vram_pool_made); its partial edge granules are host and bound here. One line a
 /// pool of a chunk or more, the rest counted (mu held)
-std::atomic<int64_t> st_ahead_pools{0}, st_ahead_bytes{0}, st_left_pools[4];
+std::atomic<int64_t> st_ahead_pools{0}, st_ahead_bytes{0}, st_left_pools[2], st_claimed_off{0};
 void bind_ahead(uint64_t gpu, uint64_t size, uint32_t flags, bool vr) {
-    const int why = (flags & kGpuNoAccess) ? 1 : (flags & kVirtual) ? 1 : (flags & kShaderCode) ? 2 : assets_pool_is(gpu, size) ? 3 : 0;
-    static const char* const kWhy[4] = {"bound in full", "not bound (the GPU cannot read it, or virtual)", "not bound (shader code)",
-                                        "not bound: the texture data pool, bound at its uses"};
+    const int why = (flags & kGpuNoAccess) ? 1 : 0;
+    static const char* const kWhy[2] = {"bound in full", "not bound (the GPU cannot read it)"};
     if (size >= chunk) logf("direct: layer 0: pool %#llx+%#llx flags %#x%s: %s", (unsigned long long)gpu, (unsigned long long)size, flags,
                             vr ? " (VRAM class: its edges)" : "", kWhy[why]);
     if (why) return void(st_left_pools[why].fetch_add(1, std::memory_order_relaxed));
@@ -941,14 +939,14 @@ bool layer0_on() {
         granule_region.reset(new std::atomic<uintptr_t>[(guest_bytes >> kRegionShift) + 1]);
         for (uint64_t j = 0; j <= guest_bytes >> kRegionShift; j++) granule_region[j].store(0, std::memory_order_relaxed);
         logf("direct: layer 0 on: guest memory in regions (a plain buffer each over a pool's pages, in 64 MB imported arenas), "
-             "every GPU-readable pool held at its creation (but the texture data pool, at its uses); CPU_NO_ACCESS pools in VRAM (up to %llu MB)",
+             "every GPU-readable pool claimed as layer 0's held at its creation; CPU_NO_ACCESS pools in VRAM (up to %llu MB)",
              (unsigned long long)(kVramLimit >> 20));
         state.store(1, std::memory_order_release);
         return true;
     }
     os_thread_release(os_thread_start(worker_main, nullptr, 0, "direct layer 0"));
     logf("direct: layer 0 on: guest memory in 4 GB windows every 2 GB, chunks of %llu MB (an export's limit %llu MB), every "
-         "GPU-readable pool bound in full at its creation (but the texture data pool); CPU_NO_ACCESS pools in VRAM (up to %llu MB, "
+         "GPU-readable pool claimed as layer 0's bound in full at its creation; CPU_NO_ACCESS pools in VRAM (up to %llu MB, "
          "kept %.0f s)", (unsigned long long)(chunk >> 20), (unsigned long long)(export_limit >> 20), (unsigned long long)(kVramLimit >> 20), kKeepS);
     state.store(1, std::memory_order_release);
     return true;
@@ -958,8 +956,12 @@ void layer0_pool_created(uint64_t gpu, uint64_t size) {   // (M4f: bound in laye
     (void)gpu, (void)size;
 }
 
-void layer0_pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t key, int on) {
+void layer0_pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, uint64_t key, int on) {
     if (!size || gpu >= (1ull << 40)) return;
+    if (claim != NVN_CLAIM_LAYER0) {   // (a pool its claim keeps off the GPU: texture storage, render targets, host-only)
+        if (on) st_claimed_off.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
     if (!layer0_on()) {
         st_early.fetch_add(1, std::memory_order_relaxed);   // (before the device)
         return;
@@ -968,7 +970,7 @@ void layer0_pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t ke
         std::lock_guard lk(mu);
         if (on) {
             live.insert({gpu, LivePool{size, flags, false}});
-            const int why = (flags & (kGpuNoAccess | kVirtual)) ? 1 : (flags & kShaderCode) ? 2 : assets_pool_is(gpu, size) ? 3 : 0;
+            const int why = (flags & kGpuNoAccess) ? 1 : 0;
             if (why) return void(st_left_pools[why].fetch_add(1, std::memory_order_relaxed));
             st_ahead_pools.fetch_add(1, std::memory_order_relaxed), st_ahead_bytes.fetch_add((int64_t)size, std::memory_order_relaxed);
             if (!(vram_class(size, flags) && region_vram(gpu, gpu + size))) region_pool(gpu, std::min(gpu + size, guest_bytes));
@@ -1118,14 +1120,13 @@ void layer0_stats(char* out, size_t cap) {
         retired_sweep();
         std::snprintf(out, cap, "layer 0: %lld arenas and %lld imports of their own; %lld regions made (%llu MB imported in all, %llu MB live; %lld taken over by others, "
                       "%lld of those freed), %lld merges, %lld failed; VRAM: %lld pools, %llu MB live, %lld not placed; in "
-                      "%.1f ms; %lld spans made at their use; pools held at creation %lld (%lld MB), not held: %lld the GPU cannot read "
-                      "or virtual, %lld shader code, %lld the texture data pool",
+                      "%.1f ms; %lld spans made at their use; pools held at creation %lld (%lld MB), not held: %lld the GPU cannot read, "
+                      "%lld its claim keeps off the GPU",
                       (long long)st_arenas, (long long)st_own_imports, (long long)st_regions, (unsigned long long)(st_region_bytes >> 20), (unsigned long long)(region_live_bytes >> 20),
                       (long long)(st_region_freed + (int64_t)retired.size()), (long long)st_region_freed, (long long)st_region_merges,
                       (long long)st_region_failed, (long long)st_vpools, (unsigned long long)(vram_used >> 20), (long long)st_vram_failed,
                       st_region_ms, (long long)st_span_binds.load(), (long long)st_ahead_pools.load(),
-                      (long long)(st_ahead_bytes.load() >> 20), (long long)st_left_pools[1].load(), (long long)st_left_pools[2].load(),
-                      (long long)st_left_pools[3].load());
+                      (long long)(st_ahead_bytes.load() >> 20), (long long)st_left_pools[1].load(), (long long)st_claimed_off.load());
         return;
     }
     int64_t kept = 0, livev = 0;
@@ -1133,15 +1134,14 @@ void layer0_stats(char* out, size_t cap) {
     std::snprintf(out, cap, "layer 0: %lld chunks bound (%llu MB) in %lld windows, %lld bind calls, imports %.1f ms, binds %.1f ms, "
                   "longest %.1f ms, %lld failed; VRAM: %lld pools live, %lld kept, %llu MB in %zu runs (%zu blocks), %lld placed, "
                   "%lld handed back, %lld given back, %lld demoted, %lld not placed, %lld waits (%.1f ms); %lld pool calls before the device; "
-                  "%lld copy spans bound at their use; pools bound in full at creation %lld (%lld MB), not bound: %lld the GPU cannot read or "
-                  "virtual, %lld shader code, %lld the texture data pool",
+                  "%lld copy spans bound at their use; pools bound in full at creation %lld (%lld MB), not bound: %lld the GPU cannot read, "
+                  "%lld its claim keeps off the GPU",
                   (long long)st_chunks, (unsigned long long)(st_chunks * (int64_t)chunk >> 20), (long long)st_windows,
                   (long long)st_bind_calls, st_import_ms, st_bind_ms, st_max_ms, (long long)st_failed, (long long)livev, (long long)kept,
                   (unsigned long long)(vram_used >> 20), vram.size(), blocks.size(), (long long)st_vpools, (long long)st_handback,
                   (long long)st_released, (long long)st_demoted, (long long)st_vram_failed, (long long)st_waits, st_wait_ms,
                   (long long)st_early.load(), (long long)st_span_binds.load(), (long long)st_ahead_pools.load(),
-                  (long long)(st_ahead_bytes.load() >> 20), (long long)st_left_pools[1].load(), (long long)st_left_pools[2].load(),
-                  (long long)st_left_pools[3].load());
+                  (long long)(st_ahead_bytes.load() >> 20), (long long)st_left_pools[1].load(), (long long)st_claimed_off.load());
 }
 
 }  // namespace hsd

@@ -15,7 +15,6 @@ void texdata_created(uint64_t td, int alias);
 const void *game_texture_moving(void);   /* (this thread's texture being moved by compaction, else NULL) */
 void texdata_line(char *out, size_t cap);
 /* nvnMemoryPoolInitialize (lr its return address): agl::TextureDataMgr's pool is named to the back end */
-void game_pool_made(uint64_t gpu, uint64_t size);
 /* nvn_native.c nvnTextureInitialize, after the back end made its image: terrain tiles given for its storage before it */
 extern volatile long assets_tiles_pending;
 extern volatile long assets_tilelog;   /* (M6f: debug.tilelog, a diagnosis) */

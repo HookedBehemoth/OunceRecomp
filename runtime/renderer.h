@@ -21,7 +21,6 @@ typedef struct {
     int (*asset_load)(const gpu_asset_key *k);
     void (*asset_rebind)(const void *tex);
     void (*asset_pool)(uint64_t lo, uint64_t hi);
-    void (*texture_data_pool)(uint64_t lo, uint64_t hi);   /* a pool of agl::TextureDataMgr, at its creation */
     void (*texels)(uint32_t source, const void *tex, unsigned level, unsigned layer0, const void *region, const void *src,
                    uint64_t row, uint64_t img);
     /* the format table by pass key: the job recorder's question, the game's inline path */

@@ -161,7 +161,7 @@ typedef struct MkwVkRenderer {
     /* (native-vk layer 0, version 14) a memory pool made (on 1) or finalized (on 0), not virtual ones: its NVN flags and the key of
        its creation chain (a hash of the caller's return address and the guest frame-pointer chain above it, 6 deep; 0 at a
        finalize): what the renderer places it by (gpu/legacy/vk/vk_pools.cpp, RX_VK_LAYER0=2) */
-    void (*nvn_pool_native)(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t key, int on);
+    void (*nvn_pool_native)(uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, uint64_t key, int on);   /* (version 18: claim, runtime/nvn_claims.h) */
 } MkwVkRenderer;
 
 /* what the back end exports (Windows exports only what is marked; elsewhere the library is built hidden) */
