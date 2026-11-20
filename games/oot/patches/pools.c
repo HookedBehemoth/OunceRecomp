@@ -178,9 +178,10 @@ PATCH_FUNC(0x80cb2a40, word(0xd503237f), body(0x94458a45d56814cc), aapcs, x0, po
 }
 /* f_80365950 (cull_veg_task_records_write, from f_80586fd0 on the main thread) writes f_80c5da90's task records each frame: the
    count at the list's first record (`str w24, [x23, x8]`) and count x 0x40 bytes of records (a memcpy). Shaders reach
-   them through stored addresses, not binds (one of the two pools is never bound): reported */
-PATCH_AT(0x803659fc, word(0xb8286af8), after, none, pools_veg_count, as(x23, list), as(x8, off)) { nvn_claim_write(list + off, 4); }
-/* (after the memcpy: its destination as the function computes it, list + layout[+0x4c], x20 the list's buffer object) */
+   them through stored addresses, not binds (one of the two pools is never bound). The count's flush (0x80365b04) is a
+   reported write; the records' memcpy (0x80365b64, never reached in Kokiri) is reported: its destination as the function
+   computes it, list + layout[+0x4c], x20 the list's buffer object */
+PATCH_AT(0x80365b04, word(0xd63f0100), before, none, pools_veg_flush) { nvn_claim_flush_written(); }
 PATCH_AT(0x80365b64, word(0x94e3f203), after, none, pools_veg_records, as(x20, buf), as(x23, list), as(x24, count)) {
     const uint64_t dst = list + G32(G64(G64(buf + 0x10)) + 0x4c);
     nvn_claim_write(dst, (uint64_t)(uint32_t)count << 6);
@@ -304,18 +305,19 @@ PATCH_FUNC(0x80c58d70, word(0xd503237f), body(0xec736dd16a039ab2), aapcs, x0, po
 /* ---- the probe module's calc blocks (gpu_calc_block_create, from probe_calc_block_init: 150 MB, and f_80c5c450 beside
    probe_bake_load: 0x2000; docs/direct/pool-users.md, "The probe module"). Never bound: shaders reach them through
    stored addresses: VRAM. gpu_calc_block_create fills its five ubo objects after making the pool, inside the claim's
-   scope (the scope's end copies them). Later writers, reported:
-   - probe_calc_stream_write's memcpy of count ([x19 + 0x78]) x 16 bytes (about 26 pages a present);
+   scope (the scope's end copies them). Later writers:
+   - probe_calc_stream_write's memcpy of count ([x19 + 0x78]) x 16 bytes (about 26 pages a present) and
+     probe_calc_fields_write's six 8-byte fields at the f_80c5c450 block's current half, each flushed by its writer (the
+     tail call at 0x806ad940, 0x806ad0b0): those flushes are reported writes;
    - the BakeProbe thread's probe_bake_records_write: count ([x3 + 0x30]) records of 0x80 bytes at [x0 + 0x300] + 0x80 x
-     [x2 + 8], and count ([x3 + 0x20]) of 0x20 at [x0 + 0x270] + 0x20 x [x2];
-   - probe_calc_fields_write's six 8-byte fields at the f_80c5c450 block's current half (x20, its last store at
-     0x806acfdc) */
+     [x2 + 8], and count ([x3 + 0x20]) of 0x20 at [x0 + 0x270] + 0x20 x [x2], reported: its flush comes before the
+     records and covers the whole 156 MB block */
 PATCH_AT(0x806accec, word(0x9416be2d), before, none, pools_probe_calc) { nvn_claim_begin(NVN_CLAIM_VRAM, "probe_calc_block_init calc block"); }
 PATCH_AT(0x806accf0, word(0x36000420), before, none, pools_probe_calc_end) { nvn_claim_end(); }
 PATCH_AT(0x80c5c55c, word(0x94000011), before, none, pools_probe_bake_calc) { nvn_claim_begin(NVN_CLAIM_VRAM, "f_80c5c450 calc block"); }
 PATCH_AT(0x80c5c560, word(0xa94b4ff4), before, none, pools_probe_bake_calc_end) { nvn_claim_end(); }
-PATCH_AT(0x806ad880, word(0x94d6d2bc), after, none, pools_probe_stream, as(x0, dst), as(x21, count)) { nvn_claim_write(dst, (uint64_t)count << 4); }
-PATCH_AT(0x806acfdc, word(0xf9001288), after, none, pools_probe_fields, as(x20, at)) { nvn_claim_write(at, 0x28); }
+PATCH_AT(0x806ad940, word(0xd61f0060), before, none, pools_probe_stream_flush) { nvn_claim_flush_written(); }
+PATCH_AT(0x806ad0b0, word(0xd63f0100), before, none, pools_probe_fields_flush) { nvn_claim_flush_written(); }
 PATCH_FUNC(0x80711820, word(0xd503237f), body(0x73bee5ec6ea59328), aapcs, x0, pools_bake_probe_records, orig, as(x0, obj),
            as(x2, idx), as(x3, counts)) {
     /* (the destinations as the function reads them at its start: both indexes are x2's words, +8 and +0 (it keeps x2 at
@@ -355,31 +357,18 @@ PATCH_AT(0x80c62a38, word(0x97e2fade), before, none, pools_80c62260_a) { nvn_cla
 PATCH_AT(0x80c62a3c, word(0xb9400f28), before, none, pools_80c62260_a_end) { nvn_claim_end(); }
 PATCH_AT(0x80c62f88, word(0x97e2f98a), before, none, pools_80c62260_b) { nvn_claim_begin(NVN_CLAIM_VRAM, "f_80c62260 blocks"); }
 PATCH_AT(0x80c62f8c, word(0xb9400f28), before, none, pools_80c62260_b_end) { nvn_claim_end(); }
-/* cull_scene_blocks_init (f_80c62260) fills each block it just made, after the claim's scope: a 16-byte record per entry (stp xzr, xzr at
-   0x80c62af0 in the first block; stp x23, x24 at 0x80c6301c in the second), w24 / w20 entries a stride apart. Each loop's
-   records are gathered and reported where its two paths meet (0x80c62b0c, 0x80c63034), once a scene */
-static _Thread_local uint64_t fill_lo, fill_hi;
-static void fill_note(uint64_t at) {
-    if (!fill_hi || at < fill_lo) fill_lo = at;
-    if (at + 16 > fill_hi) fill_hi = at + 16;
-}
-static void fill_report(void) {
-    if (fill_hi) nvn_claim_write(fill_lo, fill_hi - fill_lo);
-    fill_lo = fill_hi = 0;
-}
-PATCH_AT(0x80c62af0, word(0xa9007d1f), after, none, pools_80c62260_fill_a, as(x8, at)) { fill_note(at); }
-PATCH_AT(0x80c62b0c, word(0x1a9f3108), before, none, pools_80c62260_fill_a_end) { fill_report(); }
-PATCH_AT(0x80c6301c, word(0xa9006117), after, none, pools_80c62260_fill_b, as(x8, at)) { fill_note(at); }
-PATCH_AT(0x80c63034, word(0x1a9f3108), before, none, pools_80c62260_fill_b_end) { fill_report(); }
-/* f_80c63e70 (called by f_80c62260 on SceneLowPriority) fills f_80c64650's block: memcpy of count (w23) x 4 bytes. Kokiri
-   never binds that block (shaders reach it through stored addresses): reported */
-/* cull_address_block_create (f_80c64650) stores an 8-byte GPU address (a 0x90 ubo object's +0x80 of [x20 + 0xe8]) into
-   the one-word block it just allocated (ubo_object_pool_alloc at 0x80c649dc): shaders load it to find their data. That
-   block lands in a heap pool another maker grew (cull_task_block_fill's), so it is reported */
-PATCH_AT(0x80c64a28, word(0xf90002a8), after, none, pools_80c64650_address, as(x21, at)) { nvn_claim_write(at, 8); }
-PATCH_AT(0x80c64244, word(0x94bff84b), after, none, pools_80c64650_fill, as(x0, dst), as(x23, count)) {
-    if ((int32_t)count > 0) nvn_claim_write(dst, (uint64_t)(int32_t)count << 2);
-}
+/* Writes after the claims' scopes that shaders reach through stored addresses, each flushed by the writer itself: those
+   flushes are reported writes (a census in Kokiri: every write inside the flush that follows it, no grain the GPU writes).
+   - cull_scene_blocks_init (f_80c62260) fills each block it just made, a 16-byte record per entry, and flushes the
+     records (0x80c63174, 0x80c6323c), once a scene;
+   - f_80c63e70 (called by f_80c62260 on SceneLowPriority) fills f_80c64650's block (count x 4 bytes, never bound in
+     Kokiri) and flushes it (0x80c64234);
+   - cull_address_block_create (f_80c64650) stores an 8-byte GPU address into the one-word block it just allocated, in a
+     heap pool another maker grew (cull_task_block_fill's), and flushes it (0x80c64af4) */
+PATCH_AT(0x80c63174, word(0xd63f0100), before, none, pools_80c62260_flush_a) { nvn_claim_flush_written(); }
+PATCH_AT(0x80c6323c, word(0xd63f0100), before, none, pools_80c62260_flush_b) { nvn_claim_flush_written(); }
+PATCH_AT(0x80c64234, word(0xd63f0100), before, none, pools_80c63e70_flush) { nvn_claim_flush_written(); }
+PATCH_AT(0x80c64af4, word(0xd63f0100), before, none, pools_80c64650_flush) { nvn_claim_flush_written(); }
 PATCH_AT(0x80dd81d0, word(0x9400002c), before, none, pools_texdata_storage) { nvn_claim_begin(NVN_CLAIM_VRAM, "texdata_storage_block"); }
 PATCH_AT(0x80dd81d4, word(0xf9400282), before, none, pools_texdata_storage_end) { nvn_claim_end(); }
 /* CPU-written blocks binds read: f_80cdf2f0's two (texdata_model_procedural's), f_80c5ea90's, f_82c24db0's, and the
@@ -400,10 +389,8 @@ PATCH_AT(0x80f6aa0c, word(0x910003e0), before, none, pools_agl_general_end) { nv
 PATCH_AT(0x80c4d598, word(0x94000efe), before, none, pools_agl_driver_dl_c) { nvn_claim_begin(NVN_CLAIM_HOST, "agl_driver_mgr_dl lists"); }
 PATCH_AT(0x80c4d59c, word(0xa95b4ff4), before, none, pools_agl_driver_dl_c_end) { nvn_claim_end(); }
 /* the probe module's storage block (storage_block_create in probe_storage_init, 5.5 MB): draws bind it whole, read only;
-   bake::ModuleMgr writes 32-byte records into it through f_80c4e880 (count x 32 bytes at x21, its virtual's output): VRAM,
-   the records reported, so the whole-pool binds cost nothing */
+   bake::ModuleMgr writes 32-byte records into it through f_80c4e880 (probe_storage_records_write) and flushes them
+   (0x80c4e9d0): VRAM, that flush a reported write, so the whole-pool binds cost nothing */
 PATCH_AT(0x80b167c4, word(0x9404dea3), before, none, pools_probe_storage) { nvn_claim_begin(NVN_CLAIM_VRAM, "probe_storage_init storage"); }
 PATCH_AT(0x80b167c4, word(0x9404dea3), after, none, pools_probe_storage_end) { nvn_claim_end(); }   /* (0x80b167c8 is a branch target) */
-PATCH_AT(0x80c4e964, word(0xf9403a95), before, none, pools_probe_records, as(x21, at), as(x22, count)) {
-    if ((int64_t)count > 0) nvn_claim_write(at, (uint64_t)count << 5);
-}
+PATCH_AT(0x80c4e9d0, word(0xd63f0100), before, none, pools_probe_records_flush) { nvn_claim_flush_written(); }

@@ -144,6 +144,14 @@ void nvn_claim_write(uint64_t addr, uint64_t size) {
     const gpu_fns *d = rx_direct();
     if (d) d->claim_write(addr, size);
 }
+static _Thread_local int tl_flush_written;   /* (nvn_claim_flush_written: for the next flush on this thread) */
+void nvn_claim_flush_written(void) { tl_flush_written = 1; }
+/* A flush of guest [addr, addr + size): a reported write where a patch marked the call */
+static void flushed(uint64_t addr, uint64_t size) {
+    const int marked = tl_flush_written;
+    tl_flush_written = 0;
+    if (marked && addr) nvn_claim_write(addr, size);
+}
 void nvn_claim_fill(uint64_t addr, uint64_t size, uint32_t value) {
     poolcensus_reported(addr, size);
     const gpu_fns *d = rx_direct();
@@ -406,7 +414,10 @@ NV(nvnMemoryPoolGetBufferAddress) {
     if (no_pool(c, "buffer address")) { RET(0); return; }
     RET(((const nvn_pool *)P(0))->gpu);
 }
-NV(nvnMemoryPoolFlushMappedRange) {}
+NV(nvnMemoryPoolFlushMappedRange) {
+    const nvn_pool *o = (const nvn_pool *)P(0);
+    flushed(o && o->magic == NVN_MAGIC('P', 'O', 'O', 'L') && (int64_t)U64(1) >= 0 ? o->gpu + U64(1) : 0, U64(2));
+}
 NV(nvnMemoryPoolInvalidateMappedRange) {   /* the CPU is about to read what the GPU wrote */
     if (no_pool(c, "invalidate mapped range")) return;
     const nvn_pool *o = (const nvn_pool *)P(0);
@@ -489,7 +500,10 @@ NV(nvnBufferGetAddress) {
 NV(nvnBufferGetMemoryPool) { RETP(((const nvn_buffer *)P(0))->pool); }
 NV(nvnBufferGetMemoryOffset) { RET((uint64_t)((const nvn_buffer *)P(0))->off); }
 NV(nvnBufferGetSize) { RET(((const nvn_buffer *)P(0))->size); }
-NV(nvnBufferFlushMappedRange) {}
+NV(nvnBufferFlushMappedRange) {
+    const nvn_buffer *o = (const nvn_buffer *)P(0);
+    flushed(o->pool ? POOL(o->pool)->gpu + (uint64_t)o->off + U64(1) : 0, U64(2));
+}
 NV(nvnBufferInvalidateMappedRange) {
     const nvn_buffer *o = (const nvn_buffer *)P(0);
     if (o->pool) rx_nvn_invalidate(POOL(o->pool)->gpu + (uint64_t)o->off + U64(1), U64(2));

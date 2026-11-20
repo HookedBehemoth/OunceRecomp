@@ -2,10 +2,10 @@
 
 This page groups the store-level pool patches by the engine classes they patch. For each class it says whether a
 single host-side replacement can stand in for those patches in OoT, DKB and MKW. Read it before you add another
-`nvn_claim_write`, `nvn_claim_fill` or `nvn_claim_read` row, or a claim scope around an allocation call. The claim
+`nvn_claim_write`, `nvn_claim_flush_written`, `nvn_claim_fill` or `nvn_claim_read` row, or a claim scope around an allocation call. The claim
 kinds are explained in [pool claims](pool-claims.md), and the makers in [pool users](pool-users.md).
 
-The facts come from reading the three games' code. No game run was made for this page. The class names come from
+The facts come from reading the three games' code and, for the flushes, from a census of OoT's flushes in Kokiri. The class names come from
 the games' own `getName` strings and from the Tears of the Kingdom agl and gsys headers exported in
 [aquacluck/ghidra_scripts](https://github.com/aquacluck/ghidra_scripts) (`dt_totk_gdt_export`). That export has no
 licence, so this repository cites it and copies nothing from it.
@@ -14,13 +14,14 @@ licence, so this repository cites it and copies nothing from it.
 
 Most of the patches are not about the classes' logic. They patch the two places where agl already tells the GPU
 what the CPU did: `UniformBlock::flush`, which the game calls after it writes a block in a CPU-cached pool, and the
-allocation of a block. Two replacements carry over to every game. The first gives a flush the meaning NVN gives it:
-the CPU wrote this range. The second claims a block where it is allocated, from a per-game table of call sites. The
-GPU culling lists are the one class that is worth replacing outright, and only OoT has them.
+allocation of a block. A flush is a reported write only at the flush calls a patch marks, because most of the game's
+flushes cover far more than the CPU wrote, or bytes the GPU writes. The second replacement claims a block where it is
+allocated, from a per-game table of call sites. The GPU culling lists are the one class that is worth replacing
+outright, and only OoT has them.
 
 | Class | Games | Methods: functions or inlined | Patches retired | Size | Recommendation |
 |---|---|---|---|---|---|
-| agl::UniformBlock and ShaderStorageBlock: flush | all three, and TOTK | flush is a function; writes, copy flips and address math are inlined in hundreds of functions | about 20 write reports in `pools.c` | about 30 lines in `nvn_native.c` | do it first, after a census |
+| agl::UniformBlock and ShaderStorageBlock: flush | all three, and TOTK | flush is a function; writes, copy flips and address math are inlined in hundreds of functions | 8 write reports in OoT's `pools.c`, now marked flush calls | about 15 lines in `nvn_native.c` | done in OoT; DKB and MKW need their own census |
 | agl::UniformBlock and GPUMemBlockBase: allocation | all three | the allocators are functions (OoT 180, 34 and 110 calls) | 22 claim scopes (44 rows) | about 60 lines, plus a table of call sites per game | do it second |
 | gsys GPU culling lists | OoT | the reset is inlined 12 times, plus 2 calls; the header read is a function | all of `mesh_lists.c` and `mesh_args.c`, and the 11 count fills of `actor_records_read_a` | about 150 lines, plus a table of list offsets | do it third; it also fixes the order of the resets |
 | agl::utl::DynamicUniformBlockAllocator | all three, and TOTK | init and alloc are functions | none | about 120 lines | only together with mapped pools (uniform rings, step 9) |
@@ -50,21 +51,25 @@ Its methods:
   `nvnMemoryPoolInvalidateMappedRange` before they read.
 - **Bind:** `ubo_object_bind` and `ubo_object_bind_uniform`, functions with about 830 and 250 calls in OoT.
 
-Every writer that the write reports in `pools.c` follow flushes: `cull_veg_task_records_write`,
-`depth_grid_camera_write`, `exposure_light_readback`, `render_light_visibility_readback`, the probe writers,
-`cull_scene_blocks_init`, `cull_address_block_create`, `cull_geometry_draw_view` and the job scratch's zeroing. The back
-end already handles the invalidates as readbacks, but `nvnMemoryPoolFlushMappedRange` does nothing.
+The back end handles the invalidates as readbacks. **A flush is a reported write where a patch marks its call:**
+`nvn_claim_flush_written`, placed on the instruction that calls `nvnMemoryPoolFlushMappedRange` or
+`nvnBufferFlushMappedRange`, makes that one flush report its range as `nvn_claim_write` does. The back end needs no
+game knowledge for it. A census in Kokiri decides each mark, per flush call: every write of the class lies inside the
+flush that follows it on the same thread, and the range holds no grain GPU work writes. In OoT, eight calls pass:
+`probe_calc_stream_write`, `probe_calc_fields_write`, `probe_storage_records_write`, `cull_veg_task_records_write`, the
+two in `cull_scene_blocks_init`, `f_80c63e70` and `cull_address_block_create`.
 
-**The replacement: a flush is a reported write.** When the pool is claimed, `nvnMemoryPoolFlushMappedRange` and
-`nvnBufferFlushMappedRange` report their range as `nvn_claim_write` does. This is NVN's own contract, not
-game knowledge, so the back end stays plain and the same code serves every game. Two limits apply:
+The other flushes are not reports, for three reasons:
 
-- A flush covers the whole current copy, rounded to 64 bytes. Where the GPU owns part of that copy, the report hands
-  the GPU's bytes back to stale CPU data. The culling lists are such blocks (next section); the vegetation task
-  blocks may be.
-- Pools that are not CPU-cached (the gsys general pools, flags 0x22, and the 0x12 object blocks) are never flushed.
-  For those, the claim can report the pool as CPU-cached, so agl's writers flush what they wrote. That is uniform
-  rings' step 8a without writer patches, but it changes what the game sees, so try it separately.
+- **They cover far more than the CPU wrote.** agl flushes a whole block: NintendoWare's dynamic buffers flush 2 MB
+  about ten times a frame, the culling lists that no GPU work is seen to write about 3.5 MB a frame, and
+  `probe_bake_records_write` 156 MB per bake, before it writes. As reports, they would copy about 24 MB a frame.
+- **They cover grains the GPU writes.** The culling lists, `f_80c576b0`'s lists, the depth grid's slots (with the
+  camera copy in them), the exposure light buffers, the exposure record and the light visibility counters. Their
+  writes stay reported or filled by store-level patches, which hand only the CPU's bytes over.
+- **They do not exist.** Vfx3's resource pool and the gsys general pools (flags 0x22) are not CPU-cached, so nothing
+  flushes them. The claim could report such a pool as CPU-cached so that agl's writers flush what they wrote, but
+  that changes what the game sees; it is a separate experiment.
 
 **The second replacement: claim a block at its allocator.** Patch `ubo_object_pool_alloc`, `ubo_object_block_alloc`
 and `ubo_object_block_alloc_b` once each. The patch looks up the return address in a per-game table of call sites and
@@ -118,11 +123,11 @@ with step 9, not before.
 
 - **Exposure light buffers** (`exposure_light_buffers_create`, read by `exposure_light_readback`) and **light
   visibility** (`render_light_visibility_buffer`, `render_light_visibility_readback`): game-side classes in OoT only.
-  Each reader invalidates, reads one value, zeroes it, and flushes. The zeroing reports and the exposure record's
-  report go with the flush replacement; the maker claims stay.
+  Each reader invalidates, reads one value, zeroes it, and flushes. The flushes cover grains the GPU writes, so the
+  zeroing reports and the exposure record's report stay, as do the maker claims.
 - **agl::utl::DepthBufferEx** (`depth_grid_slots_create`, `report_reader_a`, `depth_grid_camera_write`): in all three
-  games. DKB's voxel culling also reads a coarse depth grid on the CPU. The camera copy's report goes with the flush
-  replacement, and the four claim scopes go into the allocation table. The TOTK export does not describe the class.
+  games. DKB's voxel culling also reads a coarse depth grid on the CPU. The camera copy lies in grains the GPU writes, so its
+  report stays; the four claim scopes go into the allocation table. The TOTK export does not describe the class.
 - **The query object** (`depth_grid_buffers_create`, read by `cull_gpu_dispatch`): OoT only. It is a compute-based
   query, not agl::cull::OcclusionQuery, the NVN-report query that DKB and MKW name and TOTK describes. Its scopes go
   into the allocation table; the scope over the whole maker stays.
@@ -137,9 +142,8 @@ and a bump offset. OoT, DKB and MKW use the same offsets; TOTK is 8 bytes shorte
 UniformBlock section. `cull_geometry_slot_alloc` is a function in OoT and DKB; DKB inlines the address store into it
 as a loop.
 
-Its three patches split between the two shared replacements: the two scopes go into the allocation table, and
-`cull_geometry_draw_view` flushes the address array, which covers the address store's report. Check in the census
-that DKB's draw flushes the same way before you claim DKB's manager.
+Its two scopes go into the allocation table. The address store's report stays: Kokiri never runs the store, so no
+census covers its flush.
 
 ## NintendoWare Vfx3 attribute buffers
 
@@ -149,12 +153,9 @@ the dirty-range copy are each a function with one report. That is already one pa
 
 ## Order of work
 
-1. **Census.** In one Kokiri run, log each flush on a claimed pool beside the reports that follow it. Each report the
-   flush replacement retires must lie inside a flush of the same call. List the flushes that overlap GPU-owned grains.
-2. **Flush as a reported write,** in `nvn_native.c`. Delete the reports that the census shows covered, and confirm
-   with the claims check and the golden.
-3. **The allocation table** on the three allocators: OoT first, then DKB's claims, then MKW's pools.
-4. **The culling list wrapper** in OoT, which replaces `mesh_lists.c` and `mesh_args.c`.
-5. **The dynamic ring's host alloc,** together with mapped pools.
+1. **Marked flushes** (done in OoT). For DKB and MKW, a census of their flushes against their reports comes first.
+2. **The allocation table** on the three allocators: OoT first, then DKB's claims, then MKW's pools.
+3. **The culling list wrapper** in OoT, which replaces `mesh_lists.c` and `mesh_args.c`.
+4. **The dynamic ring's host alloc,** together with mapped pools.
 
 The claims at pool makers, the Vfx3 reports, and the scopes at generic makers' calls stay as they are.

@@ -42,8 +42,8 @@ Between rules, the outermost holds.
 
 The back end sees every uniform, vertex, index and indirect range a frame binds, at record time. Those ranges are the
 default Upload signal: each list notes them when it records them, and the submission's first chunk copies them in,
-before the work that reads them. The game's flush and invalidate calls are never a signal. Patches report writes only
-where binds cannot:
+before the work that reads them. The game's invalidate calls are never a signal, and its flush calls are one only where
+a patch marks them (see Reported writes). Patches report writes only where binds cannot:
 
 - data shaders reach through stored pointers (storage buffers by address), reported by the writer or its allocator;
 - load-once data, such as the in-place files' vertex and index pools (a Load once claim), copied a page at a time
@@ -80,6 +80,12 @@ through a writer's report (`nvn_claim_write`), and the CPU reads the GPU's only 
 **Reported writes.** A writer patch reports a CPU write after it. The next submission's first copy copies the range in
 before its work, whatever the GPU owns, and the copies out of submissions whose first copy came before the report drop
 that range: an older GPU value never lands over the CPU's write. OoT's light readers zero the sums they read this way.
+
+Where the writer flushes what it wrote, the patch marks the flush call instead (`nvn_claim_flush_written`), and that
+flush's range is the report. A mark needs a census of that call: every write of its class lies inside the flush that
+follows it on the same thread, and the range holds no grain GPU work writes. Unmarked flushes are no signal: most cover
+whole blocks (megabytes a frame in OoT) or grains the GPU writes, which a report would hand back to stale CPU data. The
+census and the classes it rules out are in [engine classes](engine-classes.md).
 
 **Copies out.** A Readback claim's region takes the CPU's writes like an Upload region. The ranges its submission's GPU
 work writes (storage written, copy and fill destinations) are copied into staging by a command buffer after the

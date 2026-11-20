@@ -32,6 +32,10 @@ void nvn_claim_end(void);
    counter the reader zeroes), or data only shaders reach. A writer patch reports it after the write; the next submission
    copies it in, and a copy out of the GPU's older value does not land over it */
 void nvn_claim_write(uint64_t addr, uint64_t size);
+/* The flush the guest's next instruction calls (nvnMemoryPoolFlushMappedRange, nvnBufferFlushMappedRange) is a reported
+   write of its range. A patch marks a flush call only where a census shows that every write of its class lies inside that
+   flush and that the range holds no grain GPU work writes; no other flush is a signal */
+void nvn_claim_flush_written(void);
 /* A CPU reset of memory the GPU owns (an appended count, an indirect record), made on the GPU: [addr, addr + size) filled
    with the 32-bit value before the next submission's work (4-byte aligned). A patch calls it after the game's own store,
    which then stays in guest memory only; a copy out of the GPU's older value does not land over it */
