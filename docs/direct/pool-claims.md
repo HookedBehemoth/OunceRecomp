@@ -51,10 +51,17 @@ reads them. The game's flush and invalidate calls are never a signal. Patches re
 A report from a ring or an allocator arrives before the write. With two guest queues, an async-compute submit can fall
 between the allocation and the write, so a report is kept live until its ring flips, not consumed by the next submit.
 
-**The verifier.** An Upload write nothing reports leaves stale bytes on the GPU, silently. In check runs only
-(a setting), each submit compares the guest bytes of every range the frame bound with the claim's buffer, and a
-mismatch is a strict event that names the pool and the bind site. It uses no page protection. It also confirms the
-load-once copies.
+**The verifier.** An Upload write nothing reports leaves stale bytes on the GPU, silently. With `debug.claimcheck`,
+each submission's lists note the guest ranges they use (uniform, vertex, index, indirect, storage, copies), merged by
+region. When its first chunk goes, the guest bytes of the ranges the GPU only reads are kept, and a copy of what
+their regions hold runs before its work; once it completes the two are compared, and a mismatch is an error line and a
+strict event that names the range, its use, the pool with its claim and claiming patch, and the lists. It uses no page
+protection. It also confirms the load-once copies. Ranges in layer-0 claims that any GPU work writes are left out.
+
+**The measurement.** `debug.claimuse` prints, every 600 presents, the bytes bound a frame per pool group (claiming
+patch, flags, claim) and per use, the largest ranges, the pages that changed since their pool was made and between
+uses, and the guest data shaders reach through stored addresses (a storage buffer addressed by a word outside the
+binding table, or an address held in a small storage buffer of a program that uses global memory).
 
 ## How the GPU finds a claimed pool
 
@@ -149,7 +156,7 @@ Each step is one commit. Each one passes `ounce test oot`, a 60-second DKB run, 
 | 2 | (done) Host and Textures claims leave layer 0: shader code, command memory, descriptor pools, texture heaps, in-place texture files. The back end's texture-data-pool and shader-code special cases go | 200 lines, deletes about as many |
 | 3 | (done) Regions for every claim the GPU reads, in arenas per kind; the sparse windows go. The address table's entries point into the regions, and the CPU lookup replaces `layer0_span`. VRAM claims move first (CPU_NO_ACCESS pools) | 500 lines, deletes about 700 |
 | 4 | Readback by range: the report slots the back end writes, and the light-sum and light-visibility allocations their makers claim, copied into guest memory when their submissions complete, before the guest's wait returns. Lands with step 6, when their pools become device-local; until then the import keeps them coherent. Then an NVIDIA Kokiri run (below) | 400 lines |
-| 5 | The verifier, and the measurement: bytes bound per frame per pool, and the data reached through stored pointers | 250 lines |
+| 5 | (done) The verifier, and the measurement: bytes bound per frame per pool, and the data reached through stored pointers | 250 lines |
 | 6 | Upload as bound-range copies at the guest's submit, load-once copies at their claim's end, and writer patches for the exceptions the measurement names | 600 lines, plus the patches |
 | 7 | Remove layer 0: the imports, udmabuf and the host-pointer path, `os_guest`'s export, the import probe, their settings and docs | deletes about 800 lines |
 | 8 | The agl texture takeover, then MKW's pools on the same patches | 600 lines across the games |

@@ -621,21 +621,15 @@ bool bank_copy(List* l, ListDraw& x, int stage, int bank, uint32_t bytes, VkDevi
             if (i < 9) note(0x120 + 8 * i, x.s.img_src[stage][i]);
         }
     }
-    if (bank == 0)   // (the storage buffers the shader reaches by address: in their claims' regions)
-        for (int i = 0; i < 16; i++) {
-            const nvn_p_bind_buf& b = x.s.ssbo[stage][i];
-            VkDeviceAddress unused;
-            if (b.addr && !claims_address(b.addr, std::max<uint64_t>(b.size, 16), unused)) st_ssbo_unbound.fetch_add(1, std::memory_order_relaxed);
-        }
     c.gen = x.s.bank_gen[stage], c.area = area, c.bytes = bytes, c.addr = a;
     bump(me().banks);
     return out = a, true;
 }
 
 /// guest [addr, addr + size) in its region, through a span kept while it is the same
-bool span_of(ListDraw::Span& c, uint64_t addr, uint64_t size, VkBuffer& b, VkDeviceSize& o) {
+bool span_of(List* l, ClaimUse use, ListDraw::Span& c, uint64_t addr, uint64_t size, VkBuffer& b, VkDeviceSize& o) {
     if (c.b && c.addr == addr && c.size >= size) return b = c.b, o = c.o, true;
-    if (!claims_span(addr, size, b, o)) return false;
+    if (!claims_span(l, use, addr, size, b, o)) return false;
     c.addr = addr, c.size = size, c.b = b, c.o = o;
     return true;
 }
@@ -734,7 +728,7 @@ Reason ubo_address(List* l, ListDraw& x, const DrawProg& p, const DrawProg::Ubo&
     if (!updated) {
         ListDraw::UboAddr& c = x.ubo_addr[u.stage][u.index - 3];
         if (c.dev && c.addr == b.addr && c.size == size) return a = c.dev, R_DRAWN;
-        if (!claims_address(b.addr, size, a)) return R_UBO_MEM;
+        if (!claims_address(l, CU_UNIFORM, b.addr, size, a)) return R_UBO_MEM;
         c.addr = b.addr, c.size = size, c.dev = a;
         return R_DRAWN;
     }
@@ -757,13 +751,56 @@ Reason ubo_address(List* l, ListDraw& x, const DrawProg& p, const DrawProg::Ubo&
 }
 
 /// The address table, and each stage's part's address pushed (from kTablePush); false: a reason
+/// (debug.claimuse) the guest data the program reaches through stored addresses: storage buffers addressed by a word
+/// outside the binding table, and for a stage that reaches global memory, the addresses in its small bound storage buffers
+void pointer_census(const ListDraw& x, const DrawProg& p) {
+    for (const DrawProg::PtrWord& w : p.ptr_words) {
+        uint64_t a = 0;
+        if (w.bank >= 3 && w.bank < 3 + 16) {
+            const nvn_p_bind_buf& b = x.s.ubo[w.stage][w.bank - 3];
+            if (!b.addr || !host->gpu_read(b.addr + w.offset, &a, 8)) continue;
+        } else if (w.bank == 0) {
+            uint8_t bank[0xA00 + 8]{};
+            bank_fill(x.s, 0, w.stage, bank, 0xA00, x.area_w, x.area_h);
+            if (w.offset + 8u > 0xA00) continue;
+            std::memcpy(&a, bank + w.offset, 8);
+        }
+        if (a) {
+            char how[24];
+            std::snprintf(how, sizeof how, "c%u+%#x", w.bank, w.offset);
+            claims_pointer(a, p.key, how);
+        }
+    }
+    for (int st = 0; st < 8; st++)
+        if (p.global_stages >> st & 1)
+            for (int i = 0; i < 16; i++) {
+                const nvn_p_bind_buf& b = x.s.ssbo[st][i];
+                if (!b.addr || !b.size || b.size > 0x100) continue;
+                uint64_t w[32]{};
+                if (!host->gpu_read(b.addr, w, b.size & ~7ull)) continue;
+                for (uint64_t j = 0; j < b.size / 8; j++)
+                    if (w[j] && claims_holds(w[j], 4)) claims_pointer(w[j], p.key, "global, stored in a storage buffer");
+            }
+}
+
 Reason bind_data(List* l, ListDraw& x, const DrawProg& p, uint8_t push[256]) {
+    static const bool census = dbg(SET_DBG_CLAIMUSE);
+    if (census) pointer_census(x, p);
     bool same = x.table_prog == &p && x.table_ubo_gen == x.s.ubo_gen &&
                 !std::memcmp(x.table_bank_gen, x.s.bank_gen, sizeof x.table_bank_gen);
     if (same && x.table_area_gen != x.area_gen)   // (a root table holding the blit block is made again for another render area)
         for (const DrawProg::Ubo& u : p.ubos)
             if (u.index == kRootBank && !(x.s.pushed >> u.stage & 1)) same = false;
     if (!same) {
+        for (int st = 0; st < 8; st++)   // (the storage buffers its stages reach by address: in their claims' regions)
+            for (uint32_t m = p.ssbo_slots[st]; m; m &= m - 1) {
+                const int i = std::countr_zero(m);
+                const nvn_p_bind_buf& b = x.s.ssbo[st][i];
+                VkDeviceAddress unused;
+                if (b.addr && !claims_address(l, p.ssbo_written[st] >> i & 1 ? CU_STORAGE_WRITTEN : CU_STORAGE, b.addr,
+                                              std::max<uint64_t>(b.size, 16), unused))
+                    st_ssbo_unbound.fetch_add(1, std::memory_order_relaxed);
+            }
         x.table_entries.resize(p.ubos.size());
         for (size_t i = 0; i < p.ubos.size(); i++) {
             const Reason r = ubo_address(l, x, p, p.ubos[i], x.table_entries[i]);
@@ -1220,7 +1257,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         }
         for (int b = 0; b < 15; b++) {
             if (!used[b] || !s.vbuf[b].address) continue;
-            if (!span_of(x.vb_span[b], s.vbuf[b].address, std::max<uint64_t>(s.vbuf[b].size, 1), vb[b], vo[b])) return count(l, R_VERTEX_MEM);
+            if (!span_of(l, CU_VERTEX, x.vb_span[b], s.vbuf[b].address, std::max<uint64_t>(s.vbuf[b].size, 1), vb[b], vo[b])) return count(l, R_VERTEX_MEM);
         }
     }
     VkBuffer ib = VK_NULL_HANDLE;
@@ -1230,7 +1267,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         // (an indirect draw's index count is the GPU's: the index buffer from its address to its window's end)
         const uint32_t unit = itype == 0 ? 1 : itype == 1 ? 2 : 4;
         const uint64_t at = ind ? dn.ibuf : di.ibuf, bytes = ind ? unit : (uint64_t)std::max(di.count, 1) * unit;
-        if (!span_of(x.ib_span, at, bytes, ib, io)) return count(l, R_INDEX_MEM);
+        if (!span_of(l, CU_INDEX, x.ib_span, at, bytes, ib, io)) return count(l, R_INDEX_MEM);
         it = itype == 0 ? VK_INDEX_TYPE_UINT8 : itype == 1 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
     }
     // (M4b: the arguments the GPU wrote, read by the GPU where they are: their region)
@@ -1245,8 +1282,8 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         stride = (uint32_t)(ind ? dn.stride : dm.stride);
         if (nargs == 1 && stride < rec) stride = std::max(rec, 16u);   // (one record: Vulkan does not read the stride)
         if (stride < rec || (stride & 3)) return count(l, mesh ? R_MESH_STRIDE : R_ARGS_MEM);
-        if (!claims_span(ind ? dn.indirect : dm.indirect, (uint64_t)(nargs - 1) * stride + rec, ab, ao)) return count(l, R_ARGS_MEM);
-        if (count_addr && !claims_span(count_addr, 4, cntb, cnto)) return count(l, R_ARGS_MEM);
+        if (!claims_span(l, CU_INDIRECT, ind ? dn.indirect : dm.indirect, (uint64_t)(nargs - 1) * stride + rec, ab, ao)) return count(l, R_ARGS_MEM);
+        if (count_addr && !claims_span(l, CU_INDIRECT, count_addr, 4, cntb, cnto)) return count(l, R_ARGS_MEM);
     }
     {   // (M4b: a storage buffer slot the program reads that nothing bound in this list: read as the null window, counted)
         bool unbound = false;

@@ -363,6 +363,7 @@ void log_line() {
     logf("direct: %s", b);
     claims_stats(b, sizeof b);
     logf("direct: %s", b);
+    claims_use_log();
     mem_stats(b, sizeof b);   // 
     logf("direct: %s", b);
     if (log_lists) {

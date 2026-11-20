@@ -874,6 +874,36 @@ void strict_dispatch(List* l, Reason r) {
     else strict_event(kReasons[r], "%s", w);
 }
 
+/// (debug.claimuse) the guest data the program reaches through stored addresses: storage buffers addressed by a word
+/// outside c0's binding table, and for a program that reaches global memory, the addresses in its small bound storage buffers
+void pointer_census(const Variant& v, const ListComp& c, const uint8_t* bank, uint32_t n) {
+    for (const auto& sb : v.info.storage_buffers_descriptors) {
+        if (sb.cbuf_index == 0 && sb.cbuf_offset >= v.lay_ssbo_at && sb.cbuf_offset < v.lay_ssbo_at + 16 * v.lay_ssbo) continue;
+        uint64_t a = 0;
+        if (sb.cbuf_index == 0) {
+            if (sb.cbuf_offset + 8 > n) continue;
+            std::memcpy(&a, bank + sb.cbuf_offset, 8);
+        } else if (sb.cbuf_index >= 3 && sb.cbuf_index < 3 + 16) {
+            const nvn_p_bind_buf& b = c.ubo[sb.cbuf_index - 3];
+            if (!b.addr || !host->gpu_read(b.addr + sb.cbuf_offset, &a, 8)) continue;
+        }
+        if (a) {
+            char how[24];
+            std::snprintf(how, sizeof how, "c%u+%#x", sb.cbuf_index, sb.cbuf_offset);
+            claims_pointer(a, v.key, how);
+        }
+    }
+    if (v.info.uses_global_memory)
+        for (int i = 0; i < 16; i++) {
+            const nvn_p_bind_buf& b = c.ssbo[i];
+            if (!b.addr || !b.size || b.size > 0x100) continue;
+            uint64_t w[32]{};
+            if (!host->gpu_read(b.addr, w, b.size & ~7ull)) continue;
+            for (uint64_t j = 0; j < b.size / 8; j++)
+                if (w[j] && claims_holds(w[j], 4)) claims_pointer(w[j], v.key, "global, stored in a storage buffer");
+        }
+}
+
 /// The first dispatch of each variant, named (its grid, its list, what it binds; its images as bound)
 void tell_first(Variant& v, const List* l, const uint8_t* bank, uint32_t n, const uint32_t grid[3], bool indirect) {
     if (v.told) return;
@@ -1088,6 +1118,8 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
     const size_t fix_at = c.fixups.size();
     bank_fill(c, fam.lay, grid, map, v->bank_bytes, true);
     check_bound(*v, map, v->bank_bytes);
+    static const bool census = dbg(SET_DBG_CLAIMUSE);
+    if (census) pointer_census(*v, c, map, v->bank_bytes);
     VkDeviceAddress entries[32];
     const size_t nu = std::min<size_t>(v->ubos.size(), 32);
     for (size_t i = 0; i < nu; i++) {
@@ -1108,19 +1140,22 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
                     bump(me().updated_ubo);
                     break;
                 }
-            if (!claims_address(b.addr, bsize, entries[i])) return c.fixups.resize(fix_at), count(l, D_UBO_MEM);
+            if (!claims_address(l, CU_UNIFORM, b.addr, bsize, entries[i])) return c.fixups.resize(fix_at), count(l, D_UBO_MEM);
         }
     }
-    for (int i = 0; i < 16; i++) {   // (the storage buffers the program reaches by address: in their claims' regions)
+    for (const auto& sb : v->info.storage_buffers_descriptors) {   // (the storage buffers the program reaches by address: in
+                                                                      // their claims' regions)
+        if (sb.cbuf_index != 0 || sb.cbuf_offset < v->lay_ssbo_at || (sb.cbuf_offset - v->lay_ssbo_at) / 16 >= std::min(v->lay_ssbo, 16u)) continue;
+        const nvn_p_bind_buf& b = c.ssbo[(sb.cbuf_offset - v->lay_ssbo_at) / 16];
         VkDeviceAddress unused;
-        if (c.ssbo[i].addr) claims_address(c.ssbo[i].addr, std::max<uint64_t>(c.ssbo[i].size, 16), unused);
+        if (b.addr) claims_address(l, sb.is_written ? CU_STORAGE_WRITTEN : CU_STORAGE, b.addr, std::max<uint64_t>(b.size, 16), unused);
     }
     uint8_t* tmap;
     if (!draw_arena(l->slot, std::max<uint32_t>(8, 8 * (uint32_t)nu), tmap, table_addr)) return c.fixups.resize(fix_at), count(l, D_ARENA);
     std::memcpy(tmap, entries, 8 * nu);
     VkBuffer abuf = VK_NULL_HANDLE;
     VkDeviceSize aoff = 0;
-    if (indirect && ((args & 3) || !claims_span(args, 12, abuf, aoff))) return c.fixups.resize(fix_at), count(l, D_ARGS_MEM);
+    if (indirect && ((args & 3) || !claims_span(l, CU_INDIRECT, args, 12, abuf, aoff))) return c.fixups.resize(fix_at), count(l, D_ARGS_MEM);
     uint8_t push[kTablePush + 8]{};
     {
         const float one = 1.0f;
@@ -1202,7 +1237,7 @@ void compute_buffer_op(List* l, uint32_t op, const void* data, uint32_t size, Cm
                      (unsigned long long)present_count(), (unsigned long long)p.src, (unsigned long long)p.dst, (unsigned long long)p.size,
                      l->info.kind, (unsigned long long)l->info.lr);
         }
-        if (!p.size || !claims_span(p.src, p.size, sb, so) || !claims_span(p.dst, p.size, db, dof)) {
+        if (!p.size || !claims_span(l, CU_COPY_SRC, p.src, p.size, sb, so) || !claims_span(l, CU_COPY_DST, p.dst, p.size, db, dof)) {
             if (p.size)
                 strict_event("buffer copies skipped (not in a region)", "copy %#llx -> %#llx (%#llx bytes), list kind %u lr %#llx",
                              (unsigned long long)p.src, (unsigned long long)p.dst, (unsigned long long)p.size, l->info.kind,
@@ -1219,7 +1254,7 @@ void compute_buffer_op(List* l, uint32_t op, const void* data, uint32_t size, Cm
     std::memcpy(&p, data, std::min<size_t>(sizeof p, size));
     VkBuffer db;
     VkDeviceSize dof;
-    if (!p.size || (p.dst & 3) || (p.size & 3) || !claims_span(p.dst, p.size, db, dof)) {
+    if (!p.size || (p.dst & 3) || (p.size & 3) || !claims_span(l, CU_FILL, p.dst, p.size, db, dof)) {
         if (p.size)
             strict_event("buffer clears skipped (unaligned or not in a region)", "clear %#llx (%#llx bytes), list kind %u lr %#llx",
                          (unsigned long long)p.dst, (unsigned long long)p.size, l->info.kind, (unsigned long long)l->info.lr);

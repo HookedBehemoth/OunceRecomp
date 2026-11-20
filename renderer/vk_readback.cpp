@@ -14,6 +14,7 @@ namespace {
 struct Pending {
     uint64_t value;
     std::vector<ReadbackItem> items;
+    std::function<void()> then;
 };
 std::mutex mu;   // (the queue; held while copying, so a drain that returns has copied everything done before it)
 std::condition_variable cv;
@@ -31,7 +32,8 @@ void drain_locked() {
             host->gpu_write(it.guest, it.src, it.size);
             st_bytes += it.size;
         }
-        st_items += (int64_t)p.items.size(), st_subs++;
+        st_items += (int64_t)p.items.size(), st_subs += !p.items.empty();
+        if (p.then) p.then();
         queue.pop_front();
     }
 }
@@ -58,7 +60,14 @@ void readback_init() { os_thread_release(os_thread_start([](void*) { thread_main
 void readback_add(uint64_t value, std::vector<ReadbackItem>&& items) {
     {
         std::lock_guard lk(mu);
-        queue.push_back({value, std::move(items)});
+        queue.push_back({value, std::move(items), {}});
+    }
+    cv.notify_one();
+}
+void readback_then(uint64_t value, std::function<void()>&& fn) {
+    {
+        std::lock_guard lk(mu);
+        queue.push_back({value, {}, std::move(fn)});
     }
     cv.notify_one();
 }

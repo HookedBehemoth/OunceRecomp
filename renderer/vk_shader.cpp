@@ -893,9 +893,15 @@ bool finish(Variant& v) {
             static constexpr uint32_t kSsboTable[8] = {0x110, 0x510, 0x410, 0x210, 0x310, 0, 0x670, 0x770};
             const uint32_t base = st.nvn_stage >= 0 && st.nvn_stage < 8 ? kSsboTable[st.nvn_stage] : 0;
             for (const auto& sb : info.storage_buffers_descriptors)
+                if (!(base && sb.cbuf_index == 0 && sb.cbuf_offset >= base && sb.cbuf_offset < base + 256) && st.nvn_stage >= 0)
+                    d.ptr_words.push_back({(uint8_t)st.nvn_stage, (uint8_t)sb.cbuf_index, (uint16_t)sb.cbuf_offset});
+            if (info.uses_global_memory && st.nvn_stage >= 0 && st.nvn_stage < 8) d.global_stages |= (uint8_t)(1u << st.nvn_stage);
+            for (const auto& sb : info.storage_buffers_descriptors)
                 if (base && sb.cbuf_index == 0 && sb.cbuf_offset >= base && sb.cbuf_offset < base + 256)
-                    for (uint32_t j = 0; j < std::max<uint32_t>(sb.count, 1) && (sb.cbuf_offset - base) / 16 + j < 16; j++)
+                    for (uint32_t j = 0; j < std::max<uint32_t>(sb.count, 1) && (sb.cbuf_offset - base) / 16 + j < 16; j++) {
                         d.ssbo_slots[st.nvn_stage] |= (uint16_t)(1u << ((sb.cbuf_offset - base) / 16 + j));
+                        if (sb.is_written) d.ssbo_written[st.nvn_stage] |= (uint16_t)(1u << ((sb.cbuf_offset - base) / 16 + j));
+                    }
         }
     }
     d.table_slots = (uint8_t)slots;

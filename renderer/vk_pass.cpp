@@ -439,7 +439,7 @@ void copy_bt(List* l, const nvn_p_copy_bt& p, bool to_image) {
     const uint64_t size = row * (hb * s.layers * s.d - 1) + wb * s.bpb;
     VkBuffer buf;
     VkDeviceSize off;
-    if (!claims_span(p.buf, size, buf, off)) return count(S_COPY_SKIPPED);
+    if (!claims_span(l, to_image ? CU_TEXELS : CU_COPY_DST, p.buf, size, buf, off)) return count(S_COPY_SKIPPED);
     suspend(l);
     VkBufferImageCopy c{};
     c.bufferOffset = off;

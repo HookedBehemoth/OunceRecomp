@@ -187,6 +187,8 @@ extern "C" {
     B(DBG_QFIXED, "debug.qfixed", DEV, 0, "query samples fixed at 4096")                                                     \
     B(DBG_QNOCOND, "debug.qnocond", DEV, 0, "conditions not evaluated, their draws drawn")                                    \
     B(DBG_REPLOG, "debug.replog", DEV, 0, "query reports logged")                                                             \
+    B(DBG_CLAIMCHECK, "debug.claimcheck", DEV, 0, "the claims' verifier: each submit's bound ranges against what the GPU reads") \
+    B(DBG_CLAIMUSE, "debug.claimuse", DEV, 0, "the bound bytes per pool and claim, pointer-reached data, load-once pages")    \
     S(DBG_POOLOF, "debug.poolof", DEV, "", "<hex>: the pool of that address")                                                 \
     B(DBG_RTLOG, "debug.rtlog", DEV, 0, "render targets logged")                                                              \
     B(DBG_TMWAIT, "debug.tmwait", DEV, 0, "task-mesh waits logged")                                                           \

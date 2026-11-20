@@ -67,6 +67,7 @@ struct Sub {
     std::vector<DumpItem*> dumps;
     uint64_t frame = 0;   // (presents before its hand-in)
     std::vector<ReadbackItem> readbacks;   // (the GPU's writes copied into guest memory once it completes)
+    ClaimSub* claims = nullptr;   // (debug.claimcheck: its ranges' check)
     // (a present: its GPU work runs here, in its queue's order)
     bool present = false;
     nvn_tex tex{};
@@ -427,6 +428,8 @@ bool run(Queue& q, Sub& s, bool& moved) {
             return false;
         }
     }
+    if (s.claims && !s.chunks && !s.at)   // (the check's copies before its first work)
+        if (VkCommandBuffer cb = claims_sub_run(s.claims)) s.pending.push_back(cb);
     for (; s.at < s.items.size(); s.at++, moved = true) {
         const SubItem& it = s.items[s.at];
         if (it.cb) {
@@ -495,6 +498,7 @@ void progress() {
                 const uint64_t v = s.last_value;
                 for (CmdSlot* c : s.slots) cmd_slot_sent(c, v);
                 if (!s.readbacks.empty()) readback_add(v, std::move(s.readbacks));
+                if (s.claims) claims_sub_sent(s.claims, v), s.claims = nullptr;
                 if (dumped) dump_sent(v);
                 q->seq_sent = s.seq;
                 q->values.push_back({s.seq, v});
@@ -714,6 +718,7 @@ extern "C" MKWVK_EXPORT void gpu_submit(uint64_t queue, void* const* lists, uint
         list_items(l, s.items, s.slots, dump_recording() ? &s.dumps : nullptr);
     }
     s.frame = present_count();
+    if (claims_tracking()) s.claims = claims_gather(s.lists.data(), s.lists.size());
     {
         auto lk = lock_mu();
         Queue* q = queue_of(queue);

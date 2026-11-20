@@ -5,6 +5,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 #include "vk_internal.h"
@@ -20,6 +21,8 @@ struct ReadbackItem {
 void readback_init();
 /// The items of the submission whose last timeline value is `value` (in value order: the sender's)
 void readback_add(uint64_t value, std::vector<ReadbackItem>&& items);
+/// fn run once the submission whose last timeline value is `value` has completed, in the same order as the copies
+void readback_then(uint64_t value, std::function<void()>&& fn);
 /// Every item whose submission has completed copied into guest memory
 void readback_drain();
 void readback_stats(char* out, size_t cap, double frames);

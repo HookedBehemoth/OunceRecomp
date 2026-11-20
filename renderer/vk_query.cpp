@@ -392,7 +392,7 @@ void query_draw(List* l, VkCommandBuffer cb) {
     if (x.cond_want && !x.cond_on && !nocond) {
         VkBuffer b;
         VkDeviceSize off;
-        if (!claims_span(x.cond_addr, 4, b, off)) return count(Q_COND_NOT_MEMORY);
+        if (!claims_span(l, CU_CONDITION, x.cond_addr, 4, b, off)) return count(Q_COND_NOT_MEMORY);
         VkConditionalRenderingBeginInfoEXT bi{VK_STRUCTURE_TYPE_CONDITIONAL_RENDERING_BEGIN_INFO_EXT};
         bi.buffer = b, bi.offset = off;
         bi.flags = x.cond_mode == 0 ? VK_CONDITIONAL_RENDERING_INVERTED_BIT_EXT : 0;   // (render when equal to 0 / not)

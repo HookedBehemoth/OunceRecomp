@@ -105,6 +105,7 @@ struct List {
     bool cap_drawn = false;   // (debug.capture= it renders into a 543x306 target)
     uint64_t counted = 0;     // (its bytes as counted to MO_M_LISTS)
     std::vector<const List*> executed;   // (secondaries executed in its renderings: their slots go with its submissions)
+    std::vector<BoundRange> bound;       // (the guest ranges its commands use: the claims' check and measurement, vk_claims.cpp)
     uint32_t sec_draws = 0;   // (a secondary's draw ops so far: its first is timed apart)
     uint64_t last_prog = 0;   // (M6b: its last drawn program, a job's: its caller's pass takes it at the call)
     uint32_t n_drawn = 0, n_mesh = 0, n_step_a = 0;   // (its draws drawn, skipped as mesh draws, skipped by step A: per pass in the log)

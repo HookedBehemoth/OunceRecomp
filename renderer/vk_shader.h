@@ -42,6 +42,15 @@ struct DrawProg {
     uint64_t codes[3]{};   // (vertex or mesh, fragment, header-only or geometry)
     uint64_t task_code = 0;   // (a task+mesh program's task stage code key)
     uint16_t ssbo_slots[8]{};   // (M4b: by NVN stage, the storage buffer slots its stages read through the driver bank's table)
+    uint16_t ssbo_written[8]{};   // (of them, the ones its stages write)
+    /// (debug.claimuse) storage buffers whose address is a word outside the driver bank's binding table (a stored address),
+    /// and the stages that reach global memory by addresses the translation cannot name
+    struct PtrWord {
+        uint8_t stage, bank;
+        uint16_t offset;
+    };
+    std::vector<PtrWord> ptr_words;
+    uint8_t global_stages = 0;   // (bit: NVN stage)
     mutable std::atomic<bool> used{false};
     uint32_t vs_loads = 0;          // (bit i: the vertex stage reads generic attribute i)
     uint32_t frag_inputs = 0;       // (bit i: the stage before the fragment stage writes generic i; pushed for it to read)

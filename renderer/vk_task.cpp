@@ -142,7 +142,7 @@ bool task_step(List* l, const DrawProg& p, bool indirect, uint64_t rec, uint32_t
     VkDeviceAddress rec_addr = 0;
     TaskPool* pool = nullptr;
     if (indirect) {
-        if (!claims_address(rec, 16, rec_addr)) return why = "its record not in guest memory", false;
+        if (!claims_address(l, CU_TASK_RECORD, rec, 16, rec_addr)) return why = "its record not in guest memory", false;
         if (!l->slot->task) l->slot->task = new TaskPool;
         pool = l->slot->task;
         if (!pool->map && !pool_make(*pool, kPoolFirst)) return why = "no task pool", false;

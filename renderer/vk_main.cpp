@@ -331,9 +331,9 @@ void write_texels(const nvn_tex* t, unsigned level, unsigned layer0, const NVNco
 void invalidate(uint64_t, uint64_t) {}
 void wait_writebacks_reading(const void*, uint64_t) {}
 void pool_created(uint64_t, uint64_t) { count(R_POOL); }
-void pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, uint64_t, int on) {
+void pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, const char* by, int on) {
     count(R_POOL_NATIVE);
-    claims_pool(gpu, size, flags, claim, on);
+    claims_pool(gpu, size, flags, claim, by, on);
 }
 int guest_imported(uint64_t lo, uint64_t hi) { return claims_bound(lo, hi) ? 1 : 0; }
 

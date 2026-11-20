@@ -13,7 +13,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 18
+#define MKWVK_API_VERSION 19
 /* (renderer) the controls' names (runtime/nn_hid.c, runtime/media/pad_sdl.c, the pad_ and key_ lines of ounce_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position, SDL's order (the bottom face
    button first: A on an Xbox pad, cross on a DualSense) */
@@ -158,10 +158,9 @@ typedef struct MkwVkRenderer {
     /* (native-vk, version 13) a program's stages set (nvnProgramSetShaders[Ext], InitializeFromBuilder), on the game's thread:
        queued for the shader objects' prefetch (vk_shader_object.cpp), nothing done here */
     void (*nvn_program_set)(const nvn_prog *p);
-    /* (native-vk layer 0, version 14) a memory pool made (on 1) or finalized (on 0), not virtual ones: its NVN flags and the key of
-       its creation chain (a hash of the caller's return address and the guest frame-pointer chain above it, 6 deep; 0 at a
-       finalize): what the renderer places it by (gpu/legacy/vk/vk_pools.cpp, RX_VK_LAYER0=2) */
-    void (*nvn_pool_native)(uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, uint64_t key, int on);   /* (version 18: claim, runtime/nvn_claims.h) */
+    /* (version 19) a memory pool made (on 1) or finalized (on 0), not virtual ones: its NVN flags, its claim
+       (runtime/nvn_claims.h) and the claiming patch's name (a static string; null at a finalize) */
+    void (*nvn_pool_native)(uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, const char *by, int on);
 } MkwVkRenderer;
 
 /* what the back end exports (Windows exports only what is marked; elsewhere the library is built hidden) */

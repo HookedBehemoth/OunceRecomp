@@ -183,13 +183,40 @@ uint64_t present_count();   // (presents the host asked for so far: the frame nu
 
 // ---- vk_claims.cpp: the memory the GPU reads the game's pools through, by their claims ----
 bool claims_on();
-void claims_pool(uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, int on);   // (a pool made, on 1, or finalized)
+/// a pool made (on 1; by: the claiming patch's name) or finalized
+void claims_pool(uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, const char* by, int on);
 bool claims_bound(uint64_t lo, uint64_t hi);   // (guest pages a layer-0 claim imported: the host keeps them committed)
-/// Guest [gpu, gpu + size) as its region's buffer and offset; false: not in one region (not memory the GPU reads)
-bool claims_span(uint64_t gpu, uint64_t size, VkBuffer& buffer, VkDeviceSize& offset);
-bool claims_address(uint64_t gpu, uint64_t size, VkDeviceAddress& a);   // (the same, as a device address)
+/// What a list's command does with a guest range it binds or names: the bind site of the claims' verifier and measurement
+enum ClaimUse : uint8_t {
+    CU_UNIFORM, CU_VERTEX, CU_INDEX, CU_INDIRECT, CU_STORAGE, CU_STORAGE_WRITTEN, CU_COPY_SRC, CU_COPY_DST, CU_FILL, CU_TEXELS, CU_CONDITION,
+    CU_TASK_RECORD, CU_KINDS
+};
+/// A guest range a list's commands use (List::bound), noted while the claims' check or measurement runs
+struct BoundRange {
+    uint64_t lo;
+    uint32_t size;
+    ClaimUse use;
+};
+struct List;
+/// Guest [gpu, gpu + size) as its region's buffer and offset, noted as list l's use; false: not in one region (not memory
+/// the GPU reads: an error, named)
+bool claims_span(List* l, ClaimUse use, uint64_t gpu, uint64_t size, VkBuffer& buffer, VkDeviceSize& offset);
+bool claims_address(List* l, ClaimUse use, uint64_t gpu, uint64_t size, VkDeviceAddress& a);   // (the same, as a device address)
 bool claims_holds(uint64_t gpu, uint64_t size);   // (guest [gpu, gpu + size) is in one region; no error when not)
 void claims_stats(char* out, size_t cap);
+/// (debug.claimcheck, debug.claimuse) the guest ranges a submission's lists use: noted while either runs
+bool claims_tracking();
+struct ClaimSub;
+/// At the guest's submit: the lists' ranges merged by region, measured (claimuse); the check's part, or null
+ClaimSub* claims_gather(List* const* lists, size_t n);
+/// When the submission's first chunk goes (vk_sync.cpp's mu held): the guest bytes now, and a command buffer that copies
+/// what its regions hold before its work (null: nothing to check)
+VkCommandBuffer claims_sub_run(ClaimSub* s);
+/// Its last timeline value: compared once it completes, then freed
+void claims_sub_sent(ClaimSub* s, uint64_t value);
+/// (claimuse) a shader reaches guest addr through an address stored in a buffer (how: where the address was)
+void claims_pointer(uint64_t addr, uint64_t program, const char* how);
+void claims_use_log();   // (the check's and the measurement's lines, every 600 presents)
 /// (debug logs) the game's pool holding guest addr: base, size, NVN flags, whether its region is VRAM; false: none
 bool claims_pool_of(uint64_t addr, uint64_t& base, uint64_t& size, uint32_t& flags, bool& in_vram);
 
