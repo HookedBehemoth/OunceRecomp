@@ -177,14 +177,20 @@ Each step is one commit. Each one passes `ounce test oot`, a 60-second DKB run, 
 Steps 3 to 6 keep the remaining pools on `Layer0` until their claims move, so each step lands with both games
 running. Expect a small regression on AMD, where layer 0 was zero-copy: Upload and Readback add copies.
 
-### The NVIDIA check after step 4
+### The NVIDIA check
 
-There is no NVIDIA GPU here; the run comes from the user. On a Windows PC with an NVIDIA GPU, build the branch and
-run `ounce profile oot --scene kokiri`. Check:
+There is no NVIDIA GPU here; the run comes from the user. On a PC with an NVIDIA GPU (Windows or Linux), build the
+branch and run `ounce profile oot --scene kokiri`, then `ounce test oot --name market` three times. Check in the
+profile run's log (`work/oot/runs/profile-kokiri/log.txt`):
 
-- the summary line's frame time and GPU busy, against the same run before step 4;
-- `direct: claims:` names the light-sum and report pools under readback, with no failed regions;
+- the summary line's frame time and GPU busy, against the same run on the commit before the claims moved;
+- `direct: claims: pools made by claim:` counts upload, load once and VRAM pools, with `0 failed` regions and
+  `spans outside a region 0`; its `uploads since the start:` part names the bytes and the time the copies take;
+- `direct: readback a frame:` shows the reports copied into guest memory each frame, with few submissions waiting;
 - no `nvn: ERROR` or `direct: ERROR` lines, and no strict events.
+
+Then, once, `ounce run oot --headless --seconds 60 --set debug.claimcheck=1` in Kokiri: its `check since the start:`
+lines must report 0 mismatches.
 
 ## Deferred
 
