@@ -1,16 +1,15 @@
 // SPDX-FileCopyrightText: Copyright 2026 OunceRecomp contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
-// (fork, native-vk, RX_VK_DESC_HEAP_BDA=1 with layer 0) Storage buffers read through device addresses. Layer 0 shows guest
-// memory to the GPU through 4 GB window buffers, one every 2 GB of guest space (gpu/vk/layer0_windows.h), or (Windows) through
-// one buffer per pool (renderer/vk_pools.cpp's regions), so guest address g is at table[g >> 16] + g whatever pool it is in:
-// an entry per 64 KB granule of the 512 GB guest window, the distance from its guest addresses to their device addresses,
-// which run on contiguously through the granule's window or region. A granule that regions share (pools a page apart) is
+// (fork, native-vk) Storage buffers read through device addresses. The back end shows the game's GPU-read pools to the GPU
+// as regions, one buffer per pool (renderer/vk_claims.cpp), so guest address g is at table[g >> 16] + g whatever pool it is
+// in: an entry per 64 KB granule of the 512 GB guest window, the distance from its guest addresses to their device
+// addresses, which run on contiguously through the granule's region. A granule that regions share (pools a page apart) is
 // split: its entry is (i << 1) | 1, and table[i + (g >> 12 & 15)] holds the distance for g's 4 KB page. A stage's storage
 // buffer is then its guest address, read
-// from the constant buffer word Eden's storage buffer pass found for it, translated through a table of the windows' device
+// from the constant buffer word Eden's storage buffer pass found for it, translated through the table of the regions' device
 // addresses (gpu/vk/vk_bda.cpp; its address pushed at WINDOW_TABLE_PUSH_OFFSET), plus the offset the pass computed, which
-// is relative to the address rounded down to min_ssbo_alignment (StorageOffset). Windows not made yet, and addresses from
+// is relative to the address rounded down to min_ssbo_alignment (StorageOffset). Granules no region holds, and addresses from
 // 1 TB on (entry kNullEntry), read the null window: a sparse buffer with nothing bound, where loads read 0 and stores and
 // atomics are dropped (residencyNonResidentStrict; work/proto/bda/bda_poc.c). No descriptor, no binding, no CPU lookup.
 //

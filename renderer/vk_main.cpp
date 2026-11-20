@@ -1,5 +1,5 @@
 // The direct back end's start: libvulkan, the instance, the device (one graphics and compute
-// queue, the sparse-binding queue for layer 0), and the version-14 table the host calls (renderer/api/vk_api.h). Cut down from
+// queue), and the version-14 table the host calls (renderer/api/vk_api.h). Cut down from
 // gpu/legacy/vk/vk_main.cpp: no start-up screen, menu, upscalers, vendor hooks or switches.
 
 #include <cstdarg>
@@ -184,8 +184,7 @@ bool create_device() {
         dev.host_align = hp.minImportedHostPointerAlignment;
     }
 
-    // the queues: one family for graphics and compute; layer 0's binds on a queue of their own that has sparse binding (a
-    // sparse-binding-only family, else another family, else a second queue of the graphics family), else the graphics queue
+    // the queue: one family for graphics and compute
     vkGetPhysicalDeviceQueueFamilyProperties(dev.physical, &n, nullptr);
     std::vector<VkQueueFamilyProperties> families(n);
     vkGetPhysicalDeviceQueueFamilyProperties(dev.physical, &n, families.data());
@@ -197,32 +196,10 @@ bool create_device() {
         logf("direct: the device has no queue family with both graphics and compute");
         return false;
     }
-    const auto sparse = [&](uint32_t i) { return (families[i].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) != 0; };
-    const auto plain = [&](uint32_t i) { return !(families[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)); };
-    uint32_t sparse_family = UINT32_MAX, sparse_index = 0;
-    const char* kind = "";
-    for (int pass = 0; pass < 4 && sparse_family == UINT32_MAX; pass++) {
-        static const char* const kinds[4] = {"sparse binding only", "another family", "a second graphics queue", "the graphics queue"};
-        kind = kinds[pass];
-        for (uint32_t i = 0; i < n && sparse_family == UINT32_MAX; i++) {
-            if (!sparse(i)) continue;
-            if (pass == 0 && plain(i)) sparse_family = i;
-            if (pass == 1 && i != dev.queue_family) sparse_family = i;
-            if (pass == 2 && i == dev.queue_family && families[i].queueCount > 1) sparse_family = i, sparse_index = 1;
-            if (pass == 3 && i == dev.queue_family) sparse_family = i;
-        }
-    }
-    dev.sparse_shared = sparse_family == dev.queue_family && sparse_index == 0;
-    if (sparse_family == UINT32_MAX) logf("direct: no queue for sparse binding: layer 0 is off");
-    else logf("direct: layer 0's binds on queue family %u index %u (%s)", sparse_family, sparse_index, kind);
-    const float priority[2] = {1.0f, 1.0f};
-    VkDeviceQueueCreateInfo qs[2] = {{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}, {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}};
-    uint32_t nq = 1;
+    const float priority[1] = {1.0f};
+    VkDeviceQueueCreateInfo qs[1] = {{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}};
+    const uint32_t nq = 1;
     qs[0].queueFamilyIndex = dev.queue_family, qs[0].queueCount = 1, qs[0].pQueuePriorities = priority;
-    if (sparse_family != UINT32_MAX && sparse_family != dev.queue_family)
-        qs[nq].queueFamilyIndex = sparse_family, qs[nq].queueCount = 1, qs[nq].pQueuePriorities = priority, nq++;
-    else if (sparse_index == 1)
-        qs[0].queueCount = 2;
 
     // features: every core one the device has (the later milestones use them), but robust buffer access (it costs)
     VkPhysicalDeviceVulkan14Features f14{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES};
@@ -272,7 +249,6 @@ bool create_device() {
     GPU_VK_DEVICE(GPU_VK_LOAD)
 #undef GPU_VK_LOAD
     vkGetDeviceQueue(dev.device, dev.queue_family, 0, &dev.queue);
-    if (sparse_family != UINT32_MAX) vkGetDeviceQueue(dev.device, sparse_family, sparse_index, &dev.sparse_queue);
     return true;
 }
 
@@ -284,7 +260,7 @@ void count(int k) { regs[k].fetch_add(1, std::memory_order_relaxed); }
 
 int start(void* hwnd) {
     if (!sync_init()) return 0;
-    layer0_on();
+    claims_on();
     shader_warm();
     stats_after_start();
     return present_start(hwnd);
@@ -354,15 +330,12 @@ void write_texels(const nvn_tex* t, unsigned level, unsigned layer0, const NVNco
 }
 void invalidate(uint64_t, uint64_t) {}
 void wait_writebacks_reading(const void*, uint64_t) {}
-void pool_created(uint64_t gpu, uint64_t size) {
-    count(R_POOL);
-    layer0_pool_created(gpu, size);
-}
-void pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, uint64_t key, int on) {
+void pool_created(uint64_t, uint64_t) { count(R_POOL); }
+void pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, uint64_t, int on) {
     count(R_POOL_NATIVE);
-    layer0_pool_native(gpu, size, flags, claim, key, on);
+    claims_pool(gpu, size, flags, claim, on);
 }
-int guest_imported(uint64_t lo, uint64_t hi) { return layer0_bound(lo, hi) ? 1 : 0; }
+int guest_imported(uint64_t lo, uint64_t hi) { return claims_bound(lo, hi) ? 1 : 0; }
 
 MkwVkRenderer table;
 

@@ -19,7 +19,6 @@
 #include <shaders/task_prep_spv.h>
 
 namespace hsd {
-bool layer0_address(uint64_t gpu, uint64_t size, VkDeviceAddress& a);   // (vk_pools.cpp)
 
 /// A recording thread's task pool for one frame slot: the indirect draws' maps and payload areas, taken by the GPU (the prep
 /// step's atomic on word 0); word 1 counts the draws that did not fit. Reset with its slot, when the GPU is past the slot's
@@ -143,7 +142,7 @@ bool task_step(List* l, const DrawProg& p, bool indirect, uint64_t rec, uint32_t
     VkDeviceAddress rec_addr = 0;
     TaskPool* pool = nullptr;
     if (indirect) {
-        if (!layer0_address(rec, 16, rec_addr)) return why = "its record not in guest memory", false;
+        if (!claims_address(rec, 16, rec_addr)) return why = "its record not in guest memory", false;
         if (!l->slot->task) l->slot->task = new TaskPool;
         pool = l->slot->task;
         if (!pool->map && !pool_make(*pool, kPoolFirst)) return why = "no task pool", false;

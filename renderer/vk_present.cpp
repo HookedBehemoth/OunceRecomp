@@ -358,7 +358,7 @@ void log_line() {
     logf("direct: %s", b);
     assets_stats(b, sizeof b, frames);
     logf("direct: %s", b);
-    layer0_stats(b, sizeof b);
+    claims_stats(b, sizeof b);
     logf("direct: %s", b);
     mem_stats(b, sizeof b);   // 
     logf("direct: %s", b);
@@ -378,7 +378,7 @@ void log_line() {
 
 }  // namespace
 
-/// stats_after=<seconds>: the memory lines and the images', assets' and layer 0's lines at that time, for a run that
+/// stats_after=<seconds>: the memory lines and the images', assets' and the claims' lines at that time, for a run that
 /// presents nothing yet (the 600-present lines never come); from a thread of its own (the lines read atomics and take
 /// their own locks)
 void stats_after_start() {
@@ -391,7 +391,7 @@ void stats_after_start() {
         // (the lines that take no image lock first: a thread stuck making an image holds it)
         mem_stats(b, sizeof b);
         logf("direct: %s", b);
-        layer0_stats(b, sizeof b);
+        claims_stats(b, sizeof b);
         logf("direct: %s", b);
         assets_stats(b, sizeof b, 1);
         logf("direct: %s", b);

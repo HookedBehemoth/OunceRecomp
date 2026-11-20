@@ -76,24 +76,21 @@ all its state, and a render condition is begun and ended inside it.
 The deferred arrays cannot be read in place: the game keeps two copies, flips them each frame, and rewrites most words
 one present after the submit that read them.
 
-Every memory pool the GPU can read is bound in full when it is made, including pools the CPU cannot access. Shaders
-follow pointers the game stores in memory, so a pool reachable only through a stored pointer must still be visible.
+Every pool whose claim the GPU reads has its region from the moment it is made, including pools the CPU cannot access.
+Shaders follow pointers the game stores in memory, so a pool reachable only through a stored pointer must still be
+visible.
 
 What a translated program expects at a draw is in [the shader contract](shader-contract.md).
 
 ## Guest memory on the GPU
 
-The GPU reads the game's memory where it lies, with no copy. This is *layer 0*. The host's operating-system layer
-(`runtime/os/os_guest.h`) hands ranges of the guest window to the back end as handles of a kind the platform picks: on
-Linux, dma-bufs of the window's memfd pages, made through `/dev/udmabuf`. The back end imports them in 16 MB chunks
-and binds them into sparse window buffers. Binds go to a queue of their own: a sparse-binding-only family if the
-device has one, else another family with sparse binding, else a second graphics queue, else the graphics queue.
-
-Layer 0 is off, and the log says why, when the device has no aliased sparse buffers or no queue with sparse
-binding, or when the window cannot be exported (on Linux, when `/dev/udmabuf` cannot be opened). On a device without
-the import extensions for the platform's handles, each import fails and is logged. Host-pointer handles
-(`VK_EXT_external_memory_host`) are imported where the device has the extension, but Linux does not hand them out: with
-amdgpu, each submit walks every page of a host-pointer import again.
+Every memory pool the game makes is claimed by a game patch at the engine function that makes it, and the claim says
+whether the GPU reads it and how its data moves ([pool claims](pool-claims.md)). A pool the GPU reads has a region: a
+buffer over the pool's guest range, in an arena of its kind. A VRAM claim's region is device-local memory of the back
+end's own; a layer-0 claim's, until its pools move to their own kinds, is the pool's guest pages imported (dma-bufs of
+the window's memfd pages on Linux, made through `/dev/udmabuf`; host pointers on Windows) in 64 MB arenas. Shaders,
+vertex and index buffers, copies and reports find a region by its guest address. A use outside every region is an
+error.
 
 ## Programs
 

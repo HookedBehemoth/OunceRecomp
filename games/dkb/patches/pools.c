@@ -11,6 +11,17 @@
     const uint64_t r = guest_orig(orig);      \
     nvn_claim_end();                          \
     return r
+/* the pools the CPU cannot access (NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS without a CPU flag) are GPU-only: VRAM; the rest
+   stay layer 0's until their claims move */
+static int gpu_only_vram(uint32_t flags, uint64_t size) {
+    (void)size;
+    return (flags & 0x7) == 0x1 && !(flags & 0x308) ? NVN_CLAIM_VRAM : NVN_CLAIM_LAYER0;
+}
+#define CLAIM_RULE(fn)                        \
+    nvn_claim_begin_rule(gpu_only_vram, fn);  \
+    const uint64_t r = guest_orig(orig);      \
+    nvn_claim_end();                          \
+    return r
 
 /* agl::utl::DynamicTextureAllocator: one physical pool (flags 0x18c, 200 MB) and one virtual pool of its size, mapped
    whole once. Only render targets live there; the physical pool's memory holds the arenas' free-list nodes */
@@ -42,26 +53,26 @@ PATCH_FUNC(0x805a1580, word(0xb9400048), body(0x6a630efbea9444ee), aapcs, x0, po
 }
 /* the gsys GPU heap (0x12, 0x22, 0x24, 0xa1) */
 PATCH_FUNC(0x80198500, word(0xd503237f), body(0xb70196b1d65d6743), aapcs, x0, pools_gpu_heap, orig) {
-    CLAIM("f_80198500", NVN_CLAIM_LAYER0);
+    CLAIM_RULE("f_80198500");
 }
 /* agl's pool wrapper (the texture heap's inside its own claim) */
 PATCH_FUNC(0x80577b30, word(0xd503237f), body(0xc69d2d96f5b1a11a), aapcs, x0, pools_agl, orig) {
-    CLAIM("f_80577b30", NVN_CLAIM_LAYER0);
+    CLAIM_RULE("f_80577b30");
 }
 /* nn::gfx MemoryPool for in-place files */
 PATCH_FUNC(0x8052f8a8, word(0xd503237f), body(0x716734f6519dbfb9), aapcs, x0, pools_gfx, orig) {
-    CLAIM("gfx_memory_pool_init", NVN_CLAIM_LAYER0);
+    CLAIM_RULE("gfx_memory_pool_init");
 }
 /* sead's device and queue pools and their neighbours at boot (0x12, 0x21, 0xa1) */
 PATCH_FUNC(0x805e7a88, word(0xd503237f), body(0xb4d112ce9270cf55), aapcs, x0, pools_sead, orig) {
-    CLAIM("f_805e7a88", NVN_CLAIM_LAYER0);
+    CLAIM_RULE("f_805e7a88");
 }
 PATCH_FUNC(0x805e6684, word(0xd503237f), body(0xbe62a6f8ce137b87), aapcs, x0, pools_boot_a1, orig) {
-    CLAIM("f_805e6684", NVN_CLAIM_LAYER0);
+    CLAIM_RULE("f_805e6684");
 }
 /* other pool makers (0x22, 0x62) */
 PATCH_FUNC(0x807a6234, word(0xd503237f), body(0x894b655fcae7f0aa), aapcs, x0, pools_807a6234, orig) {
-    CLAIM("f_807a6234", NVN_CLAIM_LAYER0);
+    CLAIM_RULE("f_807a6234");
 }
 /* f_807ac5e8 makes a shader-code pool (0x62, its nvnMemoryPoolInitialize at 0x807ac6cc) and a data pool (0x22, at
    0x807ac8b4): each call claimed */
@@ -71,5 +82,5 @@ PATCH_AT(0x807ac8b4, word(0xd63f0100), before, none, pools_807ac5e8_data) { nvn_
 PATCH_AT(0x807ac8b8, word(0xf000e67a), before, none, pools_807ac5e8_data_end) { nvn_claim_end(); }
 /* the display's buffers at boot (0x21, 95.6 MB) */
 PATCH_FUNC(0x80802d48, word(0xd503237f), body(0xe94a043c888e1db2), aapcs, x0, pools_display, orig) {
-    CLAIM("f_80802d48", NVN_CLAIM_LAYER0);
+    CLAIM_RULE("f_80802d48");
 }

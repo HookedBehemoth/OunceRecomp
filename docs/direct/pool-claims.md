@@ -2,7 +2,7 @@
 
 This page explains how the GPU gets the game's memory without layer 0. Every memory pool the game makes is
 claimed by a game patch, and the claim says where the pool's GPU copy lives and how data moves between it and the
-game's memory. Read it before you add a pool patch, change `runtime/nvn_claims.h`, or change how the back end backs
+game's memory. Read it before you add a pool patch, change `renderer/api/nvn_claims.h`, or change how the back end backs
 a pool. It is also the plan for removing layer 0; the order of work is at the end.
 
 ## Why claims
@@ -125,9 +125,9 @@ Each step is one commit. Each one passes `ounce test oot`, a 60-second DKB run, 
 
 | Step | What | Size |
 |---|---|---|
-| 1 | The claim API: kinds in `nvn_claims.h`, the claim stored on the pool, an unclaimed pool an error. Every OoT and DKB pool claimed at its engine function; GPU-visible pools on a temporary `Layer0` kind | 400 lines, mostly patches |
-| 2 | Host and Textures claims leave layer 0: shader code, command memory, descriptor pools, texture heaps, in-place texture files. The back end's texture-data-pool and shader-code special cases go | 200 lines, deletes about as many |
-| 3 | Regions for every claim the GPU reads, in arenas per kind; the sparse windows go. The address table's entries point into the regions, and the CPU lookup replaces `layer0_span`. VRAM claims move first (CPU_NO_ACCESS pools) | 500 lines, deletes about 700 |
+| 1 | (done) The claim API: kinds in `nvn_claims.h`, the claim stored on the pool, an unclaimed pool an error. Every OoT and DKB pool claimed at its engine function; GPU-visible pools on a temporary `Layer0` kind | 400 lines, mostly patches |
+| 2 | (done) Host and Textures claims leave layer 0: shader code, command memory, descriptor pools, texture heaps, in-place texture files. The back end's texture-data-pool and shader-code special cases go | 200 lines, deletes about as many |
+| 3 | (done) Regions for every claim the GPU reads, in arenas per kind; the sparse windows go. The address table's entries point into the regions, and the CPU lookup replaces `layer0_span`. VRAM claims move first (CPU_NO_ACCESS pools) | 500 lines, deletes about 700 |
 | 4 | Readback: GPU writes copied into guest memory when their submit completes, before the guest's wait returns. Reports, queries and the light-sum buffers move. Then an NVIDIA Kokiri run (below) | 400 lines |
 | 5 | The verifier, and the measurement: bytes bound per frame per pool, and the data reached through stored pointers | 250 lines |
 | 6 | Upload as bound-range copies at the guest's submit, load-once copies at their claim's end, and writer patches for the exceptions the measurement names | 600 lines, plus the patches |

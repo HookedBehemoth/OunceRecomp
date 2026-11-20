@@ -11,6 +11,17 @@
     const uint64_t r = guest_orig(orig);      \
     nvn_claim_end();                          \
     return r
+/* the pools the CPU cannot access (NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS without a CPU flag) are GPU-only: VRAM; the rest
+   stay layer 0's until their claims move */
+static int gpu_only_vram(uint32_t flags, uint64_t size) {
+    (void)size;
+    return (flags & 0x7) == 0x1 && !(flags & 0x308) ? NVN_CLAIM_VRAM : NVN_CLAIM_LAYER0;
+}
+#define CLAIM_RULE(fn)                        \
+    nvn_claim_begin_rule(gpu_only_vram, fn);  \
+    const uint64_t r = guest_orig(orig);      \
+    nvn_claim_end();                          \
+    return r
 
 /* agl::utl::DynamicTextureAllocator's pool record: one physical pool (flags 0x18c, 687 MB at 1080p) and one virtual
    pool of its size, mapped whole once. Only render targets live there; the physical pool's memory holds the arenas'
@@ -18,12 +29,13 @@
 PATCH_FUNC(0x80c49380, word(0xd503237f), body(0x3b0566baade1f62c), aapcs, x0, pools_dta_record, orig) {
     CLAIM("dta_pool_record_create", NVN_CLAIM_TARGETS);
 }
-/* the shader archives' code (flags 0x62) and NDSR's networks' (0x64): translated by the host, never read by the GPU */
+/* the shader archives' code (flags 0x62): translated by the host, never read by the GPU */
 PATCH_FUNC(0x80b65f00, word(0xd503237f), body(0x1688e4429b5f5bb0), aapcs, x0, pools_sharcb, orig) {
     CLAIM("shader_sharcb_load", NVN_CLAIM_HOST);
 }
+/* NDSR's networks' pool (0x64): its programs, and data the GPU reads (16-byte reads at +0x70a00 in Kokiri) */
 PATCH_FUNC(0x80f71a00, word(0xd503237f), body(0xe6b4bb892a0f8c6d), aapcs, x0, pools_ndsr, orig) {
-    CLAIM("ndsr_network_setup", NVN_CLAIM_HOST);
+    CLAIM("ndsr_network_setup", NVN_CLAIM_LAYER0);
 }
 /* the in-place shader binaries (nn::gfx pools of flags 0x64) */
 PATCH_FUNC(0x812c3d60, word(0xd503237f), body(0x29df94e62f1665a4), aapcs, x0, pools_shader_binary, orig) {
@@ -31,25 +43,25 @@ PATCH_FUNC(0x812c3d60, word(0xd503237f), body(0x29df94e62f1665a4), aapcs, x0, po
 }
 /* the gsys GPU heap (0x12, 0x22, 0x24, 0xa1: uniform blocks, vertex streams, GPU scratch) */
 PATCH_FUNC(0x809de920, word(0xd503237f), body(0x02d1932cc850ce16), aapcs, x0, pools_gpu_heap, orig) {
-    CLAIM("gpu_pool_create", NVN_CLAIM_LAYER0);
+    CLAIM_RULE("gpu_pool_create");
 }
 /* agl's pool wrapper (the tera manager's pools; the texture heap's inside its own claim) */
 PATCH_FUNC(0x80f6c9d0, word(0xd503237f), body(0x698a26829c189947), aapcs, x0, pools_agl, orig) {
-    CLAIM("agl_memory_pool_create", NVN_CLAIM_LAYER0);
+    CLAIM_RULE("agl_memory_pool_create");
 }
 /* nn::gfx MemoryPool for in-place files: BFRES vertex and index data (0x24), shader binaries (0x64), ui2d (0x21) */
 PATCH_FUNC(0x80792e30, word(0xd503237f), body(0xba09850595f0fa65), aapcs, x0, pools_gfx, orig) {
-    CLAIM("gfx_memory_pool_init", NVN_CLAIM_LAYER0);
+    CLAIM_RULE("gfx_memory_pool_init");
 }
 /* sead's device and queue pools (0x12, 0x21) */
 PATCH_FUNC(0x80f69040, word(0xd503237f), body(0x64085c9cc9080b15), aapcs, x0, pools_sead, orig) {
-    CLAIM("sead_device_queue_pools", NVN_CLAIM_LAYER0);
+    CLAIM_RULE("sead_device_queue_pools");
 }
 /* the texture and sampler descriptor pools' memory (0x22) */
 PATCH_FUNC(0x80966440, word(0xd503237f), body(0x2abbf2d96dca7f84), aapcs, x0, pools_desc, orig) {
-    CLAIM("desc_pools_create", NVN_CLAIM_LAYER0);
+    CLAIM_RULE("desc_pools_create");
 }
 /* the display's buffers at boot (0x21, 95.6 MB) */
 PATCH_FUNC(0x8114e4f0, word(0xd503237f), body(0xb3560c600e03da68), aapcs, x0, pools_display, orig) {
-    CLAIM("f_8114e4f0", NVN_CLAIM_LAYER0);
+    CLAIM_RULE("f_8114e4f0");
 }

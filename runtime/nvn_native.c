@@ -118,12 +118,15 @@ static os_mutex vbase_lock = OS_MUTEX_INIT;
 uint64_t nvn_virtual_pool_tail(void) { return 2ull << 30; }
 
 /* ---- pool claims (nvn_claims.h) ---- */
-static _Thread_local struct { int kind, depth; const char *by; } tl_claim;
+static _Thread_local struct { int kind, depth; nvn_claim_rule rule; const char *by; } tl_claim;
 void nvn_claim_begin(int kind, const char *by) {
-    if (!tl_claim.depth++) tl_claim.kind = kind, tl_claim.by = by;
+    if (!tl_claim.depth++) tl_claim.kind = kind, tl_claim.rule = NULL, tl_claim.by = by;
+}
+void nvn_claim_begin_rule(nvn_claim_rule rule, const char *by) {
+    if (!tl_claim.depth++) tl_claim.kind = NVN_CLAIM_NONE, tl_claim.rule = rule, tl_claim.by = by;
 }
 void nvn_claim_end(void) {
-    if (tl_claim.depth > 0 && !--tl_claim.depth) tl_claim.kind = NVN_CLAIM_NONE, tl_claim.by = NULL;
+    if (tl_claim.depth > 0 && !--tl_claim.depth) tl_claim.kind = NVN_CLAIM_NONE, tl_claim.rule = NULL, tl_claim.by = NULL;
 }
 static const char *const kClaimNames[NVN_CLAIM_KINDS] = {"none", "textures", "targets", "host", "vram", "upload", "readback", "layer 0"};
 /* An NVN memory call the back end does not serve: one loud error with the guest's call chain, and a strict event */
@@ -291,8 +294,8 @@ NV(nvnMemoryPoolInitialize,
     memset(o, 0, sizeof *o);
     o->flags = b->flags;
     o->size = b->size;
-    o->claim = (uint32_t)tl_claim.kind;
-    if (o->claim == NVN_CLAIM_NONE) {
+    o->claim = (uint32_t)(tl_claim.rule ? tl_claim.rule(o->flags, o->size) : tl_claim.kind);
+    if (o->claim == NVN_CLAIM_NONE || o->claim >= NVN_CLAIM_KINDS) {
         pool_error(c, "a memory pool no claim covers", "nvnMemoryPoolInitialize flags %#x size %#llx", o->flags,
                    (unsigned long long)o->size);
         RET(0);

@@ -60,8 +60,6 @@ extern thread_local u32 g_nvn2_compute_layout_end;
 #endif
 
 namespace hsd {
-bool layer0_address(uint64_t gpu, uint64_t size, VkDeviceAddress& a);   // (vk_pools.cpp)
-bool layer0_bound(uint64_t lo, uint64_t hi);   // (vk_pools.cpp)
 double seconds_since_device();                                         // (vk_draw.cpp)
 
 namespace {
@@ -142,8 +140,8 @@ enum Reason {
 };
 const char* const kReasons[D_COUNT] = {
     "recorded", "of them indirect", "no compute program bound", "program not read yet", "program has no compute stage",
-    "variant being translated", "variant does not translate", "variant cannot be dispatched", "a uniform buffer not in layer 0",
-    "the frame arena full", "indirect arguments not in layer 0", "empty grid"};
+    "variant being translated", "variant does not translate", "variant cannot be dispatched", "a uniform buffer not in a region",
+    "the frame arena full", "indirect arguments not in a region", "empty grid"};
 struct TStats {   // (the recording thread's own, summed by compute_log: as vk_draw.cpp's)
     std::atomic<int64_t> by_kind[GPU_LIST_KINDS][D_COUNT];
     std::atomic<int64_t> ticks, past_range, updated_ubo, buf_ops[4];
@@ -927,7 +925,7 @@ void trace_dispatch(const Variant& v, const List* l, const uint8_t* bank, uint32
                 for (int j = 0; j < 8 && k < 4000; j++) {
                     if (!w[j]) continue;
                     k += std::snprintf(b + k, sizeof b - k, " [+%d %#llx%s]", 8 * j, (unsigned long long)w[j],
-                                       layer0_bound(w[j], w[j] + 16) ? "" : " not bound in layer 0");
+                                       claims_bound(w[j], w[j] + 16) ? "" : " not in a region");
                 }
             }
         }
@@ -1083,7 +1081,7 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
     if (v->skip || !v->cs) return count(l, D_VARIANT);
     if (skipped_by_dbg(v->key)) return count(l, D_VARIANT);
     VkCommandBuffer cb = cmd(l);   // (and the list's slot, whose arena the bank goes to)
-    // (the uniform buffers' addresses: c0's copy in the arena, c1, the game's in layer 0)
+    // (the uniform buffers' addresses: c0's copy in the arena, c1, the game's in its region)
     uint8_t* map;
     VkDeviceAddress bank_addr, table_addr;
     if (!draw_arena(l->slot, v->bank_bytes, map, bank_addr)) return count(l, D_ARENA);
@@ -1110,19 +1108,19 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
                     bump(me().updated_ubo);
                     break;
                 }
-            if (!layer0_address(b.addr, bsize, entries[i])) return c.fixups.resize(fix_at), count(l, D_UBO_MEM);
+            if (!claims_address(b.addr, bsize, entries[i])) return c.fixups.resize(fix_at), count(l, D_UBO_MEM);
         }
     }
-    for (int i = 0; i < 16; i++) {   // (the storage buffers the program reaches by address: bound in layer 0 ahead)
+    for (int i = 0; i < 16; i++) {   // (the storage buffers the program reaches by address: in their claims' regions)
         VkDeviceAddress unused;
-        if (c.ssbo[i].addr) layer0_address(c.ssbo[i].addr, std::max<uint64_t>(c.ssbo[i].size, 16), unused);
+        if (c.ssbo[i].addr) claims_address(c.ssbo[i].addr, std::max<uint64_t>(c.ssbo[i].size, 16), unused);
     }
     uint8_t* tmap;
     if (!draw_arena(l->slot, std::max<uint32_t>(8, 8 * (uint32_t)nu), tmap, table_addr)) return c.fixups.resize(fix_at), count(l, D_ARENA);
     std::memcpy(tmap, entries, 8 * nu);
     VkBuffer abuf = VK_NULL_HANDLE;
     VkDeviceSize aoff = 0;
-    if (indirect && ((args & 3) || !layer0_span(args, 12, abuf, aoff))) return c.fixups.resize(fix_at), count(l, D_ARGS_MEM);
+    if (indirect && ((args & 3) || !claims_span(args, 12, abuf, aoff))) return c.fixups.resize(fix_at), count(l, D_ARGS_MEM);
     uint8_t push[kTablePush + 8]{};
     {
         const float one = 1.0f;
@@ -1204,9 +1202,9 @@ void compute_buffer_op(List* l, uint32_t op, const void* data, uint32_t size, Cm
                      (unsigned long long)present_count(), (unsigned long long)p.src, (unsigned long long)p.dst, (unsigned long long)p.size,
                      l->info.kind, (unsigned long long)l->info.lr);
         }
-        if (!p.size || !layer0_span(p.src, p.size, sb, so) || !layer0_span(p.dst, p.size, db, dof)) {
+        if (!p.size || !claims_span(p.src, p.size, sb, so) || !claims_span(p.dst, p.size, db, dof)) {
             if (p.size)
-                strict_event("buffer copies skipped (not in layer 0)", "copy %#llx -> %#llx (%#llx bytes), list kind %u lr %#llx",
+                strict_event("buffer copies skipped (not in a region)", "copy %#llx -> %#llx (%#llx bytes), list kind %u lr %#llx",
                              (unsigned long long)p.src, (unsigned long long)p.dst, (unsigned long long)p.size, l->info.kind,
                              (unsigned long long)l->info.lr);
             return bump(me().buf_ops[1]);
@@ -1221,9 +1219,9 @@ void compute_buffer_op(List* l, uint32_t op, const void* data, uint32_t size, Cm
     std::memcpy(&p, data, std::min<size_t>(sizeof p, size));
     VkBuffer db;
     VkDeviceSize dof;
-    if (!p.size || (p.dst & 3) || (p.size & 3) || !layer0_span(p.dst, p.size, db, dof)) {
+    if (!p.size || (p.dst & 3) || (p.size & 3) || !claims_span(p.dst, p.size, db, dof)) {
         if (p.size)
-            strict_event("buffer clears skipped (unaligned or not in layer 0)", "clear %#llx (%#llx bytes), list kind %u lr %#llx",
+            strict_event("buffer clears skipped (unaligned or not in a region)", "clear %#llx (%#llx bytes), list kind %u lr %#llx",
                          (unsigned long long)p.dst, (unsigned long long)p.size, l->info.kind, (unsigned long long)l->info.lr);
         return bump(me().buf_ops[3]);
     }

@@ -6,7 +6,7 @@
 // (one per code, translated from the code alone; the bound handles are checked against it), its driver bank (NVN2
 // compute's packed c0: the grid, the pushed constants, the uniform and storage buffer tables, the texture and image
 // handles) and its uniform buffers' address table in the frame arena, the push data, vkCmdDispatch or vkCmdDispatchIndirect
-// on the arguments in layer 0 (the grid reaches the program as NumWorkgroups: the translator folds c0's grid words into
+// on the arguments in their region (the grid reaches the program as NumWorkgroups: the translator folds c0's grid words into
 // it, so the GPU reads an indirect dispatch's counts). Programs are translated by the forked translator with the step-B
 // interface on the shared shader workers when the game sets them (vk_work.h; a dispatch whose variant is not made yet is
 // skipped, counted), or ahead of the game (vk_shader.h compute_precompile), and kept in ounce_renderer_compute.bin.

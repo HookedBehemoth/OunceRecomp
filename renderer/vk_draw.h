@@ -1,5 +1,5 @@
 // A draw: the list's program variant, its
-// dynamic state, the vertex and index buffers by layer 0, the uniform buffers' address table and the driver banks in the
+// dynamic state, the vertex and index buffers in their claims' regions, the uniform buffers' address table and the driver banks in the
 // frame arena, the push data, the draw call, on the recording thread in the list's command buffer inside the pass
 // vk_pass.cpp opened. Ordinary vertex and fragment draws (DRAW, DRAW_IDX) of every list are attempted: in a list that
 // records no command buffer yet (jobs, load-time lists: M3) the draw is resolved up to its Vulkan calls and counted.
@@ -28,9 +28,7 @@ void draw_push_invalidate(List* l);
 void draw_list_free(List* l);
 /// (gpu_submit, the guest's submit) the deferred binds' bank words of l and its callees copied from the game's arrays now
 void draw_list_submitted(const List* l);
-/// (vk_pools.cpp) layer 0's window k made at device address a: the BDA window table's entry
-void draw_window_made(uint32_t k, uint64_t a);
-/// (vk_pools.cpp, Windows) a layer-0 region: guest [lo, hi) at device address a on, contiguously: the table's entries
+/// (vk_claims.cpp) the address table's entries for a region's guest range
 void draw_table_set(uint32_t index, uint64_t value);   // (a granule's entry, or a split granule's page entry: bda_emit.h)
 uint64_t draw_table_null(uint64_t guest);   // (the distance that puts guest's granule in the null window)
 

@@ -85,11 +85,11 @@ const char* const kNames[Q_COUNT] = {
     "reports", "samples passed", "timestamp", "timestamp (top)", "other types", "resets of samples passed", "resets of other types",
     "occlusion queries", "stretches ended at a rendering's end", "samples reports with no reset in their list",
     "reports summing stretches", "reports past 4 stretches (summed in part)", "reports with no room in the slot (not written)",
-    "reports not in layer 0 (not written)", "reports in lists that record nothing (not written)", "reports written by the GPU",
+    "reports not in a region (not written)", "reports in lists that record nothing (not written)", "reports written by the GPU",
     "flushes", "resolve dispatches", "reports in job secondaries", "conditions", "of them in job secondaries",
     "conditions begun", "gated draws", "gated clears", "conditions on a report not written yet in their list",
     "conditions whose second word is not 0 (condcheck)", "conditions whose first word is past 32 bits (condcheck)",
-    "conditions not in layer 0 (drawn)", "jobs executed under their caller's condition", "jobs executed in a counting rendering",
+    "conditions not in a region (drawn)", "jobs executed under their caller's condition", "jobs executed in a counting rendering",
     "jobs with counters of their own executed in a counting rendering", "job reports never executed", "reports after a job with counters of its own since their reset (not NVN's value)"};
 struct QueryStats;
 ThreadCounters<QueryStats, Q_COUNT> st;
@@ -199,7 +199,7 @@ void log_note(uint64_t addr, uint32_t kind) {
         uint64_t base, size;
         uint32_t flags;
         bool in_vram;
-        if (pools.size() < 6 && layer0_pool_of(s.addr, base, size, flags, in_vram) &&
+        if (pools.size() < 6 && claims_pool_of(s.addr, base, size, flags, in_vram) &&
             std::find(pools.begin(), pools.end(), base) == pools.end()) {
             pools.push_back(base);
             logf("direct: replog: reports at %#llx in pool %#llx+%#llx flags %#x, %s", (unsigned long long)s.addr, (unsigned long long)base,
@@ -225,7 +225,7 @@ void report(List* l, ListQuery& x, const nvn_p_counter& c, bool rendering, CmdOf
     if (!l->rec) return count(Q_UNRECORDED);
     VkBuffer b;
     VkDeviceSize off;
-    if ((c.addr & 7) || !layer0_span(c.addr, 16, b, off)) return count(Q_NOT_MEMORY);
+    if ((c.addr & 7) || !claims_span(c.addr, 16, b, off)) return count(Q_NOT_MEMORY);
     VkCommandBuffer cb = cmd(l);
     QSlot* q = slot_of(l);
     if (!q || q->recs == kRecs) return count(Q_NO_ROOM);
@@ -391,7 +391,7 @@ void query_draw(List* l, VkCommandBuffer cb) {
     if (x.cond_want && !x.cond_on && !nocond) {
         VkBuffer b;
         VkDeviceSize off;
-        if (!layer0_span(x.cond_addr, 4, b, off)) return count(Q_COND_NOT_MEMORY);
+        if (!claims_span(x.cond_addr, 4, b, off)) return count(Q_COND_NOT_MEMORY);
         VkConditionalRenderingBeginInfoEXT bi{VK_STRUCTURE_TYPE_CONDITIONAL_RENDERING_BEGIN_INFO_EXT};
         bi.buffer = b, bi.offset = off;
         bi.flags = x.cond_mode == 0 ? VK_CONDITIONAL_RENDERING_INVERTED_BIT_EXT : 0;   // (render when equal to 0 / not)
@@ -527,7 +527,7 @@ void query_stats(char* out, size_t cap, double frames) {
             uint64_t base = 0, size = 0;
             uint32_t flags = 0;
             bool in_vram = false;
-            const bool found = layer0_pool_of(a, base, size, flags, in_vram);
+            const bool found = claims_pool_of(a, base, size, flags, in_vram);
             logf("direct: poolof %#llx: %s pool %#llx+%#llx flags %#x, %s", (unsigned long long)a, found ? "in" : "NOT in a", (unsigned long long)base,
                  (unsigned long long)size, flags, in_vram ? "in VRAM" : "host memory");
             s = *e == '+' ? e + 1 : e;

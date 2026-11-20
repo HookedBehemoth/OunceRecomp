@@ -3,6 +3,7 @@
    error (runtime/nvn_native.c). A claim covers every pool the claiming thread makes between begin and end; claims
    nest, and the outermost one holds (the most specific caller of a generic allocator decides). */
 #pragma once
+#include <stdint.h>
 
 enum {
     NVN_CLAIM_NONE = 0,
@@ -18,4 +19,8 @@ enum {
 
 /* by: a fixed string naming the patch, for the log */
 void nvn_claim_begin(int kind, const char *by);
+/* the same, with the kind the patch's rule gives each pool by its NVNmemoryPoolFlags and size (a generic allocator whose
+   pools differ by access) */
+typedef int (*nvn_claim_rule)(uint32_t flags, uint64_t size);
+void nvn_claim_begin_rule(nvn_claim_rule rule, const char *by);
 void nvn_claim_end(void);

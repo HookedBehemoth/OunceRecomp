@@ -33,7 +33,6 @@ bool cap_pass(const List* l);   // (vk_pass.cpp, debug.capture)
 }
 
 namespace hsd {
-bool layer0_address(uint64_t gpu, uint64_t size, VkDeviceAddress& a);   // (vk_pools.cpp)
 
 // ---- the frame arena ----
 struct Arena {
@@ -91,10 +90,9 @@ VkDeviceAddress window_table_address = 0, null_window = 0, zero_address = 0;
 VkBuffer zero_buffer = VK_NULL_HANDLE;
 // (the table's shape is the translator's, bda_emit.h: an entry per 64 KB granule of the guest's 512 GB window, each the
 // distance from its guest addresses to their device addresses; the null window's entry; the split granules' page entries;
-// the check words. Layer 0's windows fill 32768 entries each, its regions (Windows) their granules and pages, vk_pools.cpp)
+// the check words. The claims' regions fill their granules and pages, vk_claims.cpp)
 constexpr uint32_t kTableShift = 16, kEntries = 1u << (39 - kTableShift), kSplitFirst = kEntries + 8, kSplits = 1u << 16;
 constexpr uint32_t kTableBytes = 8 * (kSplitFirst + 16 * kSplits) + 128;
-constexpr uint32_t kWindows = 512, kPerWindow = 1u << (31 - kTableShift);
 
 // ---- skips, by reason ----
 enum Reason {
@@ -107,10 +105,10 @@ const char* const kReasons[R_COUNT] = {
     "drawn", "mesh draws without the device's mesh stage", "task+mesh programs that cannot be drawn", "no render targets set in the list", "under a render condition",
     "rendering disabled", "a topology Vulkan lacks", "quads (indices made on the CPU)", "no program bound in the list",
     "program not read yet", "program not vertex + fragment", "variant being translated", "variant does not translate",
-    "step A cannot draw the variant", "a vertex buffer not in layer 0", "the index buffer not in layer 0", "8-bit indices",
-    "a uniform buffer not in layer 0", "the frame arena full", "resolved in a job list (no command buffer: M3)",
+    "step A cannot draw the variant", "a vertex buffer not in a region", "the index buffer not in a region", "8-bit indices",
+    "a uniform buffer not in a region", "the frame arena full", "resolved in a job list (no command buffer: M3)",
     "resolved in a load-time list", "resolved in an unclassified list", "of the drawn: indirect", "of the drawn: mesh, direct",
-    "of the drawn: mesh, indirect", "a draw kind its program has no stage for", "indirect arguments or count not in layer 0",
+    "of the drawn: mesh, indirect", "a draw kind its program has no stage for", "indirect arguments or count not in a region",
     "mesh argument records closer than 12 bytes",
     "task+mesh draws whose task step was not recorded", "task+mesh indirect draws of several records or with a count",
     "of the drawn: task+mesh (a task step)",
@@ -623,21 +621,21 @@ bool bank_copy(List* l, ListDraw& x, int stage, int bank, uint32_t bytes, VkDevi
             if (i < 9) note(0x120 + 8 * i, x.s.img_src[stage][i]);
         }
     }
-    if (bank == 0)   // (the storage buffers the shader reaches by address: bound in layer 0 ahead)
+    if (bank == 0)   // (the storage buffers the shader reaches by address: in their claims' regions)
         for (int i = 0; i < 16; i++) {
             const nvn_p_bind_buf& b = x.s.ssbo[stage][i];
             VkDeviceAddress unused;
-            if (b.addr && !layer0_address(b.addr, std::max<uint64_t>(b.size, 16), unused)) st_ssbo_unbound.fetch_add(1, std::memory_order_relaxed);
+            if (b.addr && !claims_address(b.addr, std::max<uint64_t>(b.size, 16), unused)) st_ssbo_unbound.fetch_add(1, std::memory_order_relaxed);
         }
     c.gen = x.s.bank_gen[stage], c.area = area, c.bytes = bytes, c.addr = a;
     bump(me().banks);
     return out = a, true;
 }
 
-/// guest [addr, addr + size) in its layer-0 window, through a span kept while it is the same
+/// guest [addr, addr + size) in its region, through a span kept while it is the same
 bool span_of(ListDraw::Span& c, uint64_t addr, uint64_t size, VkBuffer& b, VkDeviceSize& o) {
     if (c.b && c.addr == addr && c.size >= size) return b = c.b, o = c.o, true;
-    if (!layer0_span(addr, size, b, o)) return false;
+    if (!claims_span(addr, size, b, o)) return false;
     c.addr = addr, c.size = size, c.b = b, c.o = o;
     return true;
 }
@@ -736,7 +734,7 @@ Reason ubo_address(List* l, ListDraw& x, const DrawProg& p, const DrawProg::Ubo&
     if (!updated) {
         ListDraw::UboAddr& c = x.ubo_addr[u.stage][u.index - 3];
         if (c.dev && c.addr == b.addr && c.size == size) return a = c.dev, R_DRAWN;
-        if (!layer0_address(b.addr, size, a)) return R_UBO_MEM;
+        if (!claims_address(b.addr, size, a)) return R_UBO_MEM;
         c.addr = b.addr, c.size = size, c.dev = a;
         return R_DRAWN;
     }
@@ -894,7 +892,7 @@ void drawlog(const List* l, const char* what, const DrawProg* p, const Dyn* d, u
                 for (int j = 0; j < 8 && k < 7000; j++)
                     if (w[j] >> 32 >= 0x10 && w[j] >> 32 < 0x200)
                         k += std::snprintf(b + k, sizeof b - k, " [+%d %#llx%s]", 8 * j, (unsigned long long)w[j],
-                                           layer0_bound(w[j], w[j] + 16) ? "" : " not bound in layer 0");
+                                           claims_bound(w[j], w[j] + 16) ? "" : " not in a region");
             }
         k += std::snprintf(b + std::min<int>(k, (int)sizeof b - 1), k < (int)sizeof b - 1 ? sizeof b - 1 - k : 1, " discard %d poly %u front %u", (int)s.raster_discard, s.poly.mode, s.poly.front);
         // (M4h: every texture descriptor: a driver bank's word, a game buffer's word (read now: a diagnosis), a second word and its
@@ -1235,7 +1233,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         if (!span_of(x.ib_span, at, bytes, ib, io)) return count(l, R_INDEX_MEM);
         it = itype == 0 ? VK_INDEX_TYPE_UINT8 : itype == 1 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
     }
-    // (M4b: the arguments the GPU wrote, read by the GPU where they are: layer 0)
+    // (M4b: the arguments the GPU wrote, read by the GPU where they are: their region)
     VkBuffer ab = VK_NULL_HANDLE, cntb = VK_NULL_HANDLE;
     VkDeviceSize ao = 0, cnto = 0;
     uint32_t nargs = 1, stride = 16;
@@ -1247,8 +1245,8 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         stride = (uint32_t)(ind ? dn.stride : dm.stride);
         if (nargs == 1 && stride < rec) stride = std::max(rec, 16u);   // (one record: Vulkan does not read the stride)
         if (stride < rec || (stride & 3)) return count(l, mesh ? R_MESH_STRIDE : R_ARGS_MEM);
-        if (!layer0_span(ind ? dn.indirect : dm.indirect, (uint64_t)(nargs - 1) * stride + rec, ab, ao)) return count(l, R_ARGS_MEM);
-        if (count_addr && !layer0_span(count_addr, 4, cntb, cnto)) return count(l, R_ARGS_MEM);
+        if (!claims_span(ind ? dn.indirect : dm.indirect, (uint64_t)(nargs - 1) * stride + rec, ab, ao)) return count(l, R_ARGS_MEM);
+        if (count_addr && !claims_span(count_addr, 4, cntb, cnto)) return count(l, R_ARGS_MEM);
     }
     {   // (M4b: a storage buffer slot the program reads that nothing bound in this list: read as the null window, counted)
         bool unbound = false;
@@ -1467,17 +1465,12 @@ void draw_list_submitted(const List* l) {
     }
 }
 
-void draw_window_made(uint32_t k, uint64_t a) {   // (window k holds guest [2k GB, 2k GB + 4 GB) from device address a)
-    if (!window_table || k >= kWindows) return;
-    const uint64_t distance = a - ((uint64_t)k << 31);
-    for (uint32_t i = 0; i < kPerWindow && k * kPerWindow + i < kEntries; i++) __atomic_store_n(&window_table[k * kPerWindow + i], distance, __ATOMIC_RELEASE);
-}
 void draw_table_set(uint32_t index, uint64_t value) {
     if (window_table && index < kSplitFirst + 16 * kSplits) __atomic_store_n(&window_table[index], value, __ATOMIC_RELEASE);
 }
 uint64_t draw_table_null(uint64_t guest) { return null_window - (guest >> kTableShift << kTableShift); }
 
-/// (vk_pool.cpp draw_device_created) the window table: an entry a layer-0 window, the null window past them; the zero buffer
+/// (vk_pool.cpp draw_device_created) the address table: every entry the null window until a region takes it; the zero buffer
 double seconds_since_device() { return (host->now_ns() - t_device) / 1e9; }
 void draw_window_table_init() {
     t_device = host->now_ns(), tsc_device = __builtin_ia32_rdtsc();

@@ -72,9 +72,6 @@ struct Device {
     uint32_t queue_family = 0;
     VkQueue queue = VK_NULL_HANDLE;   // (the one queue: every submit and present, under queue_mu)
     std::mutex queue_mu;
-    VkQueue sparse_queue = VK_NULL_HANDLE;   // (layer 0's binds: create_device picks it; under sparse_mu)
-    std::mutex sparse_mu;
-    bool sparse_shared = false;   // (sparse_queue is queue: binds under queue_mu)
     bool dma_buf_import = false;
     bool host_import = false;   // (VK_EXT_external_memory_host)
     uint64_t host_align = 0;    // (its minImportedHostPointerAlignment)
@@ -100,8 +97,8 @@ enum MemOwner : int {
     MO_TABLES,      // (the window table, the zero buffer)
     MO_UPLOAD,
     MO_TRANSIENT,
-    MO_L0_VRAM,
-    MO_L0_IMPORT,   // (guest memory imported: the guest's pages, not new memory)
+    MO_CLAIM_VRAM,
+    MO_CLAIM_IMPORT,   // (guest memory imported: the guest's pages, not new memory)
     MO_IMAGE_STORE,
     MO_IMAGE,       // (the game's images not from the store)
     MO_OTHER,       // (the default: the placeholder, shots, dumps and readbacks)
@@ -184,16 +181,15 @@ void present(const nvn_tex* t, const int crop[4]);   // (the host's call: noted,
 void present_run(const nvn_tex& t, const int crop[4]);
 uint64_t present_count();   // (presents the host asked for so far: the frame number)
 
-// ---- vk_pools.cpp: layer 0 ----
-bool layer0_on();
-void layer0_pool_created(uint64_t gpu, uint64_t size);
-void layer0_pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, uint64_t key, int on);
-bool layer0_bound(uint64_t lo, uint64_t hi);
-/// Guest [gpu, gpu + size) as a window buffer and offset, bound first if it is not (imported now: a wait); false: not
-/// in one window, not guest memory, or not importable
-bool layer0_span(uint64_t gpu, uint64_t size, VkBuffer& buffer, VkDeviceSize& offset);
-void layer0_stats(char* out, size_t cap);
-/// (debug logs) the game's pool holding guest addr: base, size, NVN flags, whether addr's granule is in VRAM; false: none
-bool layer0_pool_of(uint64_t addr, uint64_t& base, uint64_t& size, uint32_t& flags, bool& in_vram);
+// ---- vk_claims.cpp: the memory the GPU reads the game's pools through, by their claims ----
+bool claims_on();
+void claims_pool(uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, int on);   // (a pool made, on 1, or finalized)
+bool claims_bound(uint64_t lo, uint64_t hi);   // (guest pages a layer-0 claim imported: the host keeps them committed)
+/// Guest [gpu, gpu + size) as its region's buffer and offset; false: not in one region (not memory the GPU reads)
+bool claims_span(uint64_t gpu, uint64_t size, VkBuffer& buffer, VkDeviceSize& offset);
+bool claims_address(uint64_t gpu, uint64_t size, VkDeviceAddress& a);   // (the same, as a device address)
+void claims_stats(char* out, size_t cap);
+/// (debug logs) the game's pool holding guest addr: base, size, NVN flags, whether its region is VRAM; false: none
+bool claims_pool_of(uint64_t addr, uint64_t& base, uint64_t& size, uint32_t& flags, bool& in_vram);
 
 }  // namespace hsd

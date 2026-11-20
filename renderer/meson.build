@@ -29,7 +29,7 @@ vk_sources = files(
   'vk_main.cpp',
   'vk_marks.cpp',
   'vk_pass.cpp',
-  'vk_pools.cpp',
+  'vk_claims.cpp',
   'vk_precompile.cpp',
   'vk_present.cpp',
   'vk_passtime.cpp',

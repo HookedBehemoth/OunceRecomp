@@ -1,4 +1,4 @@
-//! The direct back end (renderer/) without a game or a GPU: layer 0's window scheme, strict mode, the register-pressure
+//! The direct back end (renderer/) without a game or a GPU: the claims' regions, strict mode, the register-pressure
 //! pass on SPIR-V (vk_spv_late.cpp), the Sirit parts the translator relies on (DrawParameters, struct identity), and IR
 //! programs through the translator itself (its subgroup operations).
 
@@ -9,46 +9,19 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
-// ---- layer 0's windows (renderer/layer0_windows.h, vk_pools.cpp)
+// ---- the claims' regions (renderer/vk_claims.cpp)
 
-/// The windows are a granule short of 4 GB: the longest whole range, the last granule of a stretch in one window only,
-/// pieces cut at a window's end (fixtures/direct_layer0_windows_test.cpp).
+/// vk_claims.cpp reads no environment, writes a region's table entries before it publishes the region as a granule's
+/// owner (a reader that finds the owner finds its entries), and sub-allocates VRAM regions from its arenas (one device
+/// allocation per pool would pass the allocation limit and lengthen every submission).
 #[test]
-fn layer0_windows() {
-    let t = Tmp::new("direct-layer0");
-    let src = fixture_path("direct_layer0_windows_test.cpp");
-    let exe = compile(
-        &cxx(),
-        &["-std=c++20", "-O1", "-Wall", "-Wextra", "-Werror", "-pthread", &inc("renderer"), src.to_str().unwrap()],
-        &t.join("layer0"),
-    );
-    run(clean(&exe).current_dir(root()));
-}
-
-/// vk_pools.cpp binds through the pieces (cut at the window's end), imports outside its lock, publishes a chunk's bits
-/// only after its binds were waited for, and reads no environment.
-#[test]
-fn layer0_pools() {
-    let pools = read("renderer/vk_pools.cpp");
-    assert!(!pools.contains("getenv"), "vk_pools.cpp reads the environment (settings come from the host: renderer/api/settings.h)");
-    // every bind goes through range_places (pieces cut at the window's end); chunk_places only names the windows to make
-    assert!(block(&pools, "void add_binds(").contains("l0::range_places(lo, hi, ps)"));
-    let claimed = block(&pools, "void bind_claimed(");
-    let cp = &claimed[find(claimed, "l0::chunk_places(")..];
-    let lp = find(cp, "for (int i = 0; i < n; i++)");
-    let line_end = lp + find(&cp[lp..], "\n");
-    assert!(cp[..line_end].contains("window_make(pl[i].window)"), "chunk_places makes the windows");
-    // imports outside mu; binds submitted and waited for before the bits; the bits before the chunk's state
-    assert!(find(claimed, "guest_memory(") < find(claimed, "std::lock_guard lk(mu)"), "imports outside the lock");
-    assert!(find(claimed, "submit_binds(binds)") < find(claimed, "bits->set(c)"), "the binds before the bits");
-    assert!(find(claimed, "bits->set(c)") < find(claimed, "cstate[c].store(CH_BOUND"), "the bits before the state");
-    assert!(block(&pools, "VkResult submit_binds(").contains("vkWaitForFences"));
-    // the importer claims only what is still queued; the host's discard check counts chunks being imported
-    assert!(block(&pools, "void worker_main(").contains("compare_exchange_strong(st, CH_IMPORTING"));
-    assert!(block(&pools, "bool layer0_bound(").contains("CH_IMPORTING"));
-    // a span: whole in the window of its start, or not given
-    let span = block(&pools, "bool layer0_span(");
-    assert!(find(span, "l0::fits_window(gpu, size)") < find(span, "bind_claimed(claimed)"));
+fn claims_regions() {
+    let c = read("renderer/vk_claims.cpp");
+    assert!(!c.contains("getenv"), "vk_claims.cpp reads the environment (settings come from the host: renderer/api/settings.h)");
+    let assign = block(&c, "void region_assign(");
+    assert!(find(assign, "draw_table_set((uint32_t)k, distance)") < find(assign, "granule_region[k].store((uintptr_t)r"));
+    let vram = block(&c, "Region* region_vram(");
+    assert!(vram.contains("block_take(") && !vram.contains("vkAllocateMemory"), "a VRAM region is a piece of an arena");
 }
 
 // ---- strict mode (renderer/vk_check.{h,cpp}), read from the source

@@ -30,7 +30,7 @@ using CmdOf = VkCommandBuffer (*)(List*);
 void query_device_extensions(const std::vector<VkExtensionProperties>& exts, std::vector<const char*>& want, void**& tail);
 /// After the device: functions, the resolve program, the clock calibration
 void query_device_created();
-/// The usage layer 0's window buffers add (conditional rendering reads guest memory)
+/// The usage the claims' regions add (conditional rendering reads guest memory)
 VkBufferUsageFlags query_window_usage();
 /// A command slot reset (its GPU work done): its queries reset on the host, its records free
 void query_slot_reset(QSlot* q);
