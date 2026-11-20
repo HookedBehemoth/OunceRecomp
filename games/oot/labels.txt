@@ -1232,3 +1232,8 @@
 812f1030 vfx_particle_set_mat4            # games/oot/patches/pools.c: the same for 0x40 bytes
 812efb80 vfx_attr_buffer_init             # games/oot/patches/pools.c: fills a new attribute buffer with 0x6f (memset at 0x812efbd8) # ?
 81267bc0 vfx_attr_buffer_copy_dirty       # games/oot/patches/pools.c: (at 0x81268558) copies a CPU buffer's dirty index range (+0x1c8..+0x1cc, stride +0x1b8; all of +0x1b0 bytes otherwise) into the resource pool # ? the rest of it
+80365b70 depth_grid_camera_write          # games/oot/patches/pools.c: copies 0x2420 bytes (the camera) into the newest DepthBufferEx grid slot at +0x1550 (memcpy at 0x80365c00), from job_calc_runner
+806ad760 probe_calc_stream_write          # games/oot/patches/pools.c: copies count ([x19 + 0x78]) x 16 bytes into the probe calc block (memcpy at 0x806ad880) under a mutex # ? what the records are
+80711820 probe_bake_records_write         # games/oot/patches/pools.c: the BakeProbe thread's copy of 0x80-byte records into [x0 + 0x300] and 0x20-byte ones into [x0 + 0x270] # ? what the records are
+806ace20 probe_calc_fields_write          # games/oot/patches/pools.c: writes six 8-byte fields into the f_80c5c450 block's current half (last store 0x806acfdc); calls probe_calc_block_init once # ?
+80c4e880 probe_storage_records_write      # games/oot/patches/pools.c: has its virtual (+0x88, bake::ModuleMgr's f_83ad7f40) write count x 32-byte records into the probe storage block, then flushes them

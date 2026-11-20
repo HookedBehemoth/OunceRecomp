@@ -237,3 +237,112 @@ PATCH_AT(0x81268558, word(0x94a7e786), after, none, pools_vfx_copy, as(x0, dst),
                                            : G64(o + 0x1b0);
     nvn_claim_write(dst, n);
 }
+
+/* ---- the depth grid: agl::utl::DepthBufferEx (depth_grid_slots_create) and the query object (depth_grid_buffers_create),
+   claimed at their ubo_object_pool_alloc calls (docs/direct/pool-users.md). The grid's per-frame constants (0x390 x2) and
+   the query constants (0x80 x4, x2) are Upload; the two grid slots (0x3970: the GPU writes the grid, report_reader_a reads
+   the newest slot) Readback, with the CPU's per-frame camera copy into them (f_80365b70's memcpy of 0x2420 bytes at
+   +0x1550, from job_calc_runner) reported; the 0x5b40 block VRAM. The query records (5000 x 0x90) and the per-id state
+   (5000 x 16) as VRAM make the occlusion culling cull
+   less (the foliage pass 0.9 -> 1.0 ms, rt9 0.15 -> 0.25 ms in Kokiri), so a CPU write after creation (an id's release or
+   reuse, unattributed in the census) must reach them: on layer 0 until that writer is reported. The query's read block
+   (0x80366788) is Readback above */
+PATCH_AT(0x80c5a8dc, word(0x97e31b35), before, none, pools_grid_consts) { nvn_claim_begin(NVN_CLAIM_UPLOAD, "depth_grid_slots_create constants"); }
+PATCH_AT(0x80c5a8e0, word(0xd291c729), before, none, pools_grid_consts_end) { nvn_claim_end(); }
+PATCH_AT(0x80c5aa28, word(0x97e31ae2), before, none, pools_grid_slot_a) { nvn_claim_begin(NVN_CLAIM_READBACK, "depth_grid_slots_create slots"); }
+PATCH_AT(0x80c5aa2c, word(0xf955da68), before, none, pools_grid_slot_a_end) { nvn_claim_end(); }
+PATCH_AT(0x80c5aa98, word(0x97e31ac6), before, none, pools_grid_slot_b) { nvn_claim_begin(NVN_CLAIM_READBACK, "depth_grid_slots_create slots"); }
+PATCH_AT(0x80c5aa9c, word(0xf9562268), before, none, pools_grid_slot_b_end) { nvn_claim_end(); }
+PATCH_AT(0x80c5ab24, word(0x97e31aa3), before, none, pools_grid_block) { nvn_claim_begin(NVN_CLAIM_VRAM, "depth_grid_slots_create block"); }
+PATCH_AT(0x80c5ab28, word(0xf9559268), before, none, pools_grid_block_end) { nvn_claim_end(); }
+PATCH_AT(0x80366694, word(0x9406ebc7), before, none, pools_query_consts) { nvn_claim_begin(NVN_CLAIM_UPLOAD, "depth_grid_buffers_create constants"); }
+PATCH_AT(0x80366698, word(0x91002260), before, none, pools_query_consts_end) { nvn_claim_end(); }
+PATCH_AT(0x803666d0, word(0x9406ebb8), before, none, pools_query_records) { nvn_claim_begin(NVN_CLAIM_LAYER0, "depth_grid_buffers_create records"); }
+PATCH_AT(0x803666d4, word(0xb9400688), before, none, pools_query_records_end) { nvn_claim_end(); }
+PATCH_AT(0x803667c4, word(0x9406eb7b), before, none, pools_query_state) { nvn_claim_begin(NVN_CLAIM_LAYER0, "depth_grid_buffers_create state"); }
+PATCH_AT(0x803667c8, word(0xb9400688), before, none, pools_query_state_end) { nvn_claim_end(); }
+PATCH_AT(0x80365c00, word(0x94e3f1dc), after, none, pools_grid_camera, as(x0, dst)) { nvn_claim_write(dst, 0x2420); }
+
+/* ---- the probe module's calc blocks (gpu_calc_block_create, from probe_calc_block_init: 150 MB, and f_80c5c450 beside
+   probe_bake_load: 0x2000). Never bound: shaders reach them through stored addresses. Their CPU writers hand their bytes
+   over (debug.poolcensus, Kokiri). f_80c5c450's is VRAM; the 150 MB one stays on layer 0: as VRAM the check still finds about 6,000 pages
+   changed, gpu_calc_block_create writing the 150 MB pool again on sead::MainThread at a scene's load (present 231 in
+   Kokiri), after the pool's first copy and outside any scope that made a pool. Open:
+   - f_806ad760's memcpy of count ([x19 + 0x78]) x 16 bytes (ModuleSystemWorker, about 26 pages a present);
+   - the BakeProbe thread's f_80711820: count ([x3 + 0x30]) records of 0x80 bytes at [x0 + 0x300] + 0x80 x [x2 + 8], and
+     count ([x3 + 0x20]) of 0x20 at [x0 + 0x270] + 0x20 x [x1];
+   - f_806ace20's six 8-byte fields at the f_80c5c450 block's current half (x20, its last store at 0x806acfdc) */
+PATCH_AT(0x806accec, word(0x9416be2d), before, none, pools_probe_calc) { nvn_claim_begin(NVN_CLAIM_LAYER0, "probe_calc_block_init calc block"); }
+PATCH_AT(0x806accf0, word(0x36000420), before, none, pools_probe_calc_end) { nvn_claim_end(); }
+PATCH_AT(0x80c5c55c, word(0x94000011), before, none, pools_probe_bake_calc) { nvn_claim_begin(NVN_CLAIM_VRAM, "f_80c5c450 calc block"); }
+PATCH_AT(0x80c5c560, word(0xa94b4ff4), before, none, pools_probe_bake_calc_end) { nvn_claim_end(); }
+PATCH_AT(0x806ad880, word(0x94d6d2bc), after, none, pools_probe_stream, as(x0, dst), as(x21, count)) { nvn_claim_write(dst, (uint64_t)count << 4); }
+PATCH_AT(0x806acfdc, word(0xf9001288), after, none, pools_probe_fields, as(x20, at)) { nvn_claim_write(at, 0x28); }
+PATCH_FUNC(0x80711820, word(0xd503237f), body(0x73bee5ec6ea59328), aapcs, x0, pools_bake_probe_records, orig, as(x0, obj),
+           as(x1, idx2), as(x2, idx1), as(x3, counts)) {
+    const uint64_t r = guest_orig(orig);
+    const int32_t n1 = (int32_t)G32(counts + 0x30), n2 = (int32_t)G32(counts + 0x20);
+    if (n1 > 0) nvn_claim_write(G64(obj + 0x300) + 0x80ull * G32(idx1 + 8), 0x80ull * (uint64_t)n1);
+    if (n2 > 0) nvn_claim_write(G64(obj + 0x270) + 0x20ull * G32(idx2), 0x20ull * (uint64_t)n2);
+    return r;
+}
+
+/* ---- the rest of the gsys object blocks and agl pools the census names (debug.poolcensus, Kokiri and Market), each at the
+   call that makes it ---- */
+/* the save picture: agl::utl::TextureDataSerializerJPG's block (texdata_serialize_jpg <- ui_serialize_capture):
+   texdata_copy_to_buffer copies the picture into it and waits; the JPEG encoder then reads it: Readback */
+PATCH_AT(0x80bd1e48, word(0x97e54082), before, none, pools_jpg) { nvn_claim_begin(NVN_CLAIM_READBACK, "texdata_serialize_jpg picture"); }
+PATCH_AT(0x80bd1e4c, word(0x36001180), before, none, pools_jpg_end) { nvn_claim_end(); }
+/* texdata_init_jpg's work buffer: never bound: Host */
+PATCH_AT(0x809ea31c, word(0x97ecdf4d), before, none, pools_jpg_init) { nvn_claim_begin(NVN_CLAIM_HOST, "texdata_init_jpg buffer"); }
+PATCH_AT(0x809ea320, word(0x37000040), before, none, pools_jpg_init_end) { nvn_claim_end(); }
+/* terrain: terrain_streams_create's streams (the CPU writes some pages a present, binds read them): Upload; the tile
+   cache terrain_tile_load fills and reads (agl_memory_pool_create_b in terrain_tera_mgr_init) and f_80f6dc20's 202 MB pool
+   are never bound: Host */
+PATCH_AT(0x809e3990, word(0x97fc7af4), before, none, pools_terrain_streams) { nvn_claim_begin(NVN_CLAIM_UPLOAD, "terrain_streams_create"); }
+PATCH_AT(0x809e3994, word(0xf9400261), before, none, pools_terrain_streams_end) { nvn_claim_end(); }
+PATCH_AT(0x809e3684, word(0x94162633), before, none, pools_terrain_tiles) { nvn_claim_begin(NVN_CLAIM_HOST, "terrain_tera_mgr_init tiles"); }
+PATCH_AT(0x809e3688, word(0xf9402260), before, none, pools_terrain_tiles_end) { nvn_claim_end(); }
+PATCH_AT(0x80f6dc5c, word(0x97fffb5d), before, none, pools_80f6dc20) { nvn_claim_begin(NVN_CLAIM_HOST, "f_80f6dc20 pool"); }
+PATCH_AT(0x80f6dc60, word(0x39448268), before, none, pools_80f6dc20_end) { nvn_claim_end(); }
+/* GPU scratch the CPU fills only when it makes it: f_80c62260's blocks, texdata_storage_block's: VRAM. f_80c64650's
+   blocks the CPU writes later (f_80c63e70's fill, reported, and others: Market binds one as storage the CPU rewrites):
+   Upload */
+PATCH_AT(0x80c648a0, word(0x97e2f344), before, none, pools_80c64650) { nvn_claim_begin(NVN_CLAIM_UPLOAD, "f_80c64650 block"); }
+PATCH_AT(0x80c648a4, word(0xb940d688), before, none, pools_80c64650_end) { nvn_claim_end(); }
+PATCH_AT(0x80c62a38, word(0x97e2fade), before, none, pools_80c62260_a) { nvn_claim_begin(NVN_CLAIM_VRAM, "f_80c62260 blocks"); }
+PATCH_AT(0x80c62a3c, word(0xb9400f28), before, none, pools_80c62260_a_end) { nvn_claim_end(); }
+PATCH_AT(0x80c62f88, word(0x97e2f98a), before, none, pools_80c62260_b) { nvn_claim_begin(NVN_CLAIM_VRAM, "f_80c62260 blocks"); }
+PATCH_AT(0x80c62f8c, word(0xb9400f28), before, none, pools_80c62260_b_end) { nvn_claim_end(); }
+/* f_80c63e70 (called by f_80c62260 on SceneLowPriority) fills f_80c64650's block: memcpy of count (w23) x 4 bytes. Kokiri
+   never binds that block (shaders reach it through stored addresses): reported */
+PATCH_AT(0x80c64244, word(0x94bff84b), after, none, pools_80c64650_fill, as(x0, dst), as(x23, count)) {
+    if ((int32_t)count > 0) nvn_claim_write(dst, (uint64_t)(int32_t)count << 2);
+}
+PATCH_AT(0x80dd81d0, word(0x9400002c), before, none, pools_texdata_storage) { nvn_claim_begin(NVN_CLAIM_VRAM, "texdata_storage_block"); }
+PATCH_AT(0x80dd81d4, word(0xf9400282), before, none, pools_texdata_storage_end) { nvn_claim_end(); }
+/* CPU-written blocks binds read: f_80cdf2f0's two (texdata_model_procedural's), f_80c5ea90's, f_82c24db0's, and the
+   agl/gfx general pool (f_80f6a950, 0x22): Upload. f_80cdf2f0's third, texdata_cpu_lut's table, is never bound: Host */
+PATCH_AT(0x80cdfcf0, word(0x97e10630), before, none, pools_80cdf2f0_a) { nvn_claim_begin(NVN_CLAIM_UPLOAD, "f_80cdf2f0 blocks"); }
+PATCH_AT(0x80cdfcf4, word(0x39414ac8), before, none, pools_80cdf2f0_a_end) { nvn_claim_end(); }
+PATCH_AT(0x80cdfdc8, word(0x97e105fa), before, none, pools_80cdf2f0_b) { nvn_claim_begin(NVN_CLAIM_UPLOAD, "f_80cdf2f0 blocks"); }
+PATCH_AT(0x80cdfdcc, word(0x12800008), before, none, pools_80cdf2f0_b_end) { nvn_claim_end(); }
+PATCH_AT(0x80cdfc10, word(0x97f41a40), before, none, pools_80cdf2f0_lut) { nvn_claim_begin(NVN_CLAIM_HOST, "f_80cdf2f0 lut"); }
+PATCH_AT(0x80cdfc14, word(0xf9401660), before, none, pools_80cdf2f0_lut_end) { nvn_claim_end(); }
+PATCH_AT(0x80c5ee20, word(0x97e309e4), before, none, pools_80c5ea90) { nvn_claim_begin(NVN_CLAIM_UPLOAD, "f_80c5ea90 block"); }
+PATCH_AT(0x80c5ee24, word(0x91152260), before, none, pools_80c5ea90_end) { nvn_claim_end(); }
+PATCH_AT(0x82c2d6cc, word(0x9763cfb9), before, none, pools_82c24db0) { nvn_claim_begin(NVN_CLAIM_UPLOAD, "f_82c24db0 block"); }
+PATCH_AT(0x82c2d6d0, word(0x9102a260), before, none, pools_82c24db0_end) { nvn_claim_end(); }
+PATCH_AT(0x80f6aa08, word(0x97e0a10a), before, none, pools_agl_general) { nvn_claim_begin(NVN_CLAIM_UPLOAD, "f_80f6a950 general"); }
+PATCH_AT(0x80f6aa0c, word(0x910003e0), before, none, pools_agl_general_end) { nvn_claim_end(); }
+/* agl_driver_mgr_dl's third list (0x12, via f_80c51190): command memory: Host */
+PATCH_AT(0x80c4d598, word(0x94000efe), before, none, pools_agl_driver_dl_c) { nvn_claim_begin(NVN_CLAIM_HOST, "agl_driver_mgr_dl lists"); }
+PATCH_AT(0x80c4d59c, word(0xa95b4ff4), before, none, pools_agl_driver_dl_c_end) { nvn_claim_end(); }
+/* the probe module's storage block (storage_block_create in probe_storage_init, 5.5 MB): draws bind it whole, read only;
+   bake::ModuleMgr writes 32-byte records into it through f_80c4e880 (count x 32 bytes at x21, its virtual's output): VRAM,
+   the records reported, so the whole-pool binds cost nothing */
+PATCH_AT(0x80b167c4, word(0x9404dea3), before, none, pools_probe_storage) { nvn_claim_begin(NVN_CLAIM_VRAM, "probe_storage_init storage"); }
+PATCH_AT(0x80b167c4, word(0x9404dea3), after, none, pools_probe_storage_end) { nvn_claim_end(); }   /* (0x80b167c8 is a branch target) */
+PATCH_AT(0x80c4e964, word(0xf9403a95), before, none, pools_probe_records, as(x21, at), as(x22, count)) {
+    if ((int64_t)count > 0) nvn_claim_write(at, (uint64_t)count << 5);
+}

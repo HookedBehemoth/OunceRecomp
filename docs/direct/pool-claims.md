@@ -84,6 +84,14 @@ work writes (storage written, copy and fill destinations) are copied into stagin
 submission's last work, and into guest memory when it completes, before any CPU wait on it returns (`nvn_wait`,
 `nvn_finish`, the sync waits: `vk_readback.cpp`'s order).
 
+**Resets made on the GPU.** Where the CPU resets memory the GPU owns (a list's appended count, an indirect record), the
+writer patch keeps the game's store and adds `nvn_claim_fill`: the same words filled on the GPU before the next
+submission's work, with a report's protection against older copies out. OoT's culling lists reset this way.
+
+**Ranges the CPU reads of a VRAM pool.** `nvn_claim_read` names a range of a VRAM pool that the CPU reads, such as a
+list's header in a list of megabytes. After each submission whose work writes the pool, that range alone is copied out
+into guest memory, as a Readback claim's ranges are.
+
 **The verifier.** An Upload write nothing reports leaves stale bytes on the GPU, silently. With `debug.claimcheck`,
 each submission's lists note the guest ranges they use (uniform, vertex, index, indirect, storage, copies), merged by
 region. When its first chunk goes, the guest bytes of the ranges the GPU only reads are kept, and a copy of what
@@ -160,11 +168,9 @@ Measured in OoT's Kokiri test (`debug.replog`, `nvn.log_pools`):
   GPU writes the CPU reads. The invalidate is never a signal, but a survey of the invalidates per pool (a 600-present
   run) names the Readback candidates; the claim then goes on their maker.
 
-**Known gap: Vfx3's particle streams.** NintendoWare Vfx3's resource pool (`gsys_vfx_mgr_init`, 0x22, Upload) holds
-particle records (0x100 bytes each) that draws bind as storage the program writes, and that the CPU also rewrites every
-frame (the check finds about 0.4 pages a frame in Kokiri). Since the grains are the GPU's, those CPU writes do not
-reach the GPU. A page watch names the writer: an emitter plugin's callback (slot 0x380) called from `f_812618c0` at
-0x81261e08, at a particle's emission. It needs a report, or the program's real write range.
+**Vfx3's particle streams.** NintendoWare Vfx3's resource pool (`gsys_vfx_mgr_init`, 0x22, Upload) holds particle
+attribute buffers that draws bind as storage their programs write, and that the CPU also writes. The emitter plugins'
+per-particle setters (float to mat4), the new-buffer fill and the dirty-range copy report their writes.
 
 ## Engine allocators
 
@@ -190,30 +196,30 @@ CPU's invalidates (a CPU-cached pool the CPU invalidates is one whose GPU writes
 |---|---|---|
 | the exposure and light-visibility buffers, `exposure_result_block_create`, `gpu_result_block_b_create`, the depth grid's read block | Readback | the CPU invalidates and reads them every frame |
 | `agl_render_dl_buffer`, `agl_driver_mgr_dl`'s lists (0x12) | Host | display lists: never bound |
+| the GPU culling object a (`cull_gpu_object_a_create`) | VRAM | the CPU's resets made on the GPU, the counts it reads copied out of their records |
+| object b's task records (`f_80c5f870`), gather lists (`f_80c576b0`) and result blocks | Upload, Readback, Readback | the gather lists' zeroing made on the GPU |
+| GeometryCullingMgr: the views' arrays, the block | Readback, VRAM | each address store reported; the exposure record in the views' pool reported |
+| the depth grid: constants, slots, the 0x5b40 block | Upload, Readback, VRAM | the per-frame camera copy into the slots reported |
+| the probe storage block, `f_80c5c450`'s calc block | VRAM | bake::ModuleMgr's records and the calc fields reported |
+| the save picture (`texdata_serialize_jpg`) | Readback | a copy the CPU waits for, then encodes |
+| terrain streams; the tile cache, `f_80f6dc20`'s pool, texdata_cpu_lut's table, texdata_init_jpg's buffer | Upload; Host | the latter never bound |
+| `f_80c62260`, `texdata_storage_block` | VRAM | GPU scratch the CPU fills only when it makes it |
+| `f_80c64650` | Upload | written later (`f_80c63e70`'s fill, reported) and bound as storage in Market |
+| `f_80cdf2f0`'s blocks, `f_80c5ea90`, `f_82c24db0`, the agl/gfx general pool (0x22) | Upload | CPU-written, binds read them |
 
-Still on layer 0, each for a reason a run showed:
+The census (`debug.poolcensus`) and `games/oot/patches/pools.c` give each maker's claim and its writer patches. Still on
+layer 0 in OoT, each for a reason a run showed:
 
-- `cull_gpu_object_a_create`, `depth_grid_buffers_create` and job_list_build_b's block (GPU scratch, no CPU write in the
-  check) as VRAM pass the smoke test, but with the Upload makers below kept on layer 0 the profile's foliage pass
-  (rt46) takes 6.1 ms instead of 0.9 ms. Not explained yet; the culling lists' CPU resets are the first suspect.
-- `terrain_streams_create`, `storage_block_create` and `texdata_storage_block` as Upload keep `ounce profile` from ever
-  settling (resource messages stay pending). Not explained yet.
-- `cull_gpu_results_create`'s six result lists: the CPU reads them, but their programs bind the whole lists as written
-  storage, so a copy out moves about 5 MB a submission.
-- `cull_gpu_object_b_create`, `gpu_scratch_blocks_create` and `gpu_calc_block_create` (150 MB): the CPU writes parts the
-  GPU also writes or reaches only through stored addresses (about 26 pages a frame in the 150 MB block). They need
-  writer reports.
-- `depth_grid_slots_create` and `gpu_result_block_a_create`: the CPU reads them and also writes grains their GPU work
-  writes. With no report of that write, `gpu_result_block_a_create` as Readback leaves Kokiri's scene black (the check
-  stays clean: it does not see CPU reads). `texdata_serialize_jpg` (the picture) is left for a save test.
-- the makers no survey has reached, which the heap's rule leaves on layer 0.
-
-Per-game makers:
-
-- **OoT:** the tera manager's pools (`terrain_tera_mgr_init`, through agl's second wrapper); the sky tables and
-  terrain tiles are region uploads already.
-- **MKW:** the sparse bake arrays, the shadow bake and the rut mask (`sparse_virtual_pool_init`) become plain
-  arrays the back end owns, fed by `bake_cell_copy_flush`'s per-layer copies. Virtual pools are otherwise an error.
+- The vegetation's task blocks (`cull_task_block_create`, at its four calls in `cull_gpu_object_b_create` and
+  `f_80cb2a40`). As Upload the grass goes; as VRAM the leaves go too, with the task writer's reports, and the check finds
+  storage reads that differ from guest memory from the first frames: shaders likely write them through stored addresses
+  and the CPU reads them.
+- The probe module's 150 MB calc block (`probe_calc_block_init`). Its writers report, but `gpu_calc_block_create` writes
+  the pool again at a scene's load, after its first copy and outside the scope that made it.
+- The occlusion query's records and per-id state (`depth_grid_buffers_create`). As VRAM the occlusion culling culls less
+  (the foliage pass 0.9 to 1.0 ms): a CPU write after creation that the census does not attribute must be reported first.
+- NDSR's networks' pool, `f_807ac5e8`'s data pool in DKB, and the pools of rules that fall back to layer 0 (the agl
+  wrapper, nn::gfx pools other than 0x24, the gsys heap's 0x24 and 0x12 pools no maker claims).
 
 ## The agl texture takeover
 

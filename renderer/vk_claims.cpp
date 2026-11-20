@@ -1038,6 +1038,7 @@ std::atomic<int64_t> st_reports{0}, st_report_bytes{0}, st_out_subs{0}, st_out_r
 std::mutex owned_mu;
 struct Owned {
     uint64_t hash, mask;   // (its owned bytes' hash, and which grains those were)
+    bool changed = false;  // (changed at the last scan with no report since: a mismatch at the next one, if still no report)
 };
 std::unordered_map<uint64_t, Owned> owned;   // (by page)
 std::atomic<int64_t> st_owned_writes{0};
@@ -1081,14 +1082,18 @@ void owned_rehash(uint64_t lo, uint64_t hi) {   // (owned_mu held)
     for (uint64_t p = lo & ~(kPage - 1); p < hi; p += kPage)
         if (auto it = owned.find(p); it != owned.end()) it->second = owned_hash(p);
 }
+/// Every 600 presents: the owned pages whose bytes changed with no report or copy out since. A writer reports after its
+/// write, so a change is judged at the next scan: a report in between explains it
 void owned_scan() {
     std::lock_guard lk(owned_mu);
     int64_t found = 0;
     for (auto& [p, o] : owned) {
         const Owned now = owned_hash(p);
+        const bool was = o.changed;   // (changed at the last scan, and no report since: owned_rehash clears it)
         const bool changed = now.mask == o.mask && now.hash != o.hash;   // (grains the GPU took since are not judged)
         o = now;
-        if (!changed) continue;
+        o.changed = changed;
+        if (!was) continue;
         found++;
         int64_t seen;
         {

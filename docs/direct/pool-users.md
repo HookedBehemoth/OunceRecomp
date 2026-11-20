@@ -115,15 +115,16 @@ traced yet.
 | Desktop match | Readback as it is: the copy's destination is copied out before the finish returns. |
 | Confidence and census | High. Confirm with a save. DKB's is 0x81663430. |
 
-## Proposed game patches, in order of value
+## Game patches made, and what is open
 
-1. **The culling lists:** GPU fills replace the CPU resets, and a small Readback ring of the result headers replaces
-   reading the lists. The lists move to VRAM and Readback avoids copying about 5 MB a submission. Size: a fill
-   step in the culling submission, a copy of six 0x40 headers, and a change of `report_reader_b`'s source address.
-2. **GeometryCullingMgr split:** VRAM for the block, Upload with one reported write per view for the address arrays.
-   Size: one claim split and one report.
-3. **Vfx3 emission report:** one reported write per emitted particle.
-4. **The probe module's writers:** reports at the streaming writer, after the census names it.
-5. **The per-frame dedicated pool:** keep the block across frames, after the census names its maker.
-
-The depth grid, the query object and the save picture need claims only.
+1. **The culling lists:** the CPU's resets are made on the GPU (`nvn_claim_fill`), and only the records the CPU reads are
+   copied out (`nvn_claim_read`): object a is VRAM. Object b is claimed by maker; its task blocks (`cull_task_block_create`)
+   stay on layer 0 (see [pool claims](pool-claims.md)).
+2. **GeometryCullingMgr split:** the views' arrays are Readback with each address store reported (their small pool also
+   holds the exposure record, whose writes are reported), the block VRAM.
+3. **Vfx3:** the plugin setters, the new-buffer fill and the dirty-range copy report their writes.
+4. **The probe module:** the storage block is VRAM with bake::ModuleMgr's records reported. The 150 MB calc block's
+   writers report, but a scene's load writes it again outside its maker's scope: it stays on layer 0.
+5. **The depth grid:** its slots are Readback with the camera copy reported. The query's records and per-id state stay on
+   layer 0 until the writer that the census does not attribute is found.
+6. **The per-frame dedicated pool:** open.
