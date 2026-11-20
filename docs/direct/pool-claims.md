@@ -41,8 +41,8 @@ what the GPU added.
 ## Where Upload data comes from
 
 The back end sees every uniform, vertex, index and indirect range a frame binds, at record time. Those ranges are the
-default Upload signal: their granules are marked when bound and copied in at the guest's submit, before the work that
-reads them. The game's flush and invalidate calls are never a signal. Patches report writes only where binds cannot:
+default Upload signal: each list notes them when it records them, and the guest's submit marks them in the region's
+dirty bitmap, which the next submission's first chunk copies in, before the work that reads them. The game's flush and invalidate calls are never a signal. Patches report writes only where binds cannot:
 
 - data shaders reach through stored pointers (storage buffers by address), reported by the writer or its allocator;
 - load-once data, such as the in-place files' vertex and index pools (a Load once claim), copied a page at a time
@@ -51,10 +51,12 @@ reads them. The game's flush and invalidate calls are never a signal. Patches re
   Kokiri and Market), so a copy when the pool is made would be stale; no loader-end signal is known yet.
 
 **How the copies run.** An Upload or Readback claim's region is device-local, in the same arenas as VRAM claims, and is
-copied whole from guest memory at the first submission after its pool is made. At each submission, when its first
-chunk goes to the queue, the merged ranges its lists read in Upload regions are copied from guest memory into a
-host-visible staging chunk and from there into the regions, before its work. A staging chunk is reused once the GPU is
-past its submission.
+copied whole from guest memory at the first submission after its pool is made. An Upload region keeps a bitmap with a
+bit per 16 bytes. At the guest's submit, the ranges the submission's lists read set their bits; no sorting or merging
+of ranges is needed. When a submission's first chunk goes to the queue, every set bit is cleared and its bytes are
+copied from guest memory into a host-visible staging chunk and from there into the regions, before its work. The copy
+can belong to an earlier submission than the one that read the range: it still runs after the guest's submit, and
+before the reader's work. A staging chunk is reused once the GPU is past its submission.
 
 **Pools both uploaded and written by the GPU.** A page that any GPU work writes (a storage buffer the program writes,
 a copy's or a fill's destination, a report) belongs to the GPU from the submission that first writes it: bound
