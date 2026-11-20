@@ -245,3 +245,7 @@
 805e7a88 gfx_system_init                  # games/dkb/patches/pools.c: sead's graphics system at boot: the queue, the display's buffers (display_buffers_pool_init), the command memory (0x12, 16 MB) with a 32-byte mapped buffer per frame at its end, the shader scratch memory (0x21)
 805e6684 boot_targets_create              # games/dkb/patches/pools.c: one pool (0xa1) for two window-sized textures (formats 0x25, 0x35) registered in the texture pool # ? which targets
 807a6234 desc_pools_create                # games/dkb/patches/pools.c: the texture and sampler descriptor pools' memory (0x22, 2.6 MB) and a default sampler
+804c0d84 cull_geometry_mgr_memory         # docs/direct/pool-users.md: gsys::GeometryCullingMgr's memory, as OoT's gpu_result_block_a_create: per-view ubo objects, the +0xb8 block, the agl buffer at +0x28
+801961c0 ubo_object_block_alloc_b         # docs/direct/pool-users.md: OoT's ubo_object_block_alloc_b with ubo_object_block_alloc and its pool helper inlined (gsys_gpu_heap_pool_create)
+804c9918 ubo_object_pool_alloc            # docs/direct/pool-users.md: as OoT's ubo_object_pool_alloc (object, heap, frames, 1)
+81663430 texdata_serialize_jpg            # docs/direct/pool-users.md: agl::utl::TextureDataSerializerJPG, as OoT's: a block, texdata_copy_to_buffer, JpegEncoder

@@ -1186,15 +1186,37 @@
 8087b9b0 gsys_vfx_mgr_init                # games/oot/patches/pools.c: "gsysVfxMgr": makes an "EffectModel" heap and NintendoWare vfx3's system (f_81236160), whose pools (vfx3_pools_create) hold six dynamic 2 MB buffers (0x24) and an 88 MB pool (0x22)
 80deeb90 cull_gpu_objects_create          # games/oot/patches/pools.c: makes the two GPU culling objects (f_80c58a80 at +0xa78, f_80c594e0 at +0xa48)
 80c58a80 cull_gpu_object_a_create         # games/oot/patches/pools.c: a GPU culling object's pools by ubo_object_pool_alloc: lists, instance buffers, indirect arguments (30 MB, 8.6 MB x2, ...), its result lists by f_80c612a0
-80c594e0 cull_gpu_object_b_create         # games/oot/patches/pools.c: the second culling object's pools (task records, indirect arguments, 0x5000 and 0xb000 blocks); the CPU writes some of them # ?
+80c594e0 cull_gpu_object_b_create         # docs/direct/pool-users.md: the vegetation culling object ("GatherLeaf", "GatherUndergrowth", "GatherTurf"): task records, indirect arguments, 0x5000 and 0xb000 blocks; cull_gpu_lists_reset resets its lists
 80c612a0 cull_gpu_results_create          # games/oot/patches/pools.c: one of six result lists (1 to 8.6 MB) the CPU invalidates and reads every frame (report_reader_b, cull_gpu_lists_reset)
 832f3820 gpu_scratch_blocks_create        # games/oot/patches/pools.c: GPU scratch blocks (20 MB, 2.4 MB, 0x233000 x3) reached through stored addresses; the CPU writes parts # ? what system
-80c5c5a0 gpu_calc_block_create            # games/oot/patches/pools.c: one 150 MB block (from the calc job f_806acbd0) that shaders reach through stored addresses and the CPU writes # ? what system
+80c5c5a0 gpu_calc_block_create            # docs/direct/pool-users.md: one 150 MB block (probe_calc_block_init, and f_80c5c450 beside probe_bake_load) split into five ubo objects that shaders reach through stored addresses and the CPU writes # ? probe data
 80c54a20 exposure_result_block_create     # games/oot/patches/pools.c: a 0x4000 block the GPU writes and the CPU invalidates twice a frame (texdata_model_procedural) # ? exposure
 80c5a600 depth_grid_slots_create          # games/oot/patches/pools.c: agl::utl::DepthBufferEx's grid slot blocks (report_reader_a reads them), from scene_stages_init
-80ecdc20 gpu_result_block_a_create        # games/oot/patches/pools.c: a small block the GPU writes and the CPU invalidates (job_list_build_b) # ?
+80ecdc20 gpu_result_block_a_create        # docs/direct/pool-users.md: gsys::GeometryCullingMgr's memory (job_list_build_b): per-view address arrays the CPU writes every frame, and the block the GPU writes through those addresses
 80ece560 gpu_result_block_b_create        # games/oot/patches/pools.c: small blocks the GPU writes and the CPU invalidates # ?
-80366600 depth_grid_buffers_create        # games/oot/patches/pools.c: the depth grid's GPU buffers (0xb0000, 0x14000) and a 0x37000 block the CPU reads (bl at 0x80366788)
+80366600 depth_grid_buffers_create        # docs/direct/pool-users.md: the query object's blocks (args 5000, 5000): 5000 x 0x90 records zeroed (0xb0000), 5000 x 16 bytes set to 1e6 (0x14000), 7000 x 16 double-buffered query records cull_gpu_dispatch fills and reads (0x37000, bl at 0x80366788), consts
 80902560 terrain_streams_create           # games/oot/patches/pools.c: the terrain's vertex and index stream pools (f_809e38d0), written by the CPU
-80c4e250 storage_block_create             # games/oot/patches/pools.c: a 0x581000 block the CPU writes and shaders read as storage (f_80b16530) # ?
+80c4e250 storage_block_create             # docs/direct/pool-users.md: the probe module's 0x581000 storage block (probe_storage_init), zeroed at creation, an agl buffer over it # ?
 80dd8180 texdata_storage_block            # games/oot/patches/pools.c: a 0x30e000 storage block by f_80dd8280 the CPU writes # ?
+# --- pool users (docs/direct/pool-users.md)
+8361fde0 cull_geometry_slot_alloc         # docs/direct/pool-users.md: GeometryCullingMgr: a shape's slice of the +0xb8 block (CAS bump on +0xf8, capacity +0xe8, 32-byte stride), its {buffer, offset, stride} into the shape's view slot, the slice addresses into the view's address array (cull_geometry_store_address) and the view's count +0x90
+8006fc90 cull_geometry_draw_view          # docs/direct/pool-users.md: GeometryCullingMgr: one view's units as a DrawArrays of points (count +0x90), the view's address array bound as storage (ubo_object_bind), program at [[g_84cb5a18]+0x40]+0xb80
+834bfb20 cull_geometry_store_address      # docs/direct/pool-users.md: stores base + offset (a slice's GPU address) into a view's address array: the only CPU write of the array
+80cf96b0 cull_geometry_mgr_ctor           # docs/direct/pool-users.md: GeometryCullingMgr's constructor (0x110 bytes, vtable g_84c2e9e0); gpu_result_block_a_create makes its memory
+80296c30 ubo_object_bind                  # docs/direct/pool-users.md: binds a ubo object's current frame as a storage buffer or a uniform buffer at a slot
+80c56e10 ubo_object_add_member            # docs/direct/pool-users.md: adds a member to a ubo object's layout (type, count, element size, alignment); type 0x14 is a raw array
+80c5f080 ubo_object_init                  # docs/direct/pool-users.md: a ubo object's layout table for n members (+0x10)
+80c583d0 ubo_object_flush                 # docs/direct/pool-users.md: flushes one frame of a ubo object (FlushMappedRange when the pool is CPU-cached)
+80522910 ubo_object_block_alloc_b         # docs/direct/pool-users.md: ubo_object_block_alloc, then the block's alignment into +0x38
+8090ba80 ubo_block_span                   # docs/direct/pool-users.md: a block's {offset in its pool, pool size, pool, block} for agl_ssb_set_storage and the invalidate
+80c4d6e0 agl_ssb_set_storage              # docs/direct/pool-users.md: an agl buffer (NVN buffer at +0x50) over a block span, as DKB's agl_ssb_set_storage
+80c4df00 agl_span_invalidate              # docs/direct/pool-users.md: InvalidateMappedRange over a block span when its pool is CPU-cached
+80ecd440 depth_grid_buffers_ctor          # docs/direct/pool-users.md: the 0x330 query object's constructor; depth_grid_buffers_create makes its memory, texdata_model_procedural keeps it at +0xc80
+805879e0 cull_frame_begin                 # docs/direct/pool-users.md: the frame's culling preparation on the main thread; calls cull_gpu_lists_reset # ?
+80b15710 probe_bake_load                  # docs/direct/pool-users.md: "BakeProbe": the baked probe resources ("ProbeHeap", bkprb, bkprcb) # ? what the probes hold
+80b16530 probe_storage_init               # docs/direct/pool-users.md: the probe module's storage: storage_block_create's 0x581000 block and a 0x10 ubo object (+0xe8) # ?
+83b0d020 probe_module_scene_init          # docs/direct/pool-users.md: a module's virtual (vtable at 0x84c7d108) that makes probe_storage_init's and probe_bake_load's resources # ?
+806acbd0 probe_calc_block_init            # docs/direct/pool-users.md: the same module's job (f_806acde0) that makes gpu_calc_block_create's 150 MB block and two siblings # ?
+812618c0 vfx_particle_init_callbacks      # docs/direct/pool-users.md: Vfx3: a new particle's setup; runs the emitter plugins' callbacks (slots 0x3b8, 0x3b0, 0x358, 0x380; the 0x380 call at 0x81261e08 writes the particle record)
+831f8620 texdata_snapshot_textures        # docs/direct/pool-users.md: "SnapShotTexture" and "CopySnapShotTexture": texture storage by ubo_object_block_alloc and dta_alloc_b
+80dd8280 texdata_block_alloc              # docs/direct/pool-users.md: a texture-storage block by ubo_object_block_alloc (texdata_storage_block, the PNG and TGA serializers, tera_unit_textures_init)
