@@ -62,6 +62,9 @@ static double host_setting_float(int id) { return setting_float((setting_id)id);
 static const char *host_setting_str(int id) { return setting_str((setting_id)id); }
 static int host_setting_given(int id) { return setting_given((setting_id)id); }
 
+uint64_t poolcensus_begin(void);   /* poolcensus.c */
+void poolcensus_use(uint64_t seq, uint64_t lo, uint64_t size, int use, int writes);
+void poolcensus_phase(uint64_t seq, int phase);
 static const MkwVkHost vk_host = {
     MKWVK_API_VERSION, host_log, hos_guest_base, hos_guest_size, hos_gpu_ptr, nvn_gpu_guest, nvn_gpu_read,
     nvn_gpu_write, host_free_pages, hos_ticks, hos_now_ns, nvn_tex_layout,
@@ -70,6 +73,7 @@ static const MkwVkHost vk_host = {
     host_watch_guest_writes, hos_pad_raw, hos_binding, hos_bind, host_aspect_ratio, host_take_key_press,
     hos_mouse_pointer, hos_mic_count, hos_mic_name, hos_mic_select, hos_sdl_gyro_status, hos_log_flush, game_prompts_face,
     host_romfs_dir, host_setting_int, host_setting_float, host_setting_str, host_setting_given, nvn_texture_site,
+    poolcensus_begin, poolcensus_use, poolcensus_phase,
 };
 
 static const MkwVkRenderer *vk;   /* the back end, once started */

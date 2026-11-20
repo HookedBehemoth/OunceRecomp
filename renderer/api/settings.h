@@ -189,6 +189,7 @@ extern "C" {
     B(DBG_REPLOG, "debug.replog", DEV, 0, "query reports logged")                                                             \
     B(DBG_CLAIMCHECK, "debug.claimcheck", DEV, 0, "the claims' verifier: each submit's bound ranges against what the GPU reads") \
     B(DBG_CLAIMUSE, "debug.claimuse", DEV, 0, "the bound bytes per pool and claim, pointer-reached data, load-once pages")    \
+    S(DBG_POOLCENSUS, "debug.poolcensus", DEV, "", "CPU writers and readers of the GPU's pools (layer0, a claim, by:<patch>, <hex>; +whole)") \
     S(DBG_POOLOF, "debug.poolof", DEV, "", "<hex>: the pool of that address")                                                 \
     B(DBG_RTLOG, "debug.rtlog", DEV, 0, "render targets logged")                                                              \
     B(DBG_TMWAIT, "debug.tmwait", DEV, 0, "task-mesh waits logged")                                                           \

@@ -472,6 +472,7 @@ void region_drop(Region* r) {
 
 // ---- the check and the measurement (debug.claimcheck, debug.claimuse): the guest ranges each submission's lists use ----
 bool tracking = false, track_check = false, track_use = false, track_all = false;   // (set once at claims_on)
+bool track_census = false;   // (debug.poolcensus: each submission's ranges told to the runtime's census, runtime/poolcensus.c)
 const char* const kUseNames[CU_KINDS] = {"uniform", "vertex", "index", "indirect", "storage", "storage written", "copy source", "copy destination",
                                          "fill", "texel copy", "condition", "task record"};
 /// the uses after which the GPU may have written the range
@@ -583,6 +584,7 @@ struct ClaimSubImpl {
     std::vector<Part> parts;
     std::vector<VkCommandBuffer> cbs;   // (its copies' command buffers: its first chunk's, and one after each wait it was held at)
     std::vector<uint32_t> sites;   // (the lists' return addresses, for the event's text)
+    uint64_t census = 0;           // (debug.poolcensus: its number there)
     // (each range it copied from staging: refreshed at a held event wait from the guest bytes then, and compared by the check
     // once it completes, before any wait on it returns: a difference is a CPU write while the GPU may still read the range)
     struct Sent {
@@ -851,6 +853,13 @@ ClaimSub* claims_sub_new(List* const* lists, size_t n) {
     for (size_t i = 0; i < n; i++)
         if (lists[i]) list_ref(lists[i]), s->lists.push_back(lists[i]), s->has_outs = s->has_outs || any_outs(lists[i], 0);
     s->frame = present_count();
+    if (track_census && (s->census = host->census_begin())) {   // (its ranges as the guest submits it)
+        std::vector<BoundRange> raw;
+        std::vector<uint32_t> sites;
+        for (List* l : s->lists) gather_list(l, raw, sites, 0);
+        for (const BoundRange& b : raw)
+            if (((const Region*)b.region)->pages) host->census_use(s->census, b.lo, b.size, b.use, (1u << b.use) & kGpuWrites ? 1 : 0);
+    }
     return s;
 }
 
@@ -1233,6 +1242,7 @@ void claims_guest_write(uint64_t guest, const void* src, uint64_t n) {
 VkCommandBuffer claims_sub_prepare(ClaimSub* s, ClaimPrep what) {
     if (what == CLAIM_PREP_AFTER_WAIT) return refresh(s);
     if (what == CLAIM_PREP_OUTS) return record_outs(s);
+    if (s->census) host->census_phase(s->census, 1);
     const auto t0 = std::chrono::steady_clock::now();
     {
         DirtyAcc acc;
@@ -1370,6 +1380,7 @@ VkCommandBuffer claims_sub_prepare(ClaimSub* s, ClaimPrep what) {
 void claims_sub_sent(ClaimSub* s, uint64_t value) {
     if (!s) return;
     readback_then(value, [s] {
+        if (s->census) host->census_phase(s->census, 2);
         copy_out(*s);
         compare(*s);
         for (List* l : s->lists) list_unref(l);
@@ -1480,7 +1491,9 @@ bool claims_on() {
             if ((req.memoryTypeBits >> i & 1) && (f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) && (pass || !(f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)))
                 vram_type = i;
         }
-    track_check = dbg(SET_DBG_CLAIMCHECK), track_use = dbg(SET_DBG_CLAIMUSE), tracking = true, track_all = track_check || track_use;
+    track_check = dbg(SET_DBG_CLAIMCHECK), track_use = dbg(SET_DBG_CLAIMUSE), tracking = true;
+    track_census = *host->setting_str(SET_DBG_POOLCENSUS) != 0;
+    track_all = track_check || track_use || track_census;
     granule_region.reset(new std::atomic<uintptr_t>[(guest_bytes >> kGranuleShift) + 1]);
     for (uint64_t j = 0; j <= guest_bytes >> kGranuleShift; j++) granule_region[j].store(0, std::memory_order_relaxed);
     logf("direct: claims on: a region per pool the GPU reads; VRAM claims in memory type %d, layer-0 claims imported as type %u",

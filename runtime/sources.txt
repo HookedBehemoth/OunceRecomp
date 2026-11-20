@@ -9,6 +9,7 @@ cxx_throw.c
 render_lists.c
 crit.c
 texwatch.c
+poolcensus.c
 hos_fp.c
 hos_hostcall.c
 hos_main.c

@@ -121,7 +121,9 @@ static uint32_t claim_now(uint32_t flags, uint64_t size, const char **by) {
         if (tl_claim.at[i].rule) return *by = tl_claim.at[i].by, (uint32_t)tl_claim.at[i].rule(flags, size);
     return NVN_CLAIM_NONE;
 }
+void poolcensus_reported(uint64_t addr, uint64_t size);   /* poolcensus.c */
 void nvn_claim_write(uint64_t addr, uint64_t size) {
+    poolcensus_reported(addr, size);
     const gpu_fns *d = rx_direct();
     if (d) d->claim_write(addr, size);
 }
@@ -332,6 +334,8 @@ NV(nvnMemoryPoolInitialize,
     }
     rx_nvn_pool_native(o->gpu, o->size, o->flags, o->claim, by, 1);   /* (the back end serves it by its claim, before any binding) */
     rx_nvn_pool_created(o->gpu, o->size);
+    void poolcensus_pool(Ctx *c, uint64_t gpu, uint64_t size, uint32_t flags, uint32_t claim, const char *by);   /* poolcensus.c */
+    poolcensus_pool(c, o->gpu, o->size, o->flags, o->claim, by);
     OLOG("pool %#llx size %#llx flags %#x", (unsigned long long)o->gpu, (unsigned long long)o->size, o->flags);
     RET(1);
 }
@@ -349,6 +353,8 @@ NV(nvnMemoryPoolFinalize) {
     if (no_pool(c, "finalize")) return;
     nvn_pool *o = (nvn_pool *)P(0);
     if (o->mem && o->magic == NVN_MAGIC('P', 'O', 'O', 'L')) {   /* (a virtual pool's GPU range is not reused) */
+        void poolcensus_pool_gone(uint64_t gpu, uint64_t size);   /* poolcensus.c */
+        poolcensus_pool_gone(o->gpu, o->size);
         rx_nvn_pool_native(o->gpu, o->size, o->flags, o->claim, NULL, 0);
         hos_gpu_track(o->gpu, o->size, 0);
     }
@@ -2730,6 +2736,8 @@ NV(nvnQueuePresentTexture) {
     o->presents++;
     game_frame();
     if (rx_direct()) texwatch_frame();   /* (debug.texwatch= its line) */
+    void poolcensus_frame(void);   /* poolcensus.c */
+    poolcensus_frame();
     extern volatile int64_t hos_present_count;   /* display.c */
     os_atomic_inc(&hos_present_count);
     hos_vi_native_presented();

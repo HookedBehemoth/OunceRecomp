@@ -13,7 +13,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 19
+#define MKWVK_API_VERSION 20
 /* (renderer) the controls' names (runtime/nn_hid.c, runtime/media/pad_sdl.c, the pad_ and key_ lines of ounce_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position, SDL's order (the bottom face
    button first: A on an Xbox pad, cross on a DualSense) */
@@ -117,6 +117,12 @@ typedef struct MkwVkHost {
     /* (version 18) the guest's call of nvnTextureInitialize on this thread, for the texture the back end is told of now:
        its return address and its caller's (0 for a texture told of later) */
     void (*texture_site)(uint64_t out[2]);
+    /* (version 20) debug.poolcensus (runtime/poolcensus.c): a submission at the guest's submit (its number, 0 when the
+       census is off), each guest range its lists use (use: vk_internal.h's ClaimUse; writes: GPU work may write it), and its phases (1 its first chunk
+       went to the GPU, 2 it completed) */
+    uint64_t (*census_begin)(void);
+    void (*census_use)(uint64_t sub, uint64_t lo, uint64_t size, int use, int writes);
+    void (*census_phase)(uint64_t sub, int phase);
 } MkwVkHost;
 
 /* what the back end gives the executable: the rx_* functions (renderer/api/rx_nvn.h, rx_core) */

@@ -318,6 +318,8 @@ static uint64_t read_at(Ctx *c, uint64_t id, int64_t off, uint64_t buf, uint64_t
     {   /* (M4d: debug.texwatch in direct mode: a read into watched texture storage, made writable first) */
         void texwatch_kernel_write(uint64_t guest, uint64_t n, const char *what);
         texwatch_kernel_write(buf, size, fh->path);
+        void poolcensus_kernel_write(uint64_t guest, uint64_t n);   /* (debug.poolcensus: the same) */
+        poolcensus_kernel_write(buf, size);
     }
     const int64_t got = os_file_read_at(fh->f, GP(buf), (size_t)size, (uint64_t)off);
     if (got > 0) done = (uint64_t)got;
