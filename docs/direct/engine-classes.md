@@ -23,7 +23,7 @@ outright, and only OoT has them; OoT's are replaced by host code.
 |---|---|---|---|---|---|
 | agl::UniformBlock and ShaderStorageBlock: flush | all three, and TOTK | flush is a function; writes, copy flips and address math are inlined in hundreds of functions | 8 write reports in OoT's `pools.c`, now marked flush calls | about 15 lines in `nvn_native.c` | done in OoT; DKB and MKW need their own census |
 | agl::UniformBlock and GPUMemBlockBase: allocation | all three | the allocators are functions (OoT 180, 34 and 110 calls) | 22 claim scopes (44 rows) in OoT, now table rows | about 60 lines, plus a table of call sites per game | done in OoT; DKB and MKW next |
-| gsys GPU culling lists | OoT | the reset is inlined per list, plus 2 calls; the header read is a function; the gather lists' zeroing is inlined in an actor function | `mesh_lists.c` and `mesh_args.c` (about 60 rows), and the 11 count fills of `actor_records_read_a` | about 200 lines and a table of lists | done in OoT: the reset function replaced by host code |
+| gsys GPU culling lists | OoT | the reset is inlined per list, plus 2 calls; the header read is a function; the gather lists' zeroing is inlined in an actor function | `mesh_lists.c` and `mesh_args.c` (about 60 rows), and the 11 count fills of `actor_records_read_a` | about 200 lines and a table of lists | done in OoT: the reset function replaced by host code, the resets recorded at the culling pass |
 | agl::utl::DynamicUniformBlockAllocator | all three, and TOTK | init and alloc are functions | none | about 120 lines | only together with mapped pools (uniform rings, step 9) |
 | Readback objects: exposure lights, light visibility, DepthBufferEx, the query object | DepthBufferEx in all three; the rest OoT | makers and readers are functions | covered by the first two rows | none of its own | keep the maker claims |
 | gsys::GeometryCullingMgr | all three, and TOTK | the slot allocator is a function; its address store is inlined in DKB | covered by the first two rows | none of its own | no class replacement |
@@ -100,14 +100,26 @@ Its methods:
 
 A flush cannot stand in for these: the head is 16 bytes of a copy of up to 4.4 MB that the GPU writes.
 
-**Host code over the class (done in OoT, `games/oot/patches/cull_lists.c`).** `cull_gpu_lists_reset` is replaced
-whole by host code that works on typed views of the game's objects and a table of object a's lists (offset, members
-read, members reset, the set count, the dispatch record). It does what the game did, in the game's order, writes the
-same words into guest memory, and makes each reset a GPU fill; it drops the flushes and invalidates, because the
-pools are VRAM. When the object is made, the patch on its maker names every record the CPU reads with
-`nvn_claim_read`, once, and checks that each block's virtual methods are the ones the game's code assumes (the
-alignment getter and the empty invalidate). `actor_records_read_a` mixes too much other logic to replace; one row after
-its zeroes makes them on the GPU, reading the same condition as the game.
+**Host code over the class (done in OoT, `games/oot/patches/cull_lists.c`).** Only GPU work writes object a's lists.
+The patch splits each reset into its two halves:
+
+- **The flip and the read** stay where the game makes them. `cull_gpu_lists_reset` is replaced whole by host code over
+  typed views of the game's objects and a table of object a's lists (offset, members read, members reset, the set
+  count, the dispatch record). It flips each list and reads the counts the back end copied out of the copy now
+  current (`nvn_claim_read`, named once when the object is made). A copy that no culling pass reset since it was last
+  current reads 0, the value the game's own reset left; the patch keeps that as host state.
+- **The resets** are buffer clears that the patch records on `pass_vegetation_compute`'s own command buffer before its
+  first dispatch, for every copy a flip made current since the pass last ran: that pass's compute writes all of object
+  a's lists. Counts are cleared to 0, the set count to its value at the flip, a mesh draw record to {0, 1, 1, w3} and a
+  dispatch record to {0, 1, 1, 0}, Vulkan's layout ([task and mesh shaders](task-mesh.md)).
+
+Object b's three gather lists flip and are read in `actor_records_read_a`, among unrelated actor logic. Their writers
+are the culling pass and the render jobs' mesh draws, whose order against the culling pass is not established, so they
+stay on `nvn_claim_fill` after the game's zero stores. The patch model can neither remove a store nor skip a range of a
+function; removing the stores takes a replacement of the whole function.
+
+`actor_records_read_b` writes object b's own indirect mesh records on the CPU, in an Upload pool. A row after its
+stores gives y and z the value 1 where the game leaves both 0.
 
 ## agl::utl::DynamicUniformBlockAllocator
 
@@ -159,7 +171,7 @@ the dirty-range copy are each a function with one report. That is already one pa
 
 1. **Marked flushes** (done in OoT). For DKB and MKW, a census of their flushes against their reports comes first.
 2. **The allocation table** on the three allocators (done in OoT). Next DKB's claims, then MKW's pools.
-3. **The culling lists** in OoT (done): host code replaces the reset function.
+3. **The culling lists** in OoT (done): host code replaces the reset function, and the culling pass records the resets.
 4. **The dynamic ring's host alloc,** together with mapped pools.
 
 The claims at pool makers, the Vfx3 reports, and the scopes at generic makers' calls stay as they are.

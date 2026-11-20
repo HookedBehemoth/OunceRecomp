@@ -2523,7 +2523,6 @@ static void draw_mesh(Ctx *c, int kind) {
     if (kind == 0) r->x = I(1), r->y = I(2), r->z = I(3);
     else if (kind == 1) r->indirect = U64(1), r->max = 1;
     else r->indirect = U64(1), r->count_addr = U64(2), r->max = I(3), r->stride = I(4);
-    if (kind) game_indirect_mesh_draw(r->indirect, r->max, r->stride);
     static volatile int64_t n;
     const int64_t k = os_atomic_inc(&n);
     if (lognvn() && (k <= 3 || k % 20000 == 0))

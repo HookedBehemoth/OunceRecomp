@@ -6,7 +6,6 @@ WEAK void game_texture_initializing(uint64_t obj, uint64_t gpu, const void *desc
 WEAK void game_texture_initialized(const void *nvn_texture) { (void)nvn_texture; }
 WEAK const void *game_texture_moving(void) { return NULL; }
 WEAK int game_job_list(uint64_t cmd, uint64_t *key, uint64_t *view) { (void)cmd, (void)key, (void)view; return 0; }
-WEAK void game_indirect_mesh_draw(uint64_t gpu, int max, int stride) { (void)gpu, (void)max, (void)stride; }
 WEAK int game_invalidate_unneeded(uint64_t size) { (void)size; return 0; }
 WEAK void game_frame(void) {}
 WEAK void game_frame_timing(int64_t now) { (void)now; }

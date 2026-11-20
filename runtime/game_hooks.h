@@ -20,8 +20,6 @@ const void *game_texture_moving(void);
 /* a recording that was named a job's list: 1 and its pass key and view record when the game's job recorder runs it
    on this thread; 0 */
 int game_job_list(uint64_t cmd, uint64_t *key, uint64_t *view);
-/* an indirect mesh draw of a GPU-written list at gpu (max records of stride bytes), before it is recorded */
-void game_indirect_mesh_draw(uint64_t gpu, int max, int stride);
 /* 1: a mapped-range invalidate of size bytes on this thread needs no wait (the game reads data it can do without) */
 int game_invalidate_unneeded(uint64_t size);
 

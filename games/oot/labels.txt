@@ -373,6 +373,13 @@
 80364080 cull_gpu_dispatch                # work/assets/native/alloc-transfer.md: dispatches the GPU-culling compute, 112 KB instance list
 80361a00 cull_gpu_list_reset_one          # games/oot/patches/cull_lists.c: one list's reset (flip, read the member count and the first record's w0, zero both, flush); only cull_gpu_lists_reset calls it, and that is replaced
 80361c80 cull_gpu_lists_reset             # games/oot/patches/cull_lists.c (replaced whole): once a frame from cull_frame_begin, x0 culling object a: flips, reads and resets each of its lists (0x0, 0x180, 0x1b8, 0x30, 0x68/0x90/0xe0, 0x108, 0x140), the six header lists (report_reader_b), 0x608
+80585c40 cull_list_bind_named             # games/oot/patches/cull_lists.c: binds a culling list's current block (x3 the list + 8: cur, ring_n, ring) by resource name (strcmp) at a program's stages, as storage or uniform
+805848d0 cull_header_bind_named           # games/oot/patches/cull_lists.c: the same for a header list's two-copy block # ?
+80290f20 cull_pass_calls_a                # games/oot/patches/cull_lists.c: pass_vegetation_compute's first culling call (per item of a list), on its compute context
+808832f0 cull_pass_vegetation             # games/oot/patches/cull_lists.c: pass_vegetation_compute's second culling call: vegetation_mesh_placement
+80583d90 cull_pass_calls_c                # games/oot/patches/cull_lists.c: pass_vegetation_compute's third culling call: f_80583e70
+80583e70 cull_dispatch_lists              # games/oot/patches/cull_lists.c: binds object a's lists and headers (cull_list_bind_named, cull_header_bind_named) and dispatches the culling compute (DispatchComputeIndirect at +0x83c)
+82c21140 cull_pass_calls_a_scene          # games/oot/patches/cull_lists.c: pass_vegetation_compute's other path's first culling call (calls cull_pass_calls_a) # ?
 80365940 ssb_alignment_get                # games/oot/patches/cull_lists.c: agl::ShaderStorageBlock's vtable +0x28: returns +0x88 (the block alignment)
 8002a580 ubo_alignment_get                # games/oot/patches/cull_lists.c: agl::UniformBlock's vtable +0x28: returns 0x100
 80822260 cull_grid_occluder               # docs/direct/frame-loop.md: the grid's CPU occluder: one view's grid from the GPU depth grid (f_80365f00) and its camera

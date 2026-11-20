@@ -90,7 +90,8 @@ frame's sum is complete on its own and every copy out lands. Where the game's lo
 since the last read", the host code keeps that state itself: it counts the passes recorded since the last read, and
 reads 0 when there are none. CPU data the GPU needs in such a block is kept on the host and written by the same patch
 in list order, with a 4-byte clear for each word's bits. OoT's exposure sums, its exposure record (and the record's
-tint) and its lights' visibility counters work this way (`gpu_readers.c`).
+tint) and its lights' visibility counters work this way (`gpu_readers.c`), and so do its culling lists' counts and
+indirect records, cleared before the culling pass (`cull_lists.c`).
 
 Where the writer flushes what it wrote, the patch marks the flush call instead (`nvn_claim_flush_written`), and that
 flush's range is the report. A mark needs a census of that call: every write of its class lies inside the flush that
@@ -103,10 +104,9 @@ work writes (storage written, copy and fill destinations) are copied into stagin
 submission's last work, and into guest memory when it completes, before any CPU wait on it returns (`nvn_wait`,
 `nvn_finish`, the sync waits: `vk_readback.cpp`'s order).
 
-**Resets made on the GPU.** Where the CPU resets memory the GPU owns (a list's appended count, an indirect record), the
-writer patch keeps the game's store and adds `nvn_claim_fill`: the same words filled on the GPU before the next
-submission's work, with a report's protection against older copies out. OoT's culling lists reset this way, from
-host code that replaces the culling object's reset function (`cull_lists.c`).
+**Fills before the next submission.** `nvn_claim_fill` fills a range on the GPU before the next submission's work,
+with a report's protection against older copies out. It is not ordered against work in flight. Only OoT's gather lists
+use it, whose writing passes are not all known.
 
 **Ranges the CPU reads of a VRAM pool.** `nvn_claim_read` names a range of a VRAM pool that the CPU reads, such as a
 list's header in a list of megabytes. After each submission whose work writes the pool, that range alone is copied out

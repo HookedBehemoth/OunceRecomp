@@ -1,17 +1,20 @@
-/* Game patch: gsys's GPU culling lists of OoT's culling object a, as host code over the game's objects
-   (docs/direct/engine-classes.md, "The gsys GPU culling lists"). The lists' pools are VRAM: each reset the CPU makes is a
-   GPU fill (nvn_claim_fill), and the records the CPU reads are copied out after each submission (nvn_claim_read, named
-   once when the object is made).
+/* Game patch: gsys's GPU culling lists of OoT's culling objects, as host code over the game's objects
+   (docs/direct/engine-classes.md, "The gsys GPU culling lists"). Only GPU work writes object a's lists: every reset is a
+   buffer clear recorded on the culling pass's own command buffer, before its work, and the CPU reads only the records
+   the back end copied out (nvn_claim_read, named once when object a is made).
 
    cull_gpu_lists_reset is replaced whole, with its inlined resets, cull_gpu_list_reset_one and report_reader_b: per list,
-   flip the copy, read the counts of the copy the GPU filled, reset its records. The flushes and invalidates go (the
-   pools are VRAM); the guest stores stay, so a frame with no culling submission reads its own resets back. A mesh draw
-   record is reset to {0, 1, 1, w3} and a dispatch record to {0, 1, 1, 0}: Vulkan's indirect layout in place
-   (docs/direct/task-mesh.md). actor_records_read_a (object b's gather lists, Readback) keeps its code; one row after its
-   zeroes makes them on the GPU.
+   flip the copy and read the counts of the copy the GPU filled. A copy no culling pass reset since it was last current
+   reads 0, the game's own reset. pass_vegetation_compute, the pass whose compute writes all of object a's lists, records
+   the resets of every copy a flip made current since its last run, before its first dispatch: counts to 0, the set count
+   to its value at the flip, a mesh draw record to {0, 1, 1, w3} and a dispatch record to {0, 1, 1, 0} (Vulkan's indirect
+   layout, docs/direct/task-mesh.md). Object b's gather lists (actor_records_read_a) stay on fills: the render jobs' mesh
+   draws write them too. actor_records_read_b's own indirect records are CPU data: they get y = z = 1 where the game
+   leaves both 0.
 
    Check that it applies: the 600-present line "direct patch culling lists". */
 #include <stddef.h>
+#include <string.h>
 #include "patches.h"
 #include "os.h"
 #include "nvn_claims.h"
@@ -34,7 +37,8 @@ typedef struct {              /* agl::UniformBlock (agl::ShaderStorageBlock), 0x
     uint32_t _8c;
 } Block;
 typedef struct {              /* a culling list: a ring of single-copy blocks */
-    uint8_t _00[0x14];
+    uint8_t first;            /* (gather lists: 1 = two more counts) */
+    uint8_t _01[0x13];
     uint32_t copies, cur, _1c;
     uint32_t ring_n, _24;
     uint64_t ring;            /* Block[ring_n] */
@@ -59,10 +63,10 @@ static const struct list_op {
     uint16_t at;          /* offset in object a */
     int8_t count;         /* the member whose count is read, -1 none */
     uint8_t head;         /* the first record's w0 read */
-    uint16_t records;     /* members zeroed as mesh draw records */
-    uint16_t counts;      /* members zeroed as counts */
+    uint16_t records;     /* members reset as mesh draw records */
+    uint16_t counts;      /* members reset as counts */
     int8_t set;           /* the member set to the list's value, -1 none */
-    uint8_t dispatch;     /* the first record set to {0, 1, 1, 0} */
+    uint8_t dispatch;     /* the first record a dispatch record */
 } ops[] = {   /* cull_gpu_lists_reset's order; the list at 0xb8 is never reset */
     {LIST, 0x000, 1, 0, M(0), M(1), -1, 0},
     {LIST, 0x180, 1, 1, M(0), M(1), -1, 0},   /* (cull_gpu_list_reset_one) */
@@ -84,15 +88,26 @@ static const struct list_op {
 #define UBO_ALIGN G64(0x84cb56e0)
 #define NO_INVALIDATE G64(0x84cb4fb0)
 
-static struct { volatile int64_t resets, headers, actor, records, set, outside; } n;
-static uint64_t made[4];
+/* host state per culling object a: the copies a flip made current that no pass reset yet, the copies a pass reset since
+   they became current, the set counts at the flip. Flips and passes run on different game threads */
+static struct {
+    uint64_t obj;
+    uint8_t due[NOPS][2];     /* [op][copy]: made current by a flip since the last pass */
+    uint8_t reset[NOPS][2];   /* a pass recorded this copy's resets since it became current */
+    uint32_t value[NOPS][2];  /* the set count at that flip */
+} objs[4];
+static volatile int lock;
+static void take(void) { while (__atomic_exchange_n(&lock, 1, __ATOMIC_ACQUIRE)) {} }
+static void give(void) { __atomic_store_n(&lock, 0, __ATOMIC_RELEASE); }
+static struct { volatile int64_t flips, unreset, gathers, passes, pass_b, clears, fixed; } n;
 
 static void *at(uint64_t a, uint64_t size) {
     if (!hos_guest_range(a, size)) hos_fatal_lr(0, "culling lists: 0x%llx outside guest memory", (unsigned long long)a);
     return GP(a);
 }
 static uint64_t block_at(const List *l, uint32_t i) { return l->ring + (uint64_t)i * sizeof(Block); }
-static Block *block(const List *l) { return at(block_at(l, l->cur < l->ring_n ? l->cur : 0), sizeof(Block)); }
+static uint32_t cur(const List *l) { return l->cur < l->ring_n ? l->cur : 0; }
+static Block *block(const List *l) { return at(block_at(l, cur(l)), sizeof(Block)); }
 static uint64_t member(const Block *b, uint64_t base, int m) {
     const Decl *d = at(b->decl, sizeof(Decl));
     return base + ((const Member *)at(d->members + (uint64_t)m * sizeof(Member), sizeof(Member)))->offset;
@@ -105,13 +120,6 @@ static void methods(const Block *b, uint64_t align) {
         hos_fatal_lr(0, "culling lists: a block's methods are 0x%llx 0x%llx, not the alignment and the empty invalidate",
                      (unsigned long long)vt[5], (unsigned long long)vt[8]);
 }
-static void put(uint64_t a, uint32_t v) { *(uint32_t *)at(a, 4) = v, nvn_claim_fill(a, 4, v); }
-static void mesh_record(uint64_t a) {
-    Record *r = at(a, sizeof(Record));
-    r->w[0] = 0, r->w[1] = 1, r->w[2] = 1;
-    nvn_claim_fill(a, 4, 0), nvn_claim_fill(a + 4, 8, 1);
-}
-static void dispatch_record(uint64_t a) { mesh_record(a), put(a + 12, 0); }
 
 /* a header's copy: its memory's CPU base + offset + the aligned size x copy x elements */
 static uint64_t header_copy(const Header *h, uint32_t copy) {
@@ -122,17 +130,10 @@ static uint64_t header_copy(const Header *h, uint32_t copy) {
     if (!base) hos_fatal_lr(0, "culling lists: a header list has no memory");
     return base + u->offset + (uint64_t)((u->size + align - 1) & -align) * (copy * u->elements);
 }
-static void header_reset(Header *h) {
-    Block *u = &h->ubo;
-    const uint32_t copy = (1 - (u->copy >> 4)) & 0xf;
-    u->copy = (uint8_t)((u->copy & 0xf) | copy << 4);
-    u->cpu = header_copy(h, copy);
-    const uint64_t a0 = member(u, u->cpu, 0), a1 = member(u, u->cpu, 1);
-    const Record *r0 = at(a0, sizeof(Record)), *r1 = at(a1, 3 * sizeof(Record));
-    h->counts[0] = r0->w[3], h->counts[1] = r0->w[0];
-    if (h->all == 1) h->counts[2] = r1[0].w[3], h->counts[3] = r1[1].w[3], h->counts[4] = r1[2].w[3];
-    for (int i = 0; i < 4; i++) dispatch_record(i ? a1 + (uint64_t)(i - 1) * sizeof(Record) : a0);
-    os_atomic_inc(&n.headers);
+static uint32_t header_cur(const Header *h) { return (h->ubo.copy >> 4) & 1; }
+/* a header's four dispatch records: the first member's, the second member's three */
+static uint64_t header_record(const Header *h, uint64_t base, int i) {
+    return i ? member(&h->ubo, base, 1) + (uint64_t)(i - 1) * sizeof(Record) : member(&h->ubo, base, 0);
 }
 
 /* cull_gpu_object_a_create's end (pools.c): the records the CPU reads named, every block's methods checked */
@@ -151,7 +152,7 @@ void cull_lists_made(uint64_t obj) {
             continue;
         }
         const List *l = at(obj + o->at, sizeof(List));
-        if (!l->ring_n) hos_fatal_lr(0, "culling lists: list 0x%x of object a has no blocks", o->at);
+        if (!l->ring_n || l->ring_n > 2) hos_fatal_lr(0, "culling lists: list 0x%x of object a has %u blocks", o->at, l->ring_n);
         for (uint32_t b = 0; b < l->ring_n; b++) {
             const Block *blk = at(block_at(l, b), sizeof(Block));
             methods(blk, SSB_ALIGN);
@@ -159,71 +160,132 @@ void cull_lists_made(uint64_t obj) {
             if (o->head) nvn_claim_read(record(blk, 0) & ~15ull, 16);
         }
     }
-    for (int i = 0; i < 4; i++)
-        if (!made[i] || made[i] == obj) { made[i] = obj; return; }
-    hos_fatal_lr(0, "culling lists: a fifth culling object a");
+    take();
+    int k = 0;
+    while (k < 4 && objs[k].obj && objs[k].obj != obj) k++;
+    if (k == 4) hos_fatal_lr(0, "culling lists: a fifth culling object a");
+    memset(&objs[k], 0, sizeof objs[k]);
+    objs[k].obj = obj;
+    give();
 }
 
-/* cull_gpu_lists_reset (cull_frame_begin, main thread, once a frame), x0 object a */
+/* cull_gpu_lists_reset (cull_frame_begin, once a frame), x0 object a: flip each list, read what the GPU left in the copy
+   now current when a pass reset it since it was last current, else 0 */
 PATCH_FUNC(0x80361c80, word(0xd503237f), body(0x22d8228b3a3f672d), aapcs, none, cull_lists_reset, as(x0, obj)) {
-    int known = 0;
-    for (int i = 0; i < 4; i++) known |= made[i] == obj;
-    if (!known) hos_fatal_lr(0, "culling lists: cull_gpu_lists_reset on 0x%llx, not a culling object a", (unsigned long long)obj);
+    take();
+    int k = 0;
+    while (k < 4 && objs[k].obj != obj) k++;
+    if (k == 4) hos_fatal_lr(0, "culling lists: cull_gpu_lists_reset on 0x%llx, not a culling object a", (unsigned long long)obj);
     for (size_t i = 0; i < NOPS; i++) {
         const struct list_op *o = &ops[i];
-        if (o->kind == HEADER) { header_reset(at(obj + o->at, sizeof(Header))); continue; }
+        if (o->kind == HEADER) {
+            Header *h = at(obj + o->at, sizeof(Header));
+            const uint32_t c = 1 - header_cur(h);
+            h->ubo.copy = (uint8_t)((h->ubo.copy & 0xf) | c << 4);
+            h->ubo.cpu = header_copy(h, c);
+            const int done = objs[k].reset[i][c];
+            const Record *r0 = at(header_record(h, h->ubo.cpu, 0), sizeof(Record));
+            const Record *r1 = at(header_record(h, h->ubo.cpu, 1), 3 * sizeof(Record));
+            h->counts[0] = done ? r0->w[3] : 0, h->counts[1] = done ? r0->w[0] : 0;
+            if (h->all == 1)
+                for (int j = 0; j < 3; j++) h->counts[2 + j] = done ? r1[j].w[3] : 0;
+            objs[k].reset[i][c] = 0, objs[k].due[i][c] = 1;
+            n.unreset += !done;
+            continue;
+        }
         List *l = at(obj + o->at, sizeof(List));
         if (l->copies >= 2) l->cur = 1 - l->cur;
+        const uint32_t c = cur(l);
+        const int done = objs[k].reset[i][c];
         const Block *b = block(l);
-        if (o->count >= 0) l->count = read32(record(b, o->count));
-        if (o->head) l->head = read32(record(b, 0));
-        for (int m = 0; m < 12; m++) {
-            if (o->records & M(m)) mesh_record(record(b, m));
-            if (o->counts & M(m)) put(record(b, m), 0);
-        }
-        if (o->set >= 0) put(record(b, o->set), l->value);
-        if (o->dispatch) dispatch_record(record(b, 0));
-        os_atomic_inc(&n.resets);
+        if (o->count >= 0) l->count = done ? read32(record(b, o->count)) : 0;
+        if (o->head) l->head = done ? read32(record(b, 0)) : 0;
+        objs[k].reset[i][c] = 0, objs[k].due[i][c] = 1;
+        objs[k].value[i][c] = l->value;
+        n.unreset += !done;
     }
+    give();
+    os_atomic_inc(&n.flips);
 }
 
-/* actor_records_read_a (f_80586fd0, three gather lists of object b): after the last of its unconditional count zeroes,
-   all of them made on the GPU; m1 and m4 only when the list's first byte is 1, as the game's next block does */
-PATCH_AT(0x82c1de64, word(0xb8286abf), after, none, cull_lists_actor_counts, as(x19, list)) {
+/* actor_records_read_a (f_80586fd0's three gather lists of object b), x19 the list, after the last of its unconditional
+   count zeroes: the zeroes made on the GPU before the next submission's work, m1 and m4 only when the list's first byte
+   is 1, as the game's next block does. These lists stay on fills: their writers include the render jobs' mesh draws,
+   whose order against the culling pass is not established */
+PATCH_AT(0x82c1de64, word(0xb8286abf), after, none, cull_lists_gather, as(x19, list)) {
     const List *l = at(list, sizeof(List));
     const Block *b = block(l);
-    const uint32_t zeroed = M(0) | M(2) | M(3) | M(6) | M(7) | M(8) | M(9) | M(10) | M(11) | (*(uint8_t *)l == 1 ? M(1) | M(4) : 0);
+    const uint32_t zeroed = M(0) | M(2) | M(3) | M(6) | M(7) | M(8) | M(9) | M(10) | M(11) | (l->first == 1 ? M(1) | M(4) : 0);
     for (int m = 0; m < 12; m++)
         if (zeroed & M(m)) nvn_claim_fill(record(b, m), 4, 0);
-    os_atomic_inc(&n.actor);
+    os_atomic_inc(&n.gathers);
 }
 
-/* nvn_native.c draw_mesh: the records of an indirect mesh draw (max of them, stride apart; 0: 16) that the GPU resets
-   (w0 and w3 only) get w1 = w2 = 1 once */
-uint64_t nvn_gpu_guest(uint64_t gpu);
-void game_indirect_mesh_draw(uint64_t gpu, int max, int stride) {
-    const uint64_t rec = gpu ? nvn_gpu_guest(gpu) : 0;
-    if (!rec) return;
-    if (stride <= 0) stride = 16;
-    if (max <= 0) max = 1;
-    for (int i = 0; i < max && i < 64; i++) {
-        const uint64_t a = rec + (uint64_t)i * (uint64_t)stride;
-        os_atomic_inc(&n.records);
-        if (!hos_guest_range(a, sizeof(Record))) { os_atomic_inc(&n.outside); continue; }
-        Record *r = GP(a);
-        if (r->w[1] || r->w[2]) continue;
-        r->w[1] = 1, r->w[2] = 1;
-        nvn_claim_fill(a + 4, 8, 1);
-        os_atomic_inc(&n.set);
+/* the resets the last flips left, recorded on the culling pass's command buffer before its work */
+uint64_t nvn_native_proc(const char *name);   /* nvn_native.c */
+static uint64_t p_clear;
+static void clear(GuestCall *g, uint64_t sp, uint64_t cmd, uint64_t a, uint32_t size, uint32_t value) {
+    guest_call(g, sp, p_clear, cmd, a, size, value, 0);
+    os_atomic_inc(&n.clears);
+}
+/* a mesh draw record {0, 1, 1, w3}, a dispatch record {0, 1, 1, 0}: Vulkan's indirect layout (docs/direct/task-mesh.md) */
+static void mesh_record(GuestCall *g, uint64_t sp, uint64_t cmd, uint64_t a) { clear(g, sp, cmd, a, 4, 0), clear(g, sp, cmd, a + 4, 8, 1); }
+static void dispatch_record(GuestCall *g, uint64_t sp, uint64_t cmd, uint64_t a) { mesh_record(g, sp, cmd, a), clear(g, sp, cmd, a + 12, 4, 0); }
+static void pass_resets(GuestCall *g, uint64_t sp, uint64_t cmd) {
+    if (!p_clear) p_clear = nvn_native_proc("nvnCommandBufferClearBuffer");
+    take();
+    for (int k = 0; k < 4 && objs[k].obj; k++) {
+        const uint64_t obj = objs[k].obj;
+        for (size_t i = 0; i < NOPS; i++) {
+            const struct list_op *o = &ops[i];
+            for (uint32_t c = 0; c < 2; c++) {
+                if (!objs[k].due[i][c]) continue;
+                objs[k].due[i][c] = 0, objs[k].reset[i][c] = 1;
+                if (o->kind == HEADER) {
+                    const Header *h = at(obj + o->at, sizeof(Header));
+                    for (int r = 0; r < 4; r++) dispatch_record(g, sp, cmd, header_record(h, header_copy(h, c), r));
+                    continue;
+                }
+                const List *l = at(obj + o->at, sizeof(List));
+                const Block *b = at(block_at(l, c < l->ring_n ? c : 0), sizeof(Block));
+                for (int m = 0; m < 12; m++) {
+                    if (o->records & M(m)) mesh_record(g, sp, cmd, record(b, m));
+                    if (o->counts & M(m)) clear(g, sp, cmd, record(b, m), 4, 0);
+                }
+                if (o->set >= 0) clear(g, sp, cmd, record(b, o->set), 4, objs[k].value[i][c]);
+                if (o->dispatch) dispatch_record(g, sp, cmd, record(b, 0));
+            }
+        }
+    }
+    give();
+    os_atomic_inc(&n.passes);
+}
+/* pass_vegetation_compute: after frame_compute_list_begin made its own compute list (the context at sp + 0x10, its
+   command buffer at sp + 0xe8), before the culling calls (f_80290f20, f_808832f0, f_80583d90) */
+PATCH_AT(0x80291310, word(0xd0025068), before, none, cull_lists_pass, guest(computed), sp, as(ld(sp, 0xe8), cmd)) {
+    pass_resets(g, sp, cmd);
+}
+/* its other path: the same calls (f_82c21140 first) on the scene's context x19 */
+PATCH_AT(0x802917c0, word(0xaa1303e1), before, none, cull_lists_pass_b, guest(computed), sp, as(x19, ctx)) {
+    pass_resets(g, sp, G64(ctx + 0xd8));
+    os_atomic_inc(&n.pass_b);
+}
+
+/* actor_records_read_b (object b's CPU-built indirect mesh records, f_80c5f870's Upload pool), after its three records
+   {0, n, n, 0} (x8 the first): n = 0 becomes 1, Vulkan's y and z */
+PATCH_AT(0x82c1d4c8, word(0xb9402a68), before, none, cull_lists_cpu_records, as(x8, rec)) {
+    for (int i = 0; i < 3; i++) {
+        Record *r = at(rec + (uint64_t)i * sizeof(Record), sizeof(Record));
+        if (!r->w[1] && !r->w[2]) r->w[1] = 1, r->w[2] = 1, os_atomic_inc(&n.fixed);
     }
 }
 
 void cull_lists_log(double frames) {
-    static int64_t last[6];
-    const int64_t now[6] = {n.resets, n.headers, n.actor, n.records, n.set, n.outside};
-    hos_log("direct patch culling lists: %.2f list resets, %.2f header resets, %.2f gather list resets a frame; indirect "
-            "mesh records %.2f a frame, set once %lld since the start, outside guest memory %lld",
-            (now[0] - last[0]) / frames, (now[1] - last[1]) / frames, (now[2] - last[2]) / frames, (now[3] - last[3]) / frames,
-            (long long)now[4], (long long)(now[5] - last[5]));
-    for (int i = 0; i < 6; i++) last[i] = now[i];
+    static int64_t last[7];
+    const int64_t now[7] = {n.flips, n.unreset, n.gathers, n.passes, n.pass_b, n.clears, n.fixed};
+    hos_log("direct patch culling lists: %.2f flips, %.2f gather flips, %.2f passes (%lld on the scene context), %.1f clears "
+            "a frame; %lld reads of a copy no pass reset; %.2f CPU records given y = z = 1 a frame",
+            (now[0] - last[0]) / frames, (now[2] - last[2]) / frames, (now[3] - last[3]) / frames, (long long)(now[4] - last[4]),
+            (now[5] - last[5]) / frames, (long long)(now[1] - last[1]), (now[6] - last[6]) / frames);
+    for (int i = 0; i < 7; i++) last[i] = now[i];
 }
