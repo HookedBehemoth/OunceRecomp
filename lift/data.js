@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795260178799,
+  "lastUpdate": 1795260194842,
   "repoUrl": "https://github.com/HookedBehemoth/OunceRecomp",
   "entries": {
     "lift oot": [
@@ -692,6 +692,144 @@ window.BENCHMARK_DATA = {
             "value": 388.624,
             "unit": "s",
             "extra": "4 jobs on INTEL(R) XEON(R) PLATINUM 8573C"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "luis.scheurenbrand@putzmeister.com",
+            "name": "Luis Scheurenbrand",
+            "username": "lscheurenbrand"
+          },
+          "committer": {
+            "email": "luis.scheurenbrand@putzmeister.com",
+            "name": "Luis Scheurenbrand",
+            "username": "lscheurenbrand"
+          },
+          "distinct": true,
+          "id": "7ef66dbacaf6259e31453a0d44b4c75df875973f",
+          "message": "fix display init on wangblows",
+          "timestamp": "2026-11-21T12:08:50+01:00",
+          "tree_id": "e2f9727949ff7dceaa672bc3a0046670dad29fea",
+          "url": "https://github.com/HookedBehemoth/OunceRecomp/commit/7ef66dbacaf6259e31453a0d44b4c75df875973f"
+        },
+        "date": 1795260194046,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "compile.sum_s",
+            "value": 1031.58,
+            "unit": "s",
+            "extra": "4 jobs on Intel(R) Xeon(R) 6975P-C"
+          },
+          {
+            "name": "functions.found",
+            "value": 188621,
+            "unit": "count",
+            "extra": "4 jobs on Intel(R) Xeon(R) 6975P-C"
+          },
+          {
+            "name": "functions.lifted",
+            "value": 188621,
+            "unit": "count",
+            "extra": "4 jobs on Intel(R) Xeon(R) 6975P-C"
+          },
+          {
+            "name": "functions.skipped",
+            "value": 0,
+            "unit": "count",
+            "extra": "4 jobs on Intel(R) Xeon(R) 6975P-C"
+          },
+          {
+            "name": "lift.cpu_s",
+            "value": 35.21,
+            "unit": "s",
+            "extra": "4 jobs on Intel(R) Xeon(R) 6975P-C"
+          },
+          {
+            "name": "lift.discovery_s",
+            "value": 0.527,
+            "unit": "s",
+            "extra": "4 jobs on Intel(R) Xeon(R) 6975P-C"
+          },
+          {
+            "name": "lift.image_s",
+            "value": 0.263,
+            "unit": "s",
+            "extra": "4 jobs on Intel(R) Xeon(R) 6975P-C"
+          },
+          {
+            "name": "lift.partitions_s",
+            "value": 5.815,
+            "unit": "s",
+            "extra": "4 jobs on Intel(R) Xeon(R) 6975P-C"
+          },
+          {
+            "name": "lift.plan_s",
+            "value": 0.291,
+            "unit": "s",
+            "extra": "4 jobs on Intel(R) Xeon(R) 6975P-C"
+          },
+          {
+            "name": "lift.summaries_s",
+            "value": 2.698,
+            "unit": "s",
+            "extra": "4 jobs on Intel(R) Xeon(R) 6975P-C"
+          },
+          {
+            "name": "lift.wall_s",
+            "value": 9.996,
+            "unit": "s",
+            "extra": "4 jobs on Intel(R) Xeon(R) 6975P-C"
+          },
+          {
+            "name": "objects",
+            "value": 83,
+            "unit": "count",
+            "extra": "4 jobs on Intel(R) Xeon(R) 6975P-C"
+          },
+          {
+            "name": "objects.bytes",
+            "value": 171640784,
+            "unit": "bytes",
+            "extra": "4 jobs on Intel(R) Xeon(R) 6975P-C"
+          },
+          {
+            "name": "objects.cold_bytes",
+            "value": 171640784,
+            "unit": "bytes",
+            "extra": "4 jobs on Intel(R) Xeon(R) 6975P-C"
+          },
+          {
+            "name": "objects.hot_bytes",
+            "value": 0,
+            "unit": "bytes",
+            "extra": "4 jobs on Intel(R) Xeon(R) 6975P-C"
+          },
+          {
+            "name": "partitions",
+            "value": 76,
+            "unit": "count",
+            "extra": "4 jobs on Intel(R) Xeon(R) 6975P-C"
+          },
+          {
+            "name": "total.cpu_s",
+            "value": 1034.15,
+            "unit": "s",
+            "extra": "4 jobs on Intel(R) Xeon(R) 6975P-C"
+          },
+          {
+            "name": "total.peak_mb",
+            "value": 3024.301,
+            "unit": "MB",
+            "extra": "4 jobs on Intel(R) Xeon(R) 6975P-C"
+          },
+          {
+            "name": "total.wall_s",
+            "value": 265.526,
+            "unit": "s",
+            "extra": "4 jobs on Intel(R) Xeon(R) 6975P-C"
           }
         ]
       }
