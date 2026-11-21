@@ -196,8 +196,10 @@ int hos_display_init(void) {
        Under gamescope (XDG_CURRENT_DESKTOP names it: Steam Deck game mode) SDL keeps its own order.) */
     const char* desktop = getenv("XDG_CURRENT_DESKTOP");
     const int gamescope = desktop && strstr(desktop, "gamescope");
+#if defined(__linux__)
     if (!getenv("SDL_VIDEODRIVER") && !getenv("SDL_VIDEO_DRIVER") && !gamescope)
         hos_sdl_hint(hos_sdl_load() == 3 ? "SDL_VIDEO_DRIVER" : "SDL_VIDEODRIVER", "wayland,x11");
+#endif
     if (!hos_sdl_init(HOS_SDL_VIDEO | HOS_SDL_EVENTS)) {
         hos_log("display: SDL_Init: %s: no window", hos_sdl_error());
         fprintf(stderr, "display: SDL_Init: %s: no window\n", hos_sdl_error());
