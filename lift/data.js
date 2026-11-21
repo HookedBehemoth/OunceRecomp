@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795202405531,
+  "lastUpdate": 1795260178799,
   "repoUrl": "https://github.com/HookedBehemoth/OunceRecomp",
   "entries": {
     "lift oot": [
@@ -276,6 +276,144 @@ window.BENCHMARK_DATA = {
             "value": 583.068,
             "unit": "s",
             "extra": "4 jobs on Intel(R) Xeon(R) 6975P-C"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "luis.scheurenbrand@putzmeister.com",
+            "name": "Luis Scheurenbrand",
+            "username": "lscheurenbrand"
+          },
+          "committer": {
+            "email": "luis.scheurenbrand@putzmeister.com",
+            "name": "Luis Scheurenbrand",
+            "username": "lscheurenbrand"
+          },
+          "distinct": true,
+          "id": "7ef66dbacaf6259e31453a0d44b4c75df875973f",
+          "message": "fix display init on wangblows",
+          "timestamp": "2026-11-21T12:08:50+01:00",
+          "tree_id": "e2f9727949ff7dceaa672bc3a0046670dad29fea",
+          "url": "https://github.com/HookedBehemoth/OunceRecomp/commit/7ef66dbacaf6259e31453a0d44b4c75df875973f"
+        },
+        "date": 1795260178433,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "compile.sum_s",
+            "value": 2536.399,
+            "unit": "s",
+            "extra": "4 jobs on AMD EPYC 9V74 80-Core Processor"
+          },
+          {
+            "name": "functions.found",
+            "value": 294481,
+            "unit": "count",
+            "extra": "4 jobs on AMD EPYC 9V74 80-Core Processor"
+          },
+          {
+            "name": "functions.lifted",
+            "value": 294481,
+            "unit": "count",
+            "extra": "4 jobs on AMD EPYC 9V74 80-Core Processor"
+          },
+          {
+            "name": "functions.skipped",
+            "value": 0,
+            "unit": "count",
+            "extra": "4 jobs on AMD EPYC 9V74 80-Core Processor"
+          },
+          {
+            "name": "lift.cpu_s",
+            "value": 80.91,
+            "unit": "s",
+            "extra": "4 jobs on AMD EPYC 9V74 80-Core Processor"
+          },
+          {
+            "name": "lift.discovery_s",
+            "value": 0.966,
+            "unit": "s",
+            "extra": "4 jobs on AMD EPYC 9V74 80-Core Processor"
+          },
+          {
+            "name": "lift.image_s",
+            "value": 0.483,
+            "unit": "s",
+            "extra": "4 jobs on AMD EPYC 9V74 80-Core Processor"
+          },
+          {
+            "name": "lift.partitions_s",
+            "value": 13.622,
+            "unit": "s",
+            "extra": "4 jobs on AMD EPYC 9V74 80-Core Processor"
+          },
+          {
+            "name": "lift.plan_s",
+            "value": 0.948,
+            "unit": "s",
+            "extra": "4 jobs on AMD EPYC 9V74 80-Core Processor"
+          },
+          {
+            "name": "lift.summaries_s",
+            "value": 6.368,
+            "unit": "s",
+            "extra": "4 jobs on AMD EPYC 9V74 80-Core Processor"
+          },
+          {
+            "name": "lift.wall_s",
+            "value": 23.148,
+            "unit": "s",
+            "extra": "4 jobs on AMD EPYC 9V74 80-Core Processor"
+          },
+          {
+            "name": "objects",
+            "value": 154,
+            "unit": "count",
+            "extra": "4 jobs on AMD EPYC 9V74 80-Core Processor"
+          },
+          {
+            "name": "objects.bytes",
+            "value": 306732720,
+            "unit": "bytes",
+            "extra": "4 jobs on AMD EPYC 9V74 80-Core Processor"
+          },
+          {
+            "name": "objects.cold_bytes",
+            "value": 297018024,
+            "unit": "bytes",
+            "extra": "4 jobs on AMD EPYC 9V74 80-Core Processor"
+          },
+          {
+            "name": "objects.hot_bytes",
+            "value": 9714696,
+            "unit": "bytes",
+            "extra": "4 jobs on AMD EPYC 9V74 80-Core Processor"
+          },
+          {
+            "name": "partitions",
+            "value": 147,
+            "unit": "count",
+            "extra": "4 jobs on AMD EPYC 9V74 80-Core Processor"
+          },
+          {
+            "name": "total.cpu_s",
+            "value": 2459.65,
+            "unit": "s",
+            "extra": "4 jobs on AMD EPYC 9V74 80-Core Processor"
+          },
+          {
+            "name": "total.peak_mb",
+            "value": 3947.555,
+            "unit": "MB",
+            "extra": "4 jobs on AMD EPYC 9V74 80-Core Processor"
+          },
+          {
+            "name": "total.wall_s",
+            "value": 648.699,
+            "unit": "s",
+            "extra": "4 jobs on AMD EPYC 9V74 80-Core Processor"
           }
         ]
       }
